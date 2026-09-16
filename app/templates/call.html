@@ -15,6 +15,20 @@
   · длительность {{ call.duration_sec }} с · ожидание {{ call.wait_sec }} с
 </p>
 
+{% if call.orders_count is not none %}
+<div class="card">
+  <div class="card-head"><h2>Клиент</h2><span class="sub">по данным CRM</span></div>
+  <div class="tiles">
+    <div class="tile"><div class="n">{{ call.orders_count }}</div><div class="l">заявок всего</div></div>
+    <div class="tile"><div class="n">{{ call.deals_count }}</div><div class="l">дошло до сделки</div></div>
+    <div class="tile {% if call.orders_count and (call.deals_count / call.orders_count) >= 0.3 %}good{% endif %}">
+      <div class="n">{% if call.orders_count %}{{ (call.deals_count / call.orders_count * 100)|round|int }}%{% else %}—{% endif %}</div>
+      <div class="l">конверсия в сделку</div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <div class="card-head"><h2>Карточка в CRM</h2>
     <span class="sub">{% if call.checked_at %}проверено{% else %}не проверялась{% endif %}</span></div>

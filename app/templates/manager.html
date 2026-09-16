@@ -22,6 +22,7 @@
       <tr>
         <th>Время</th><th>Клиент</th><th class="num">Длит.</th>
         {% for column, label in card_fields %}<th class="num" title="{{ label }}">{{ label.split()[0] }}</th>{% endfor %}
+        <th class="num" title="Заявок и сделок у клиента — как часто он заказывает">Заявок</th>
         <th></th>
       </tr>
       {% for c in calls %}
@@ -38,6 +39,11 @@
             {% else %}<span class="no">✗</span>{% endif %}
           </td>
         {% endfor %}
+        <td class="num mono">
+          {% if short %}<span class="dim">—</span>
+          {% elif c.orders_count is none %}<span class="dim">?</span>
+          {% else %}{{ c.orders_count }}<span class="dim">/{{ c.deals_count }}</span>{% endif %}
+        </td>
         <td class="num">
           {% if c.has_transcript %}<a href="/call/{{ c.uid }}">разбор</a>
           {% elif not short %}<a href="/call/{{ c.uid }}" class="dim">открыть</a>{% endif %}
@@ -51,6 +57,7 @@
 
 <p class="dim" style="font-size:13px">
   Прочерк — звонок короче {{ threshold }} секунд, карточку по нему не проверяем.
-  Вопросительный знак — проверка ещё не выполнялась: Synergy не подключена.
+  Колонка «Заявок» — сколько всего заявок у клиента и сколько из них дошло до сделки:
+  это и есть частота заказов, её не вписывают руками, она считается по CRM.
 </p>
 {% endblock %}

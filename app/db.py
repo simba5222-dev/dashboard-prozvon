@@ -52,10 +52,13 @@ CREATE TABLE IF NOT EXISTS card_checks (
     contact_id        TEXT,
     contact_found     INTEGER NOT NULL DEFAULT 0,
     need_filled       INTEGER,
-    frequency_filled  INTEGER,
     objects_filled    INTEGER,
     inn_filled        INTEGER,
     task_created      INTEGER,
+    -- Частота заказов — не то, что менеджер вписывает, а факт из CRM:
+    -- сколько у клиента заявок и сколько из них дошло до сделки.
+    orders_count      INTEGER,
+    deals_count       INTEGER,
     checked_at        TEXT NOT NULL,
     is_demo           INTEGER NOT NULL DEFAULT 0
 );
@@ -71,9 +74,11 @@ CREATE TABLE IF NOT EXISTS transcripts (
 """
 
 # Пять пунктов, которые менеджер обязан заполнить после разговора.
+# Четыре пункта, которые менеджер обязан заполнить после разговора.
+# Пятый — частота заказов — сюда не входит: его не вписывают руками,
+# он считается по заявкам и сделкам клиента.
 CARD_FIELDS = (
     ("need_filled", "потребность в технике"),
-    ("frequency_filled", "частота заказов"),
     ("objects_filled", "объекты"),
     ("inn_filled", "ИНН компании"),
     ("task_created", "задача поставлена"),
@@ -150,19 +155,20 @@ def save_card_check(conn: sqlite3.Connection, **row: Any) -> None:
     conn.execute(
         """
         INSERT INTO card_checks (call_uid, contact_id, contact_found, need_filled,
-                                 frequency_filled, objects_filled, inn_filled,
-                                 task_created, checked_at, is_demo)
+                                 objects_filled, inn_filled, task_created,
+                                 orders_count, deals_count, checked_at, is_demo)
         VALUES (:call_uid, :contact_id, :contact_found, :need_filled,
-                :frequency_filled, :objects_filled, :inn_filled,
-                :task_created, :checked_at, :is_demo)
+                :objects_filled, :inn_filled, :task_created,
+                :orders_count, :deals_count, :checked_at, :is_demo)
         ON CONFLICT (call_uid) DO UPDATE SET
             contact_id       = excluded.contact_id,
             contact_found    = excluded.contact_found,
             need_filled      = excluded.need_filled,
-            frequency_filled = excluded.frequency_filled,
             objects_filled   = excluded.objects_filled,
             inn_filled       = excluded.inn_filled,
             task_created     = excluded.task_created,
+            orders_count     = excluded.orders_count,
+            deals_count      = excluded.deals_count,
             checked_at       = excluded.checked_at
         """,
         row,

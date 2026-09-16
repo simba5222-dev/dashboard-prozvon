@@ -126,8 +126,9 @@ def calls_of_day(
     """Звонки менеджера за день вместе с тем, что проверено по карточке."""
     rows = conn.execute(
         """
-        SELECT k.*, c.contact_found, c.need_filled, c.frequency_filled,
+        SELECT k.*, c.contact_found, c.need_filled,
                c.objects_filled, c.inn_filled, c.task_created,
+               c.orders_count, c.deals_count,
                t.call_uid IS NOT NULL AS has_transcript
         FROM calls k
         LEFT JOIN card_checks c ON c.call_uid = k.uid
@@ -144,8 +145,9 @@ def call_detail(conn: sqlite3.Connection, uid: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT k.*, m.display_name,
-               c.contact_id, c.contact_found, c.need_filled, c.frequency_filled,
-               c.objects_filled, c.inn_filled, c.task_created, c.checked_at,
+               c.contact_id, c.contact_found, c.need_filled,
+               c.objects_filled, c.inn_filled, c.task_created,
+               c.orders_count, c.deals_count, c.checked_at,
                t.text AS transcript_text, t.analysis_json
         FROM calls k
         LEFT JOIN managers m ON m.vats_login = k.vats_login

@@ -57,15 +57,32 @@ class Settings(BaseSettings):
         default=None, description="Токен Synergy. Пусто — проверка карточек выключена."
     )
     synergy_group: str = Field(
-        default="Тёплый прозвон",
+        default="Теплый прозвон",
         description="Группа пользователей Synergy, чьи звонки контролируем.",
     )
     # Идентификаторы кастомных полей карточки контакта. Их номера берутся из
     # кабинета Synergy и у каждой установки свои — по памяти не угадать.
-    field_need: str | None = Field(default=None, description="Поле «потребность в технике».")
-    field_frequency: str | None = Field(default=None, description="Поле «частота заказов».")
-    field_objects: str | None = Field(default=None, description="Поле «объекты».")
-    field_inn: str | None = Field(default=None, description="Поле «ИНН компании».")
+    field_need: str | None = Field(
+        default="custom-30493",
+        description="«Какую технику привлекаете?» — им и проверяем потребность.",
+    )
+    field_objects: str | None = Field(
+        default="custom-30375", description="«Есть объект»."
+    )
+    field_objects_extra: str | None = Field(
+        default="custom-30492",
+        description="«Сколько ведете объектов?» — засчитываем, если заполнено любое из двух.",
+    )
+    field_inn: str | None = Field(
+        default="custom-29901", description="«инн-комп» в карточке контакта."
+    )
+
+    synergy_min_interval_sec: float = Field(
+        default=0.35,
+        description="Минимальный промежуток между запросами к Synergy. Лимит там "
+        "общий на аккаунт и делится с сервисом распознавания, который ходит туда же.",
+    )
+    synergy_retries: int = Field(default=5, description="Повторов при ответе 429.")
 
     # --- Разбор разговоров ---
     asr_url: str = Field(
@@ -95,7 +112,7 @@ class Settings(BaseSettings):
     # Пустая строка в .env означает «не задано», иначе /health врёт о настройках.
     @field_validator(
         "vats_api_token", "synergy_api_token",
-        "field_need", "field_frequency", "field_objects", "field_inn",
+        "field_need", "field_objects", "field_objects_extra", "field_inn",
         mode="before",
     )
     @classmethod
@@ -114,7 +131,7 @@ class Settings(BaseSettings):
 
     @property
     def card_fields_configured(self) -> bool:
-        return all((self.field_need, self.field_frequency, self.field_objects, self.field_inn))
+        return all((self.field_need, self.field_objects, self.field_inn))
 
 
 @lru_cache

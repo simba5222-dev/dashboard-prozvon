@@ -1,0 +1,11 @@
+[Unit]
+Description=Дашборд прозвона: обновлять данные каждые 10 минут
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+Persistent=true
+RandomizedDelaySec=45
+
+[Install]
+WantedBy=timers.target
