@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}Отчёт по разговорам{% endblock %}
+
+{% block extra_style %}
+<style>
+/* Таблица широкая по существу: восемь вопросов владельца — восемь колонок.
+   Расширяем именно эту страницу, остальные экраны остаются читаемой шириной. */
+.wrap{max-width:1560px}
+.rep{font-size:13px;table-layout:auto}
+.rep th{padding-right:14px}
+.rep td{padding-right:14px;vertical-align:top}
+.rep tr:hover td{background:var(--surface-2)}
+.rep .who{min-width:150px}
+.rep .need{min-width:190px;color:var(--ink-2)}
+.rep .firm{min-width:160px}
+.rep .deal{min-width:230px}
+.marks{display:flex;gap:4px;font-family:ui-monospace,Menlo,monospace;font-size:11px}
+.marks i{font-style:normal;width:19px;text-align:center;border-radius:2px;padding:1px 0;
+  background:var(--sunken);color:var(--ink-3)}
+.marks i.on{background:var(--ok-soft);color:var(--ok);font-weight:700}
+.marks i.off{background:var(--stop-soft);color:var(--stop)}
+.ord{display:block;margin-bottom:5px;line-height:1.35}
+.ord:last-child{margin-bottom:0}
+.ord b{font-weight:600}
+.ord .st{font-size:11px;letter-spacing:.05em;text-transform:uppercase;
+  font-family:ui-monospace,Menlo,monospace;padding:1px 6px;border-radius:2px;
+  background:var(--sunken);color:var(--ink-3)}
+.ord .st.won{background:var(--ok-soft);color:var(--ok)}
+.ord .st.lost{background:var(--stop-soft);color:var(--stop)}
+.ord .st.opened{background:var(--accent-soft);color:var(--accent)}
+.filters{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;font-size:13px}
+.filters select,.filters input{font:inherit;padding:5px 8px;border:1px solid var(--line-2);
+  border-radius:2px;background:var(--surface);color:var(--ink)}
+.filters button{font:inherit;padding:5px 14px;border:1px solid var(--accent);
+  background:var(--accent);color:#fff;border-radius:2px;cursor:pointer}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="top">
+  <h1>Что вышло из разговоров</h1>
+  <span class="date">{% if days > 1 %}{{ since }} — {{ day }}{% else %}{{ day }}{% endif %}</span>
+</div>
+<p class="crumbs">
+  <a href="/?day={{ day }}">← дашборд</a> ·
+  строка на каждый разговор длиннее {{ threshold }} с ·
+  заявка считается заведённой по звонку, если создана в течение {{ order_window_hours }} ч после него
+</p>
+
+<div class="card">
+  <div class="card-body">
+    <form class="filters" method="get" action="/report">
+      <label>Менеджер
+        <select name="manager">
+          <option value="">все</option>
+          {% for m in all_managers %}
+          <option value="{{ m.vats_login }}" {% if m.vats_login == manager_login %}selected{% endif %}>{{ m.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>По дату <input type="date" name="day" value="{{ day }}"></label>
+      <label>Дней назад <input type="number" name="days" min="1" max="60" value="{{ days }}" style="width:70px"></label>
+      <button type="submit">Показать</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="tiles">
+    <div class="tile"><div class="n">{{ totals.calls }}</div><div class="l">разговоров</div></div>
+    <div class="tile {% if totals.needs < totals.calls %}mid{% else %}good{% endif %}">
+      <div class="n">{{ totals.needs }}</div><div class="l">с записанной потребностью</div></div>
+    <div class="tile"><div class="n">{{ totals.companies }}</div><div class="l">клиентов с компанией</div></div>
+    <div class="tile {% if totals.tasks == 0 %}bad{% endif %}">
+      <div class="n">{{ totals.tasks }}</div><div class="l">поставлено задач</div></div>
+    <div class="tile {% if totals.orders %}good{% endif %}">
+      <div class="n">{{ totals.orders }}</div><div class="l">заявок заведено</div></div>
+    <div class="tile"><div class="n">{{ totals.won }}<span class="dim" style="font-size:16px">/{{ totals.lost }}</span></div>
+      <div class="l">сделка / провалена</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Разговоры</h2>
+    <span class="sub">
+      {% if totals.unchecked or totals.no_details %}
+        сборщик догоняет: {{ totals.unchecked }} строк не сверены с CRM,
+        у {{ totals.no_details }} нет подробностей — многоточие в колонке значит «ещё не собрано»
+      {% else %}все строки сверены с CRM{% endif %}
+    </span>
+  </div>
+  <div class="card-body scroll">
+    {% if not rows %}
+    <p class="dim" style="margin:0">За этот период разговоров нет.</p>
+    {% else %}
+    <table class="rep">
+      <tr>
+        <th>Когда</th>
+        {% if not manager_login %}<th>Менеджер</th>{% endif %}
+        <th class="who">Кому звонил</th>
+        <th class="num">Длит.</th>
+        <th title="Потребность · Объекты · ИНН · Задача">Что добавил</th>
+        <th class="need">Потребность клиента</th>
+        <th class="firm">Компания</th>
+        <th class="num">Заявок</th>
+        <th class="deal">Заявки: кто ответственный и чем кончилось</th>
+      </tr>
+      {% for r in rows %}
+      <tr>
+        <td class="mono" style="white-space:nowrap">
+          {% if days > 1 %}{{ r.local_date[5:] }} {% endif %}{{ r.started_at[11:16] }}
+        </td>
+        {% if not manager_login %}
+        <td><a href="/report?manager={{ r.vats_login }}&day={{ day }}&days={{ days }}">{{ r.display_name or r.vats_login }}</a></td>
+        {% endif %}
+        <td class="who">
+          <a href="/call/{{ r.uid }}">
+            {%- if not r.detailed %}карточка{% else %}{{ r.contact_name or "без имени" }}{% endif -%}
+          </a><br>
+          <span class="mono dim">{{ r.client_phone }}</span>
+          {% if r.contact_found == 0 %}<br><span class="pill stop">нет в CRM</span>{% endif %}
+        </td>
+        <td class="num">{{ r.duration_sec }} с</td>
+        <td>
+          {% if not r.checked %}<span class="dim">проверяется…</span>
+          {% elif r.contact_found == 0 %}<span class="dim">—</span>
+          {% else %}
+          <span class="marks">
+            <i class="{{ 'on' if r.need_filled else 'off' }}" title="потребность">П</i>
+            <i class="{{ 'on' if r.objects_filled else 'off' }}" title="объекты">О</i>
+            <i class="{{ 'on' if r.inn_filled else 'off' }}" title="ИНН">И</i>
+            <i class="{{ 'on' if r.task_created else 'off' }}" title="задача">З</i>
+          </span>
+          {% endif %}
+        </td>
+        <td class="need">
+          {%- if not r.detailed %}<span class="dim">…</span>
+          {%- elif r.need_value %}{{ r.need_value }}
+          {%- else %}<span class="dim">не записана</span>{% endif -%}
+        </td>
+        <td class="firm">
+          {% if r.company_name %}{{ r.company_name }}
+          {% elif r.detailed and r.contact_found %}<span class="no">нет</span>
+          {% else %}<span class="dim">…</span>{% endif %}
+        </td>
+        <td class="num">
+          {% if not r.detailed %}<span class="dim">…</span>{% else %}{{ r.orders_made }}{% endif %}{% if r.orders_count %}<span class="dim" title="всего заявок у клиента за всё время">/{{ r.orders_count }}</span>{% endif %}
+        </td>
+        <td class="deal">
+          {% for o in r.orders %}
+          <span class="ord">
+            <b>{{ o.name }}</b> —
+            {{ o.responsible or "без ответственного" }}
+            <span class="st {{ o.stage_kind }}">{{ o.stage_name or "без стадии" }}</span>
+          </span>
+          {% else %}<span class="dim">—</span>{% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<p class="dim" style="font-size:12.5px">
+  Колонка «Заявок» — сколько заведено после этого разговора, через дробь — сколько всего
+  заявок у клиента за всё время. Клиент без компании и без записанной потребности — это
+  не сбой сбора, а то, чего менеджер не сделал. Многоточие — наоборот: строка
+  ещё не дошла до сверки с CRM, и судить по ней рано.
+</p>
+{% endblock %}

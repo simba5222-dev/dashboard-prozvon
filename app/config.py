@@ -31,6 +31,12 @@ class Settings(BaseSettings):
         description="Сколько минут после звонка правка карточки считается "
         "сделанной по этому звонку. Значение нужно согласовать с владельцем.",
     )
+    order_window_hours: int = Field(
+        default=24,
+        description="Сколько часов после звонка заявка считается заведённой по "
+        "этому звонку. Шире, чем окно карточки: менеджер сперва звонит, а заявку "
+        "оформляет, когда договорится об условиях.",
+    )
     workday_start_hour: int = Field(default=9, description="Начало рабочего дня, час.")
     workday_end_hour: int = Field(default=18, description="Конец рабочего дня, час.")
     timezone_offset_hours: int = Field(

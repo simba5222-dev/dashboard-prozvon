@@ -59,9 +59,29 @@ CREATE TABLE IF NOT EXISTS card_checks (
     -- сколько у клиента заявок и сколько из них дошло до сделки.
     orders_count      INTEGER,
     deals_count       INTEGER,
+    -- Для развёрнутого отчёта: не только «заполнено или нет», но и что именно.
+    contact_name      TEXT,
+    company_name      TEXT,
+    need_value        TEXT,
     checked_at        TEXT NOT NULL,
     is_demo           INTEGER NOT NULL DEFAULT 0
 );
+
+-- Заявки, заведённые после звонка. Одна строка на заявку: по ним видно,
+-- сколько менеджер создал, на кого их назначили и чем они кончились.
+CREATE TABLE IF NOT EXISTS call_orders (
+    order_id      TEXT NOT NULL,
+    call_uid      TEXT NOT NULL REFERENCES calls (uid),
+    name          TEXT,
+    created_at    TEXT,
+    responsible   TEXT,
+    stage_name    TEXT,
+    stage_kind    TEXT,          -- opened / won / lost / пусто для промежуточных
+    amount        REAL,
+    is_demo       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (order_id, call_uid)
+);
+CREATE INDEX IF NOT EXISTS idx_call_orders_call ON call_orders (call_uid);
 
 -- Расшифровка и разбор. Заполняется отдельно и может отставать.
 CREATE TABLE IF NOT EXISTS transcripts (
@@ -94,8 +114,22 @@ def connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+# Колонки, появившиеся после первых установок. «CREATE TABLE IF NOT EXISTS»
+# задним числом не работает: таблица уже есть, и новые колонки в ней сами не
+# заведутся — дописываем их по одной. Порядок важен только для чтения глазами.
+ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("card_checks", "contact_name", "TEXT"),
+    ("card_checks", "company_name", "TEXT"),
+    ("card_checks", "need_value", "TEXT"),
+)
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    for table, column, kind in ADDED_COLUMNS:
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in present:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
     conn.commit()
 
 
@@ -152,14 +186,20 @@ def save_call(conn: sqlite3.Connection, **row: Any) -> bool:
 
 
 def save_card_check(conn: sqlite3.Connection, **row: Any) -> None:
+    # Подробности для развёрнутого отчёта появились позже галочек, и не всякий
+    # вызов их знает: демо-данные их не выдумывают, тесты проверяют дисциплину.
+    for extra in ("contact_name", "company_name", "need_value"):
+        row.setdefault(extra, None)
     conn.execute(
         """
         INSERT INTO card_checks (call_uid, contact_id, contact_found, need_filled,
                                  objects_filled, inn_filled, task_created,
-                                 orders_count, deals_count, checked_at, is_demo)
+                                 orders_count, deals_count, contact_name,
+                                 company_name, need_value, checked_at, is_demo)
         VALUES (:call_uid, :contact_id, :contact_found, :need_filled,
                 :objects_filled, :inn_filled, :task_created,
-                :orders_count, :deals_count, :checked_at, :is_demo)
+                :orders_count, :deals_count, :contact_name,
+                :company_name, :need_value, :checked_at, :is_demo)
         ON CONFLICT (call_uid) DO UPDATE SET
             contact_id       = excluded.contact_id,
             contact_found    = excluded.contact_found,
@@ -169,6 +209,9 @@ def save_card_check(conn: sqlite3.Connection, **row: Any) -> None:
             task_created     = excluded.task_created,
             orders_count     = excluded.orders_count,
             deals_count      = excluded.deals_count,
+            contact_name     = excluded.contact_name,
+            company_name     = excluded.company_name,
+            need_value       = excluded.need_value,
             checked_at       = excluded.checked_at
         """,
         row,
@@ -184,6 +227,23 @@ def save_transcript(conn: sqlite3.Connection, **row: Any) -> None:
             text          = excluded.text,
             analysis_json = excluded.analysis_json,
             created_at    = excluded.created_at
+        """,
+        row,
+    )
+
+
+def save_call_order(conn: sqlite3.Connection, **row: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO call_orders (order_id, call_uid, name, created_at, responsible,
+                                 stage_name, stage_kind, amount, is_demo)
+        VALUES (:order_id, :call_uid, :name, :created_at, :responsible,
+                :stage_name, :stage_kind, :amount, :is_demo)
+        ON CONFLICT (order_id, call_uid) DO UPDATE SET
+            responsible = excluded.responsible,
+            stage_name  = excluded.stage_name,
+            stage_kind  = excluded.stage_kind,
+            amount      = excluded.amount
         """,
         row,
     )

@@ -35,6 +35,9 @@ def main() -> int:
     ap.add_argument("--cards-limit", type=int, default=0, help="ограничить число проверок")
     ap.add_argument("--catch-up", type=int, default=0,
                     help="догнать столько непроверенных карточек за прошлые дни")
+    ap.add_argument("--refresh", action="store_true",
+                    help="перепроверить и те карточки, что проверялись без "
+                         "данных для развёрнутого отчёта (имя, компания, заявки)")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -63,7 +66,8 @@ def main() -> int:
         if not args.no_cards:
             for back in range(args.days):
                 day = (last - timedelta(days=back)).isoformat()
-                done = check_cards(conn, client, settings, day, limit=args.cards_limit)
+                done = check_cards(conn, client, settings, day,
+                                   limit=args.cards_limit, refresh=args.refresh)
                 if done:
                     print(f"{day}: проверено карточек {done}")
         conn.close()
@@ -74,11 +78,13 @@ def main() -> int:
         new, seen = collect_calls(conn, client, settings, day)
         print(f"{day}: звонков менеджеров {seen}, новых {new}")
         if not args.no_cards:
-            done = check_cards(conn, client, settings, day, limit=args.cards_limit)
+            done = check_cards(conn, client, settings, day,
+                               limit=args.cards_limit, refresh=args.refresh)
             print(f"{day}: проверено карточек {done}")
 
     if args.catch_up:
-        caught = check_pending_cards(conn, client, settings, args.catch_up)
+        caught = check_pending_cards(conn, client, settings, args.catch_up,
+                                     refresh=args.refresh)
         if caught:
             print(f"догнано карточек за прошлые дни: {caught}")
     conn.close()

@@ -109,18 +109,20 @@ def test_personal_plan_overrides_default(conn):
 # ------------------------------------------------------------- дисциплина CRM
 
 def test_discipline_counts_only_full_cards(conn):
-    """Карточка считается заполненной, только если внесены все пять пунктов."""
+    """Карточка считается заполненной, только если внесены все четыре пункта."""
     add_call(conn, "full", duration=100)
     add_call(conn, "partial", duration=100)
     save_card_check(
         conn, call_uid="full", contact_id="1", contact_found=1,
-        need_filled=1, frequency_filled=1, objects_filled=1, inn_filled=1,
-        task_created=1, checked_at="2026-09-16T10:00:00Z", is_demo=0,
+        need_filled=1, objects_filled=1, inn_filled=1,
+        task_created=1, orders_count=0, deals_count=0,
+        checked_at="2026-09-16T10:00:00Z", is_demo=0,
     )
     save_card_check(
         conn, call_uid="partial", contact_id="2", contact_found=1,
-        need_filled=1, frequency_filled=1, objects_filled=1, inn_filled=0,
-        task_created=1, checked_at="2026-09-16T10:00:00Z", is_demo=0,
+        need_filled=1, objects_filled=1, inn_filled=0,
+        task_created=1, orders_count=0, deals_count=0,
+        checked_at="2026-09-16T10:00:00Z", is_demo=0,
     )
     conn.commit()
     row = day_summary(conn, "2026-09-16", default_plan=PLAN, threshold_sec=THRESHOLD)[0]
@@ -135,8 +137,9 @@ def test_short_calls_are_not_checked_for_cards(conn):
     add_call(conn, "short", duration=5)
     save_card_check(
         conn, call_uid="short", contact_id="1", contact_found=1,
-        need_filled=0, frequency_filled=0, objects_filled=0, inn_filled=0,
-        task_created=0, checked_at="2026-09-16T10:00:00Z", is_demo=0,
+        need_filled=0, objects_filled=0, inn_filled=0,
+        task_created=0, orders_count=0, deals_count=0,
+        checked_at="2026-09-16T10:00:00Z", is_demo=0,
     )
     conn.commit()
     row = day_summary(conn, "2026-09-16", default_plan=PLAN, threshold_sec=THRESHOLD)[0]
@@ -147,8 +150,9 @@ def test_all_card_fields_are_known_to_stats(conn):
     add_call(conn, "x", duration=100)
     save_card_check(
         conn, call_uid="x", contact_id="1", contact_found=1,
-        need_filled=1, frequency_filled=1, objects_filled=1, inn_filled=1,
-        task_created=1, checked_at="2026-09-16T10:00:00Z", is_demo=0,
+        need_filled=1, objects_filled=1, inn_filled=1,
+        task_created=1, orders_count=0, deals_count=0,
+        checked_at="2026-09-16T10:00:00Z", is_demo=0,
     )
     conn.commit()
     row = day_summary(conn, "2026-09-16", default_plan=PLAN, threshold_sec=THRESHOLD)[0]

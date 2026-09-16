@@ -11,7 +11,7 @@ WorkingDirectory=/home/claude/dashboard
 # Звонки за сегодня забираются дёшево — это несколько страниц выгрузки.
 # Проверка карточек дороже: шесть обращений к Synergy на каждую, поэтому
 # берём порцию. Непроверенные подхватит следующий запуск.
-ExecStart=/home/claude/dashboard/.venv/bin/python scripts/collect.py --cards-limit 15 --catch-up 10
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/collect.py --cards-limit 15 --catch-up 10 --refresh
 UMask=0002
 TimeoutStartSec=900
 # Лимит Synergy общий с сервисом распознавания — уступаем ему.

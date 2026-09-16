@@ -23,7 +23,7 @@ from typing import Any, Iterable
 import httpx
 
 from app.config import Settings
-from app.db import save_call, save_card_check, upsert_manager
+from app.db import save_call, save_call_order, save_card_check, upsert_manager
 from app.stats import local_parts
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,116 @@ class SynergyClient:
 def normalize(text: str) -> str:
     """Для сравнения названий: регистр и «ё» в русских системах пишут как попало."""
     return (text or "").strip().lower().replace("ё", "е")
+
+
+def load_stages(client: SynergyClient) -> dict[str, tuple[str, str]]:
+    """Справочник стадий заявки: id → (название, вид).
+
+    Вид заполнен только у трёх стадий — «Сделка» (won), «Новый» (opened) и
+    «Сделка провалена» (lost). У остальных он пустой, и это не пробел в данных:
+    промежуточные стадии вроде «Выставлен счёт» исходом не являются.
+    """
+    try:
+        rows = client.get("order-stages", per_page=100).get("data") or []
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("справочник стадий не прочитался: %s", exc)
+        return {}
+    out = {}
+    for row in rows:
+        attrs = row.get("attributes") or {}
+        out[str(row["id"])] = (str(attrs.get("name") or ""), str(attrs.get("kind") or ""))
+    return out
+
+
+def text_of(value: Any) -> str:
+    """Значение поля карточки как строка. Списки Synergy отдаёт для «мультивыбора»."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join(str(v).strip() for v in value if str(v).strip())
+    return str(value).strip()
+
+
+def contact_company(client: SynergyClient, contact_id: str) -> str:
+    """Название компании, привязанной к контакту. Пусто — компании нет."""
+    try:
+        rows = client.get(f"contacts/{contact_id}/companies", per_page=3).get("data") or []
+    except (httpx.HTTPError, ValueError):
+        return ""
+    names = []
+    for row in rows:
+        attrs = row.get("attributes") or {}
+        name = attrs.get("as-string") or attrs.get("name")
+        if name:
+            names.append(str(name).strip())
+    return ", ".join(names)
+
+
+def orders_after_call(
+    client: SynergyClient, contact_id: str, after_iso: str,
+    window_hours: int, stages: dict[str, tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Заявки, заведённые по контакту вскоре после звонка.
+
+    Связи `responsible` и `stage` в списке приходят пустыми — их надо просить
+    через `include`, тогда сами объекты лежат в разделе `included`.
+    """
+    try:
+        payload = client.get(f"contacts/{contact_id}/orders",
+                             include="responsible,stage", sort="-created-at", per_page=50)
+    except (httpx.HTTPError, ValueError):
+        return []
+    index = {(row["type"], str(row["id"])): row for row in payload.get("included") or []}
+
+    try:
+        call_time = datetime.fromisoformat(after_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return []
+    limit = call_time + timedelta(hours=window_hours)
+
+    out: list[dict[str, Any]] = []
+    for row in payload.get("data") or []:
+        attrs = row.get("attributes") or {}
+        created = attrs.get("created-at")
+        if not created:
+            continue
+        try:
+            made = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if not (call_time <= made <= limit):
+            continue
+
+        rels = row.get("relationships") or {}
+
+        def linked(rel_name: str) -> dict | None:
+            ref = (rels.get(rel_name) or {}).get("data")
+            if not ref:
+                return None
+            return index.get((ref["type"], str(ref["id"])))
+
+        user = linked("responsible")
+        responsible = ""
+        if user:
+            ua = user.get("attributes") or {}
+            responsible = str(ua.get("as-string")
+                              or " ".join(filter(None, [ua.get("last-name"), ua.get("first-name")]))).strip()
+
+        stage_ref = ((rels.get("stage") or {}).get("data") or {})
+        stage_name, stage_kind = stages.get(str(stage_ref.get("id") or ""), ("", ""))
+
+        number = attrs.get("number")
+        title = str(attrs.get("name") or "").strip()
+        out.append({
+            "order_id": str(row["id"]),
+            "name": f"№{number} {title}".strip() if number else title,
+            "created_at": str(created),
+            "responsible": responsible,
+            "stage_name": stage_name,
+            "stage_kind": stage_kind,
+            "amount": float(attrs.get("amount") or 0),
+        })
+    return out
 
 
 def surname_of(full_name: str) -> str:
@@ -324,6 +434,7 @@ def has_task_after_call(client: SynergyClient, contact_id: str, after_iso: str, 
 
 def check_pending_cards(
     conn: sqlite3.Connection, client: SynergyClient, settings: Settings, limit: int,
+    refresh: bool = False,
 ) -> int:
     """Проверить карточки по любым непроверенным звонкам, от свежих к старым.
 
@@ -331,11 +442,14 @@ def check_pending_cards(
     а карточек там девять сотен, и проверка каждой — шесть обращений к Synergy.
     Таймер берёт порцию за раз и постепенно догоняет.
     """
+    condition = "c.call_uid IS NULL"
+    if refresh:
+        condition = "(c.call_uid IS NULL OR (c.contact_found = 1 AND c.contact_name IS NULL))"
     rows = conn.execute(
-        """
+        f"""
         SELECT k.uid, k.client_phone, k.started_at, k.local_date FROM calls k
         LEFT JOIN card_checks c ON c.call_uid = k.uid
-        WHERE k.direction = 'out' AND k.duration_sec >= ? AND c.call_uid IS NULL
+        WHERE k.direction = 'out' AND k.duration_sec >= ? AND {condition}
         ORDER BY k.started_at DESC
         LIMIT ?
         """,
@@ -348,7 +462,7 @@ def check_pending_cards(
         by_day[row["local_date"]] = by_day.get(row["local_date"], 0) + 1
     done = 0
     for day, _count in by_day.items():
-        done += check_cards(conn, client, settings, day, limit=limit - done)
+        done += check_cards(conn, client, settings, day, limit=limit - done, refresh=refresh)
         if done >= limit:
             break
     logger.info("догнано карточек: %s", done)
@@ -356,15 +470,24 @@ def check_pending_cards(
 
 
 def check_cards(
-    conn: sqlite3.Connection, client: SynergyClient, settings: Settings, day: str, limit: int = 0,
+    conn: sqlite3.Connection, client: SynergyClient, settings: Settings, day: str,
+    limit: int = 0, refresh: bool = False,
 ) -> int:
-    """Проверить карточки клиентов по состоявшимся звонкам за день."""
+    """Проверить карточки клиентов по состоявшимся звонкам за день.
+
+    Обычно берём только непроверённые звонки. С `refresh` захватываем и те,
+    что проверялись до появления развёрнутого отчёта: у них в базе есть
+    галочки, но нет ни имени клиента, ни компании, ни заявок.
+    """
+    condition = "c.call_uid IS NULL"
+    if refresh:
+        condition = "(c.call_uid IS NULL OR (c.contact_found = 1 AND c.contact_name IS NULL))"
     rows = conn.execute(
-        """
+        f"""
         SELECT k.uid, k.client_phone, k.started_at FROM calls k
         LEFT JOIN card_checks c ON c.call_uid = k.uid
         WHERE k.local_date = ? AND k.direction = 'out'
-          AND k.duration_sec >= ? AND c.call_uid IS NULL
+          AND k.duration_sec >= ? AND {condition}
         ORDER BY k.started_at
         """,
         (day, settings.talk_threshold_sec),
@@ -372,6 +495,7 @@ def check_cards(
     if limit:
         rows = rows[:limit]
 
+    stages = load_stages(client)
     now = datetime.now(timezone.utc).isoformat()
     done = 0
     for row in rows:
@@ -380,13 +504,15 @@ def check_cards(
             save_card_check(
                 conn, call_uid=row["uid"], contact_id=None, contact_found=0,
                 need_filled=None, objects_filled=None, inn_filled=None, task_created=None,
-                orders_count=None, deals_count=None, checked_at=now, is_demo=0,
+                orders_count=None, deals_count=None, contact_name=None,
+                company_name=None, need_value=None, checked_at=now, is_demo=0,
             )
             done += 1
             continue
 
         contact_id = contact["id"]
-        customs = (contact.get("attributes") or {}).get("customs") or {}
+        attrs = contact.get("attributes") or {}
+        customs = attrs.get("customs") or {}
 
         def filled(field: str | None) -> int:
             if not field:
@@ -409,9 +535,18 @@ def check_cards(
                 client, contact_id, row["started_at"], settings.card_window_min)),
             orders_count=client.count(f"contacts/{contact_id}/orders"),
             deals_count=client.count(f"contacts/{contact_id}/deals"),
+            # Пустая строка, а не NULL: NULL здесь означает «ещё не проверяли»,
+            # и по нему отбираются строки на перепроверку. Клиент без имени
+            # или без компании — это проверенный факт, а не пробел.
+            contact_name=str(attrs.get("as-string") or "").strip(),
+            company_name=contact_company(client, contact_id),
+            need_value=text_of(customs.get(settings.field_need)),
             checked_at=now,
             is_demo=0,
         )
+        for order in orders_after_call(client, contact_id, row["started_at"],
+                                       settings.order_window_hours, stages):
+            save_call_order(conn, call_uid=row["uid"], is_demo=0, **order)
         done += 1
     conn.commit()
     logger.info("карточек проверено за %s: %s", day, done)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,8 @@ from app.stats import (
     local_now,
     managers,
     period_summary,
+    report_rows,
+    report_totals,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,6 +135,34 @@ async def manager_day(request: Request, vats_login: str, day: str | None = None)
         "threshold": settings.talk_threshold_sec,
     })
     return TEMPLATES.TemplateResponse("manager.html", ctx)
+
+
+@app.get("/report", response_class=HTMLResponse)
+async def report(
+    request: Request, day: str | None = None, days: int = 1, manager: str | None = None,
+) -> Any:
+    """Развёрнутая таблица: что произошло по каждому разговору."""
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    until = day or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    days = max(1, min(days, 60))
+    since = (date.fromisoformat(until) - timedelta(days=days - 1)).isoformat()
+
+    rows = report_rows(conn, since, until, manager, settings.talk_threshold_sec)
+    ctx = _base_context(request)
+    ctx.update({
+        "day": until,
+        "since": since,
+        "days": days,
+        "manager_login": manager,
+        "manager": next((m for m in managers(conn) if m["vats_login"] == manager), None),
+        "all_managers": managers(conn),
+        "rows": rows,
+        "totals": report_totals(rows),
+        "order_window_hours": settings.order_window_hours,
+        "threshold": settings.talk_threshold_sec,
+    })
+    return TEMPLATES.TemplateResponse("report.html", ctx)
 
 
 @app.get("/call/{uid}", response_class=HTMLResponse)

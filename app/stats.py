@@ -141,6 +141,87 @@ def calls_of_day(
     return [dict(r) for r in rows]
 
 
+def report_rows(
+    conn: sqlite3.Connection, since: str, until: str,
+    vats_login: str | None = None, threshold_sec: int = 15,
+) -> list[dict[str, Any]]:
+    """Развёрнутая строка на каждый состоявшийся разговор.
+
+    Дашборд отвечает «сколько и насколько дисциплинированно», а это — «что
+    именно произошло»: с кем говорили, что записали в карточку, завели ли
+    заявку, на кого её назначили и чем она кончилась.
+
+    Недозвоны сюда не берём: рассказывать о них нечего, а таблицу они топят.
+    """
+    where = ["k.local_date BETWEEN ? AND ?", "k.direction = 'out'", "k.duration_sec >= ?"]
+    params: list[Any] = [since, until, threshold_sec]
+    if vats_login:
+        where.append("k.vats_login = ?")
+        params.append(vats_login)
+
+    rows = conn.execute(
+        f"""
+        SELECT k.uid, k.started_at, k.local_date, k.local_hour, k.client_phone,
+               k.duration_sec, k.vats_login, m.display_name,
+               c.contact_id, c.contact_found, c.contact_name, c.company_name,
+               c.need_value, c.need_filled, c.objects_filled, c.inn_filled,
+               c.task_created, c.orders_count, c.deals_count, c.checked_at
+        FROM calls k
+        LEFT JOIN managers m ON m.vats_login = k.vats_login
+        LEFT JOIN card_checks c ON c.call_uid = k.uid
+        WHERE {' AND '.join(where)}
+        ORDER BY k.started_at DESC
+        """,
+        params,
+    ).fetchall()
+    if not rows:
+        return []
+
+    uids = [r["uid"] for r in rows]
+    orders: dict[str, list[dict[str, Any]]] = {}
+    # Заявок на звонок обычно одна-две, поэтому забираем их одним запросом,
+    # а не по строке: так таблица за две недели не превращается в тысячу чтений.
+    marks = ",".join("?" * len(uids))
+    for row in conn.execute(
+        f"SELECT * FROM call_orders WHERE call_uid IN ({marks}) ORDER BY created_at",
+        uids,
+    ):
+        orders.setdefault(row["call_uid"], []).append(dict(row))
+
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["orders"] = orders.get(row["uid"], [])
+        item["orders_made"] = len(item["orders"])
+        item["responsibles"] = sorted({o["responsible"] for o in item["orders"] if o["responsible"]})
+        item["checked"] = row["checked_at"] is not None
+        # Звонки, проверенные до появления отчёта, знают галочки, но не
+        # подробности. Пустая колонка у них означает «ещё не дособрано», а не
+        # «менеджер не внёс» — путать эти два состояния нельзя.
+        item["detailed"] = row["contact_name"] is not None
+        out.append(item)
+    return out
+
+
+def report_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Итоги под таблицей — по тем же строкам, что показаны."""
+    orders = [o for r in rows for o in r["orders"]]
+    return {
+        "calls": len(rows),
+        "contacts_found": sum(1 for r in rows if r["contact_found"]),
+        "needs": sum(1 for r in rows if r["need_filled"]),
+        "companies": sum(1 for r in rows if r["company_name"]),
+        "no_details": sum(1 for r in rows if r["checked"] and not r["detailed"]),
+        "inn": sum(1 for r in rows if r["inn_filled"]),
+        "tasks": sum(1 for r in rows if r["task_created"]),
+        "orders": len(orders),
+        "won": sum(1 for o in orders if o["stage_kind"] == "won"),
+        "lost": sum(1 for o in orders if o["stage_kind"] == "lost"),
+        "in_work": sum(1 for o in orders if o["stage_kind"] not in ("won", "lost")),
+        "unchecked": sum(1 for r in rows if not r["checked"]),
+    }
+
+
 def call_detail(conn: sqlite3.Connection, uid: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
