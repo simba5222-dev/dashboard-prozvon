@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}{{ manager.display_name if manager else vats_login }} — дашборд{% endblock %}
+
+{% block content %}
+<div class="top">
+  <h1>{{ manager.display_name if manager else vats_login }}</h1>
+  <span class="date">{{ day }}</span>
+</div>
+<p class="crumbs"><a href="/?day={{ day }}">← ко всем менеджерам</a> ·
+  логин в ВАТС <code>{{ vats_login }}</code></p>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Звонки за день</h2>
+    <span class="sub">{{ calls|length }} всего · серым отмечены короче {{ threshold }} с</span>
+  </div>
+  <div class="card-body scroll">
+    {% if not calls %}
+    <p class="dim" style="margin:0">За этот день звонков нет.</p>
+    {% else %}
+    <table>
+      <tr>
+        <th>Время</th><th>Клиент</th><th class="num">Длит.</th>
+        {% for column, label in card_fields %}<th class="num" title="{{ label }}">{{ label.split()[0] }}</th>{% endfor %}
+        <th></th>
+      </tr>
+      {% for c in calls %}
+      {% set short = c.duration_sec < threshold %}
+      <tr {% if short %}class="dim"{% endif %}>
+        <td class="mono">{{ c.started_at[11:16] }}</td>
+        <td class="mono">{{ c.client_phone }}</td>
+        <td class="num">{{ c.duration_sec }} с</td>
+        {% for column, label in card_fields %}
+          <td class="num">
+            {% if short %}<span class="dim">—</span>
+            {% elif c[column] is none %}<span class="dim">?</span>
+            {% elif c[column] %}<span class="yes">✓</span>
+            {% else %}<span class="no">✗</span>{% endif %}
+          </td>
+        {% endfor %}
+        <td class="num">
+          {% if c.has_transcript %}<a href="/call/{{ c.uid }}">разбор</a>
+          {% elif not short %}<a href="/call/{{ c.uid }}" class="dim">открыть</a>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<p class="dim" style="font-size:13px">
+  Прочерк — звонок короче {{ threshold }} секунд, карточку по нему не проверяем.
+  Вопросительный знак — проверка ещё не выполнялась: Synergy не подключена.
+</p>
+{% endblock %}

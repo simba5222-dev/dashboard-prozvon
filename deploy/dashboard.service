@@ -1,0 +1,20 @@
+[Unit]
+Description=Дашборд прозвона: контроль менеджеров
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claude
+Group=claude
+WorkingDirectory=/home/claude/dashboard
+# .env подхватывается самим приложением (pydantic-settings, env_file=".env").
+# Запуск через python -m: обёртки в .venv/bin держат абсолютный путь внутри себя
+# и ломаются при переименовании каталога.
+ExecStart=/home/claude/dashboard/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8081 --workers 1
+Restart=always
+RestartSec=5
+UMask=0002
+
+[Install]
+WantedBy=multi-user.target

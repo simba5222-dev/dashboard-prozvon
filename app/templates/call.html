@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Звонок — дашборд прозвона{% endblock %}
+
+{% block content %}
+{% if not call %}
+<div class="top"><h1>Звонок не найден</h1></div>
+<p class="crumbs"><a href="/">← на дашборд</a></p>
+{% else %}
+<div class="top">
+  <h1>Звонок {{ call.client_phone }}</h1>
+  <span class="date">{{ call.started_at[:16]|replace("T", " ") }} UTC</span>
+</div>
+<p class="crumbs">
+  <a href="/manager/{{ call.vats_login }}?day={{ call.local_date }}">← {{ call.display_name or call.vats_login }}</a>
+  · длительность {{ call.duration_sec }} с · ожидание {{ call.wait_sec }} с
+</p>
+
+<div class="card">
+  <div class="card-head"><h2>Карточка в CRM</h2>
+    <span class="sub">{% if call.checked_at %}проверено{% else %}не проверялась{% endif %}</span></div>
+  <div class="card-body scroll">
+    <table>
+      {% for column, label in card_fields %}
+      <tr>
+        <td>{{ label }}</td>
+        <td class="num" style="width:60px">
+          {% if call[column] is none %}<span class="dim">не проверяли</span>
+          {% elif call[column] %}<span class="yes">✓</span>
+          {% else %}<span class="no">✗</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+
+{% if call.analysis %}
+<div class="card">
+  <div class="card-head"><h2>Разбор разговора</h2><span class="sub">по расшифровке</span></div>
+  <div class="card-body scroll">
+    <table>
+      {% for k, v in call.analysis.items() %}
+      <tr><td style="width:150px">{{ k }}</td>
+          <td>{% if v is iterable and v is not string %}{{ v|join(", ") }}{% else %}{{ v }}{% endif %}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% if call.transcript_text %}
+<div class="card">
+  <div class="card-head"><h2>Расшифровка</h2>
+    <span class="sub">оператор и клиент распознаны раздельно</span></div>
+  <div class="card-body">
+    <pre class="mono" style="white-space:pre-wrap;margin:0;line-height:1.7">{{ call.transcript_text }}</pre>
+  </div>
+</div>
+{% else %}
+<div class="card"><div class="card-body dim">
+  Расшифровки нет. Разбор разговоров {% if settings.transcribe_enabled %}включён, но этот звонок ещё не обработан{% else %}выключен: на четырёх ядрах он не помещается в сутки при плане 120 звонков{% endif %}.
+</div></div>
+{% endif %}
+{% endif %}
+{% endblock %}

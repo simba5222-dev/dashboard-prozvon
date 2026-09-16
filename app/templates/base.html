@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{% block title %}Дашборд прозвона{% endblock %}</title>
+<style>
+:root{
+  --bg:#eaeeef; --surface:#fff; --surface-2:#f4f7f8; --sunken:#e3e9ea;
+  --ink:#14202a; --ink-2:#485965; --ink-3:#7b8d99;
+  --line:#ccd6d9; --line-2:#b4c1c6;
+  --accent:#0b5e6e; --accent-soft:#dcedf0;
+  --ok:#3d6a41; --ok-soft:#e4efe3;
+  --warn:#8f4d0e; --warn-soft:#faecd9;
+  --stop:#8f2e2d; --stop-soft:#f8e3e1;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#101820; --surface:#18232b; --surface-2:#141d24; --sunken:#0d151b;
+    --ink:#e6eef1; --ink-2:#a8b9c3; --ink-3:#788a95;
+    --line:#293640; --line-2:#3a4b55;
+    --accent:#5ab6c6; --accent-soft:#112f37;
+    --ok:#8bc28e; --ok-soft:#1a2a1d;
+    --warn:#dfa35b; --warn-soft:#31240f;
+    --stop:#e78a80; --stop-soft:#361d1b;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:1060px;margin:0 auto;padding-inline:18px;padding-block:28px 60px}
+a{color:var(--accent)}
+.mono,code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+code{background:var(--sunken);padding:1px 5px;border-radius:2px;color:var(--ink-2)}
+
+.top{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 16px;margin-bottom:6px}
+h1{font-size:clamp(24px,5vw,34px);line-height:1.05;letter-spacing:-.02em;margin:0}
+.date{font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--ink-3);margin-left:auto}
+.crumbs{font-size:13px;color:var(--ink-3);margin:0 0 22px}
+.crumbs a{text-decoration:none}
+
+.banner{border:1px solid var(--warn);background:var(--warn-soft);color:var(--warn);
+  border-radius:3px;padding:12px 15px;font-size:13.5px;margin-bottom:22px}
+.banner b{display:block;margin-bottom:3px}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:3px;
+  margin-bottom:18px;overflow:hidden}
+.card-head{padding:14px 17px;background:var(--surface-2);border-bottom:1px solid var(--line);
+  display:flex;flex-wrap:wrap;gap:8px 14px;align-items:baseline}
+.card-head h2{margin:0;font-size:19px;line-height:1.1;flex:1 1 200px}
+.card-head .sub{font-size:12.5px;color:var(--ink-3)}
+.card-body{padding:17px}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;
+  background:var(--line)}
+.tile{background:var(--surface);padding:15px 17px}
+.tile .n{font-size:27px;line-height:1.05;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.tile .l{font-size:12px;color:var(--ink-3);margin-top:3px}
+.tile.good .n{color:var(--ok)} .tile.bad .n{color:var(--stop)} .tile.mid .n{color:var(--warn)}
+
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:9px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+.bar>i.over{background:var(--ok)}
+.bar>i.under{background:var(--warn)}
+
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:600;padding:0 10px 8px 0;border-bottom:1px solid var(--line)}
+td{padding:9px 10px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0}
+.scroll{overflow-x:auto}
+
+.yes{color:var(--ok);font-weight:700}
+.no{color:var(--stop);font-weight:700}
+.dim{color:var(--ink-3)}
+
+.hours{display:flex;align-items:flex-end;gap:3px;height:72px;margin-top:6px}
+.hours .h{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%}
+.hours .h i{display:block;background:var(--accent);border-radius:1px 1px 0 0;min-height:2px}
+.hours .h span{font-size:10px;color:var(--ink-3);text-align:center;margin-top:4px;
+  font-family:ui-monospace,Menlo,monospace}
+
+.pill{font-size:11px;letter-spacing:.07em;text-transform:uppercase;font-weight:700;
+  padding:3px 8px;border-radius:2px;white-space:nowrap;
+  font-family:ui-monospace,Menlo,monospace}
+.pill.ok{background:var(--ok-soft);color:var(--ok)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.stop{background:var(--stop-soft);color:var(--stop)}
+.pill.demo{background:var(--accent-soft);color:var(--accent)}
+
+.foot{margin-top:34px;font-size:12.5px;color:var(--ink-3);border-top:1px solid var(--line);
+  padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+{% if demo %}
+<div class="banner">
+  <b>Показательные данные</b>
+  Настоящих источников пока нет: ВАТС не пускает по IP, токен Synergy не задан.
+  Числа на экране сгенерированы, чтобы было видно, как читается дашборд.
+  Выключается настройкой <code>DASH_DEMO_MODE=false</code>.
+</div>
+{% endif %}
+
+{% block content %}{% endblock %}
+
+<div class="foot">
+  Дашборд прозвона {{ version }} ·
+  <a href="/">сегодня</a> ·
+  источники: ВАТС {% if settings.vats_configured %}настроена{% else %}не настроена{% endif %},
+  Synergy {% if settings.synergy_configured %}настроена{% else %}не настроена{% endif %},
+  разбор разговоров {% if settings.transcribe_enabled %}включён{% else %}выключен{% endif %}
+</div>
+
+</div>
+</body>
+</html>
