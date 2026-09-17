@@ -351,6 +351,56 @@ def screen_call(
     return out
 
 
+TRANSPORT_PROMPT = """Выбери тип техники из списка компании — тот, о котором шла
+речь в разговоре. Если речь о нескольких, бери главный; если про технику речи не
+было или ни один не подходит, верни пустую строку.
+
+Список (выбирать строго из него, слово в слово):
+{types}
+
+Что уже известно о технике из разбора: {equipment}
+
+Разговор:
+{transcript}
+
+Верни JSON: {{"transport_type": "<строка из списка или пусто>", "sure": 0-100}}"""
+
+
+def pick_transport_type(
+    transcript: str, equipment: str, allowed: list[str], *, api_key: str, model: str,
+    timeout_sec: float = 60.0,
+) -> str:
+    """Тип техники из справочника CRM по разговору.
+
+    Разбор возвращает тип не всегда: он выбирает из того же списка, но при
+    обрывочной записи чаще отвечает «не понял». Здесь спрашиваем отдельно и
+    только про технику — так поле заполняется у большинства заявок, а
+    руководителю не приходится открывать каждую, чтобы понять, о чём она.
+    """
+    from openai import OpenAI
+
+    if not transcript.strip() or not allowed:
+        return ""
+    client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": TRANSPORT_PROMPT.format(
+            types="\n".join(f"- {name}" for name in allowed),
+            equipment=equipment or "не определена",
+            transcript=transcript[:6000],
+        )}],
+        temperature=0.0,
+        response_format={"type": "json_object"},
+    )
+    try:
+        data = json.loads(response.choices[0].message.content or "{}")
+    except ValueError:
+        return ""
+    picked = str(data.get("transport_type") or "").strip()
+    # Придуманное название хуже пустого поля: по нему потом ищут и фильтруют.
+    return picked if picked in allowed else ""
+
+
 def card_summary(call: dict[str, Any]) -> str:
     """Что менеджер внёс в CRM — в виде, понятном модели."""
     lines = [
