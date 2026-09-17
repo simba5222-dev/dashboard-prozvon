@@ -413,6 +413,89 @@ def find_contact(client: SynergyClient, phone: str) -> dict[str, Any] | None:
     return None
 
 
+def contact_phones(client: SynergyClient, contact_id: str) -> set[str]:
+    """Все телефоны контакта — по ним ищем звонки любых менеджеров."""
+    try:
+        data = client.get(f"contacts/{contact_id}").get("data") or {}
+    except (httpx.HTTPError, ValueError):
+        return set()
+    attrs = data.get("attributes") or {}
+    out = set()
+    for field in CONTACT_PHONE_FIELDS:
+        value = attrs.get(field)
+        for item in value if isinstance(value, list) else [value]:
+            digits = re.sub(r"\D", "", str(item or ""))
+            if len(digits) >= 10:
+                out.add(digits[-10:])
+    return out
+
+
+def collect_contact_calls(
+    conn: sqlite3.Connection, client: SynergyClient, settings: Settings,
+    phones: set[str], since: str, until: str, max_pages: int = 60,
+) -> int:
+    """Сохранить звонки с этим клиентом за период — чьи угодно, в обе стороны.
+
+    Нужно для разбора заявки: её ведёт не тот, кто звонил в прозвоне, а тот,
+    кому её передали, и его звонки в дашборде не собираются. Отбирать звонки
+    по контакту Synergy не умеет (`filter[contact-id]` отвечает 400), поэтому
+    листаем период и сверяем телефоны на своей стороне.
+
+    Такие звонки помечаются `in_group = 0` и в счётчики прозвона не попадают.
+    """
+    if not phones:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    known = {row["vats_login"] for row in conn.execute("SELECT vats_login FROM managers")}
+    saved = 0
+    for page in range(1, max_pages + 1):
+        try:
+            rows = client.get("telephony-calls", per_page=100, page=page,
+                              sort="-created-at").get("data") or []
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("звонки клиента: страница %s не прочиталась: %s", page, exc)
+            break
+        if not rows:
+            break
+        too_old = False
+        for item in rows:
+            attrs = item["attributes"]
+            created = (attrs.get("created-at") or "")[:10]
+            if created and created < since:
+                too_old = True
+                continue
+            if created > until:
+                continue
+            incoming = attrs.get("direction") != "outgoing"
+            client_phone = str(
+                (attrs.get("src-phone-number") if incoming else attrs.get("dst-phone-number")) or ""
+            )
+            digits = re.sub(r"\D", "", client_phone)
+            if len(digits) < 10 or digits[-10:] not in phones:
+                continue
+            author, _ = parse_author((attrs.get("customs") or {}).get(CALL_AUTHOR_FIELD))
+            surname = surname_of(author)
+            started = attrs.get("started-at") or attrs.get("created-at") or ""
+            local_date, local_hour = local_parts(started, settings.timezone_offset_hours)
+            if save_call(
+                conn, uid=str(item["id"]), vats_login=surname or "неизвестно",
+                client_phone=client_phone,
+                direction="in" if incoming else "out",
+                status=str(attrs.get("status") or ""),
+                started_at=started, local_date=local_date, local_hour=local_hour,
+                wait_sec=int(float(attrs.get("wait") or 0)),
+                duration_sec=int(float(attrs.get("duration") or 0)),
+                record_url=attrs.get("recording") or None,
+                in_group=int(surname in known), is_demo=0, fetched_at=now,
+            ):
+                saved += 1
+        if too_old:
+            break
+    conn.commit()
+    logger.info("звонки клиента за %s…%s: новых %s", since, until, saved)
+    return saved
+
+
 def manager_user_ids(conn: sqlite3.Connection) -> list[str]:
     """Идентификаторы менеджеров в Synergy — по ним отбираются задачи."""
     return [

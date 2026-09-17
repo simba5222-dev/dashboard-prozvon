@@ -113,8 +113,9 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0
 
 <div class="foot">
   Дашборд прозвона {{ version }} ·
-  <a href="/">сегодня</a> ·
-  <a href="/report">развёрнутый отчёт</a> ·
+  <a href="{{ base }}/">сегодня</a> ·
+  <a href="{{ base }}/report">развёрнутый отчёт</a> ·
+  <a href="{{ base }}/orders">заявки</a> ·
   источники: ВАТС {% if settings.vats_configured %}настроена{% else %}не настроена{% endif %},
   Synergy {% if settings.synergy_configured %}настроена{% else %}не настроена{% endif %},
   разбор разговоров {% if settings.transcribe_enabled %}включён{% else %}выключен{% endif %}

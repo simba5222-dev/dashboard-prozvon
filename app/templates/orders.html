@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Заявки — дашборд прозвона{% endblock %}
+
+{% block extra_style %}
+<style>
+.wrap{max-width:1400px}
+.ord-t{font-size:13px}
+.ord-t td{padding-right:14px;vertical-align:top}
+.ord-t th{padding-right:14px}
+.st{font-size:11px;letter-spacing:.05em;text-transform:uppercase;
+  font-family:ui-monospace,Menlo,monospace;padding:1px 7px;border-radius:2px;
+  background:var(--sunken);color:var(--ink-3);white-space:nowrap}
+.st.won{background:var(--ok-soft);color:var(--ok)}
+.st.lost{background:var(--stop-soft);color:var(--stop)}
+.st.opened{background:var(--accent-soft);color:var(--accent)}
+.why{color:var(--ink-2);line-height:1.45;min-width:320px}
+.kinds a{margin-right:12px;color:var(--ink-3)}
+.kinds a.on{color:var(--accent);font-weight:600}
+.filt-line{display:flex;gap:10px;align-items:center;font-size:13px}
+.filt-line input{font:inherit;font-size:12px;padding:3px 5px;border:1px solid var(--line-2);
+  border-radius:2px;background:var(--surface);color:var(--ink)}
+.filt-line button{font:inherit;font-size:12px;padding:4px 12px;border:1px solid var(--accent);
+  background:var(--accent);color:#fff;border-radius:2px;cursor:pointer}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="top">
+  <h1>Заявки и чем они кончились</h1>
+  <span class="date">{{ since }} — {{ until }}</span>
+</div>
+<p class="crumbs">
+  <a href="{{ base }}/">← дашборд</a> ·
+  заявки, заведённые по звонкам прозвона · ведёт их уже другой человек,
+  поэтому «почему не дошла до сделки» считается по его разговорам с клиентом
+</p>
+
+<div class="card">
+  <div class="tiles">
+    <div class="tile"><div class="n">{{ orders|length }}</div><div class="l">заявок за период</div></div>
+    <div class="tile {% if won %}good{% endif %}"><div class="n">{{ won }}</div><div class="l">дошло до сделки</div></div>
+    <div class="tile {% if lost %}bad{% endif %}"><div class="n">{{ lost }}</div><div class="l">провалено</div></div>
+    <div class="tile"><div class="n">{{ analyzed }}</div><div class="l">разобрано по звонкам</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Заявки</h2>
+    <span class="kinds">
+      <a class="{{ 'on' if not kind }}" href="{{ base }}/orders?since={{ since }}&until={{ until }}">все</a>
+      <a class="{{ 'on' if kind == 'lost' }}" href="{{ base }}/orders?since={{ since }}&until={{ until }}&kind=lost">провалены</a>
+      <a class="{{ 'on' if kind == 'open' }}" href="{{ base }}/orders?since={{ since }}&until={{ until }}&kind=open">в работе</a>
+      <a class="{{ 'on' if kind == 'won' }}" href="{{ base }}/orders?since={{ since }}&until={{ until }}&kind=won">сделки</a>
+    </span>
+  </div>
+  <div class="card-body scroll">
+    <form class="filt-line" method="get" action="{{ base }}/orders" style="margin-bottom:12px">
+      <input type="hidden" name="kind" value="{{ kind }}">
+      с <input type="date" name="since" value="{{ since }}">
+      по <input type="date" name="until" value="{{ until }}">
+      <button type="submit">Показать</button>
+    </form>
+    {% if not orders %}
+    <p class="dim" style="margin:0">За этот период заявок нет.</p>
+    {% else %}
+    <table class="ord-t">
+      <tr>
+        <th>Заведена</th>
+        <th>Заявка</th>
+        <th>Клиент</th>
+        <th>Ответственный</th>
+        <th>Стадия</th>
+        <th class="why">Почему не дошла до сделки</th>
+      </tr>
+      {% for o in orders %}
+      <tr>
+        <td class="mono" style="white-space:nowrap">{{ (o.created_at or "")[:10] }}</td>
+        <td><a href="{{ base }}/order/{{ o.order_id }}">{{ o.name or "без названия" }}</a></td>
+        <td>{{ o.contact_name or "—" }}{% if o.company_name %}<br><span class="dim">{{ o.company_name }}</span>{% endif %}</td>
+        <td>{{ o.responsible or "не назначен" }}</td>
+        <td><span class="st {{ o.stage_kind }}">{{ o.stage_name or "без стадии" }}</span></td>
+        <td class="why">
+          {% if o.verdict and o.verdict.outcome %}{{ o.verdict.outcome }}
+            <a href="{{ base }}/order/{{ o.order_id }}" class="dim">разбор →</a>
+          {% elif o.stage_kind == "won" %}<span class="dim">дошла</span>
+          {% else %}<span class="dim">не разобрана</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

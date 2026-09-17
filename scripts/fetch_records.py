@@ -80,8 +80,8 @@ def main() -> int:
     rows = conn.execute(
         """
         SELECT uid, record_url, duration_sec, local_date FROM calls
-        WHERE local_date BETWEEN ? AND ? AND direction = 'out'
-          AND duration_sec >= ? AND record_url IS NOT NULL AND record_url <> ''
+        WHERE local_date BETWEEN ? AND ? AND duration_sec >= ?
+          AND record_url IS NOT NULL AND record_url <> ''
         ORDER BY started_at DESC
         """,
         (since, until, min_sec),

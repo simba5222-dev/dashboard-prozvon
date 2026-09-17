@@ -37,72 +37,47 @@
 .miss{display:block;line-height:1.35;color:var(--stop);margin-bottom:4px}
 .miss b{font-weight:600}
 .sum{display:block;color:var(--ink-2);line-height:1.4}
-.filters{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:flex-end;font-size:13px}
-.filters label{display:flex;flex-direction:column;gap:3px;color:var(--ink-3);font-size:11.5px;
-  letter-spacing:.04em;text-transform:uppercase}
-.filters select,.filters input{font:inherit;font-size:13px;text-transform:none;letter-spacing:0;
-  padding:5px 8px;border:1px solid var(--line-2);border-radius:2px;
-  background:var(--surface);color:var(--ink)}
-.filters .on select{border-color:var(--accent);color:var(--accent)}
-.filters button{font:inherit;padding:6px 14px;border:1px solid var(--accent);
-  background:var(--accent);color:#fff;border-radius:2px;cursor:pointer}
-.filters a.clear{padding:6px 2px;color:var(--ink-3)}
+.rep tr.filt td{padding:4px 14px 10px 0;border-bottom:1px solid var(--line-2);vertical-align:middle}
+.rep tr.filt:hover td{background:none}
+.rep tr.filt input,.rep tr.filt select{font:inherit;font-size:12px;padding:3px 5px;
+  border:1px solid var(--line-2);border-radius:2px;background:var(--surface);color:var(--ink)}
+.rep tr.filt input[type=date]{width:118px}
+.tgs{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--ink-3);
+  letter-spacing:.03em;white-space:nowrap}
+/* Значок отбора: точка — показаны все, галочка — только «есть», крест — только «нет». */
+.tog{display:inline-block;min-width:17px;text-align:center;padding:1px 0;border-radius:2px;
+  background:var(--sunken);color:var(--ink-3);text-decoration:none;font-size:11px;margin-right:6px}
+.tog.yes{background:var(--ok-soft);color:var(--ok);font-weight:700}
+.tog.no{background:var(--stop-soft);color:var(--stop);font-weight:700}
+.rep tr.act td{padding-bottom:12px}
+.rep tr.act button{font:inherit;font-size:12px;padding:4px 12px;border:1px solid var(--accent);
+  background:var(--accent);color:#fff;border-radius:2px;cursor:pointer;margin-right:10px}
+.rep tr.act a.clear{color:var(--ink-3);margin-right:12px}
 </style>
 {% endblock %}
 
-{% macro flag(name, title) %}
-<label class="{% if filters[name] %}on{% endif %}">{{ title }}
-  <select name="{{ name }}">
-    <option value="">всё</option>
-    <option value="1" {% if filters[name] == "1" %}selected{% endif %}>есть</option>
-    <option value="0" {% if filters[name] == "0" %}selected{% endif %}>нет</option>
-  </select>
-</label>
+{# Переключатель в шапке колонки: всё → есть → нет → всё. Ссылкой, а не формой:
+   занимает один значок и не требует кнопки «показать». #}
+{% macro tog(name, title) %}
+{% set value = filters[name] %}
+{% set nxt = "1" if not value else ("0" if value == "1" else "") %}
+<a class="tog {{ 'yes' if value == '1' else 'no' if value == '0' else '' }}"
+   href="{{ link(**{name: nxt}) }}"
+   title="{{ title }}: {% if value == '1' %}только где есть{% elif value == '0' %}только где нет{% else %}показаны все{% endif %} (нажмите, чтобы переключить)"
+   >{% if value == "1" %}✓{% elif value == "0" %}✗{% else %}·{% endif %}</a>
 {% endmacro %}
 
 {% block content %}
 <div class="top">
   <h1>Что вышло из разговоров</h1>
-  <span class="date">{% if days > 1 %}{{ since }} — {{ day }}{% else %}{{ day }}{% endif %}</span>
+  <span class="date">{{ since }} — {{ until }}</span>
 </div>
 <p class="crumbs">
-  <a href="/?day={{ day }}">← дашборд</a> ·
+  <a href="{{ base }}/">← дашборд</a> ·
   строка на каждый разговор длиннее {{ threshold }} с ·
   задача считается поставленной по звонку, если создана в течение {{ card_window_min }} мин после него,
   заявка — в течение {{ order_window_hours }} ч
 </p>
-
-<div class="card">
-  <div class="card-body">
-    <form class="filters" method="get" action="/report">
-      <label>Менеджер
-        <select name="manager">
-          <option value="">все</option>
-          {% for m in all_managers %}
-          <option value="{{ m.vats_login }}" {% if m.vats_login == manager_login %}selected{% endif %}>{{ m.display_name }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>По дату <input type="date" name="day" value="{{ day }}"></label>
-      <label>Дней назад <input type="number" name="days" min="1" max="60" value="{{ days }}" style="width:70px"></label>
-      {{ flag("need", "Потребность") }}
-      {{ flag("objects", "Объекты") }}
-      {{ flag("inn", "ИНН") }}
-      {{ flag("task", "Задача") }}
-      {{ flag("company", "Компания") }}
-      {{ flag("orders", "Заявка") }}
-      {{ flag("contact", "Есть в CRM") }}
-      {{ flag("transcript", "Разбор") }}
-      {{ flag("missed", "Упущено") }}
-      <label>Дольше, с <input type="number" name="min_sec" min="0" max="3600" value="{{ filters.min_sec or '' }}" style="width:75px"></label>
-      <label>Поиск <input type="search" name="q" value="{{ filters.q }}" placeholder="имя, компания, телефон" style="width:190px"></label>
-      <button type="submit">Показать</button>
-      {% if filters_on %}
-      <a class="clear" href="/report?day={{ day }}&days={{ days }}{% if manager_login %}&manager={{ manager_login }}{% endif %}">сбросить</a>
-      {% endif %}
-    </form>
-  </div>
-</div>
 
 <div class="card">
   <div class="tiles">
@@ -139,6 +114,7 @@
       {% if filters_on %}Под фильтры ничего не подошло.{% else %}За этот период разговоров нет.{% endif %}
     </p>
     {% else %}
+    <form method="get" action="{{ base }}/report">
     <table class="rep">
       <tr>
         <th>Когда</th>
@@ -153,16 +129,64 @@
         <th class="deal">Заявки: кто ответственный и чем кончилось</th>
         <th class="talk">Разбор разговора</th>
       </tr>
+      <tr class="filt">
+        <td>
+          <input type="date" name="since" value="{{ since }}" title="с какой даты">
+          <input type="date" name="until" value="{{ until }}" title="по какую дату">
+        </td>
+        {% if not manager_login %}
+        <td>
+          <select name="manager" onchange="this.form.submit()">
+            <option value="">все</option>
+            {% for m in all_managers %}
+            <option value="{{ m.vats_login }}" {% if m.vats_login == manager_login %}selected{% endif %}>{{ m.display_name }}</option>
+            {% endfor %}
+          </select>
+        </td>
+        {% endif %}
+        <td>
+          <input type="search" name="q" value="{{ filters.q }}" placeholder="имя, фирма, телефон">
+          <span class="tgs">есть в CRM {{ tog("contact", "клиент заведён в CRM") }}</span>
+        </td>
+        <td class="num"><input type="number" name="min_sec" min="0" max="3600"
+          value="{{ filters.min_sec or '' }}" placeholder="от, с" style="width:64px"></td>
+        <td>
+          <span class="tgs">
+            П{{ tog("need", "потребность записана") }}
+            О{{ tog("objects", "объекты заполнены") }}
+            И{{ tog("inn", "ИНН заполнен") }}
+            З{{ tog("task", "задача поставлена") }}
+          </span>
+        </td>
+        <td></td>
+        <td><span class="tgs">компания {{ tog("company", "компания у клиента") }}</span></td>
+        <td><span class="tgs">задачи {{ tog("task", "задача поставлена") }}</span></td>
+        <td class="num">{{ tog("orders", "заявка заведена по звонку") }}</td>
+        <td></td>
+        <td>
+          <span class="tgs">
+            разобран {{ tog("transcript", "разговор распознан и разобран") }}
+            упущено {{ tog("missed", "разбор нашёл несказанное в карточке") }}
+          </span>
+        </td>
+      </tr>
+      <tr class="filt act">
+        <td colspan="11">
+          <button type="submit">Показать</button>
+          {% if filters_on %}<a class="clear" href="{{ link(need='', objects='', inn='', task='', contact='', company='', orders='', transcript='', missed='', q='', min_sec=0) }}">сбросить отборы</a>{% endif %}
+          <span class="dim">даты, поиск и длительность применяются кнопкой, значки — сразу</span>
+        </td>
+      </tr>
       {% for r in rows %}
       <tr>
         <td class="mono" style="white-space:nowrap">
-          {% if days > 1 %}{{ r.local_date[5:] }} {% endif %}{{ r.started_at[11:16] }}
+          {% if since != until %}{{ r.local_date[5:] }} {% endif %}{{ r.started_at[11:16] }}
         </td>
         {% if not manager_login %}
-        <td><a href="/report?manager={{ r.vats_login }}&day={{ day }}&days={{ days }}">{{ r.display_name or r.vats_login }}</a></td>
+        <td><a href="{{ link(manager=r.vats_login) }}">{{ r.display_name or r.vats_login }}</a></td>
         {% endif %}
         <td class="who">
-          <a href="/call/{{ r.uid }}">
+          <a href="{{ base }}/call/{{ r.uid }}">
             {%- if not r.detailed %}карточка{% else %}{{ r.contact_name or "без имени" }}{% endif -%}
           </a><br>
           <span class="mono dim">{{ r.client_phone }}</span>
@@ -209,7 +233,7 @@
         <td class="deal">
           {% for o in r.orders %}
           <span class="ord">
-            <b>{{ o.name }}</b> —
+            <b><a href="{{ base }}/order/{{ o.order_id }}">{{ o.name }}</a></b> —
             {{ o.responsible or "без ответственного" }}
             <span class="st {{ o.stage_kind }}">{{ o.stage_name or "без стадии" }}</span>
           </span>
@@ -221,14 +245,15 @@
             <span class="miss"><b>{{ m.field }}:</b> {{ m.value }}</span>
             {% endfor %}
             {% if r.analysis.summary %}<span class="sum">{{ r.analysis.summary }}</span>{% endif %}
-            <a href="/call/{{ r.uid }}">разбор целиком →</a>
+            <a href="{{ base }}/call/{{ r.uid }}">разбор целиком →</a>
           {% elif r.transcript_text %}
-            <a href="/call/{{ r.uid }}">расшифровка есть, разбора нет →</a>
+            <a href="{{ base }}/call/{{ r.uid }}">расшифровка есть, разбора нет →</a>
           {% else %}<span class="dim">запись не разобрана</span>{% endif %}
         </td>
       </tr>
       {% endfor %}
     </table>
+    </form>
     {% endif %}
   </div>
 </div>

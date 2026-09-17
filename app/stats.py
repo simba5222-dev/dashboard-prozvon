@@ -175,7 +175,10 @@ def report_rows(
     Недозвоны сюда не берём: рассказывать о них нечего, а таблицу они топят.
     """
     filters = filters or {}
-    where = ["k.local_date BETWEEN ? AND ?", "k.direction = 'out'", "k.duration_sec >= ?"]
+    # in_group = 1 — звонки менеджеров прозвона. Чужие звонки в базе тоже есть,
+    # их приносит разбор заявок, но в отчёте по прозвону им не место.
+    where = ["k.local_date BETWEEN ? AND ?", "k.direction = 'out'",
+             "k.in_group = 1", "k.duration_sec >= ?"]
     params: list[Any] = [since, until, threshold_sec]
     if vats_login:
         where.append("k.vats_login = ?")
@@ -318,6 +321,95 @@ def call_detail(conn: sqlite3.Connection, uid: str) -> dict[str, Any] | None:
             "SELECT * FROM call_orders WHERE call_uid = ? ORDER BY created_at", (uid,))
     ]
     return data
+
+
+def order_detail(conn: sqlite3.Connection, order_id: str) -> dict[str, Any] | None:
+    """Заявка со всем, что о ней известно: звонок-источник, разбор, разговоры.
+
+    Заявку ведёт не тот, кто её завёл, поэтому сюда попадают и звонки чужих
+    менеджеров — их приносит `analyze_orders.py`, отбирая по телефону клиента.
+    """
+    row = conn.execute(
+        """
+        SELECT o.*, k.local_date, k.vats_login, k.started_at AS call_started_at,
+               k.client_phone, m.display_name,
+               c.contact_id, c.contact_name, c.company_name, c.need_value
+        FROM call_orders o
+        JOIN calls k ON k.uid = o.call_uid
+        LEFT JOIN managers m ON m.vats_login = k.vats_login
+        LEFT JOIN card_checks c ON c.call_uid = o.call_uid
+        WHERE o.order_id = ?
+        ORDER BY o.created_at
+        LIMIT 1
+        """,
+        (order_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    order = dict(row)
+
+    report = conn.execute(
+        "SELECT * FROM order_reports WHERE order_id = ?", (order_id,)
+    ).fetchone()
+    order["report"] = dict(report) if report else None
+    order["verdict"] = _parsed_analysis(report["verdict_json"]) if report else None
+
+    phone_digits = "".join(ch for ch in (order.get("client_phone") or "") if ch.isdigit())[-10:]
+    calls = []
+    for call in conn.execute(
+        """
+        SELECT k.uid, k.started_at, k.direction, k.duration_sec, k.vats_login,
+               k.in_group, k.client_phone, m.display_name,
+               t.text IS NOT NULL AS has_transcript, t.analysis_json
+        FROM calls k
+        LEFT JOIN managers m ON m.vats_login = k.vats_login
+        LEFT JOIN transcripts t ON t.call_uid = k.uid
+        WHERE k.started_at >= ? ORDER BY k.started_at
+        """,
+        (order["created_at"] or order["call_started_at"],),
+    ):
+        digits = "".join(ch for ch in (call["client_phone"] or "") if ch.isdigit())
+        if not phone_digits or digits[-10:] != phone_digits:
+            continue
+        item = dict(call)
+        item["analysis"] = _parsed_analysis(call["analysis_json"])
+        calls.append(item)
+    order["calls"] = calls
+    return order
+
+
+def orders_of_period(
+    conn: sqlite3.Connection, since: str, until: str, kind: str | None = None,
+) -> list[dict[str, Any]]:
+    """Заявки, заведённые по звонкам прозвона за период."""
+    where = ["k.local_date BETWEEN ? AND ?", "k.in_group = 1"]
+    params: list[Any] = [since, until]
+    if kind == "lost":
+        where.append("o.stage_kind = 'lost'")
+    elif kind == "open":
+        where.append("o.stage_kind NOT IN ('won', 'lost')")
+    elif kind == "won":
+        where.append("o.stage_kind = 'won'")
+    rows = conn.execute(
+        f"""
+        SELECT o.*, k.local_date, c.contact_name, c.company_name,
+               r.calls_count, r.verdict_json
+        FROM call_orders o
+        JOIN calls k ON k.uid = o.call_uid
+        LEFT JOIN card_checks c ON c.call_uid = o.call_uid
+        LEFT JOIN order_reports r ON r.order_id = o.order_id
+        WHERE {' AND '.join(where)}
+        GROUP BY o.order_id
+        ORDER BY o.created_at DESC
+        """,
+        params,
+    ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["verdict"] = _parsed_analysis(row["verdict_json"])
+        out.append(item)
+    return out
 
 
 def period_summary(

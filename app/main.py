@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
+from urllib.parse import urlencode
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,8 @@ from app.stats import (
     day_summary,
     local_now,
     managers,
+    order_detail,
+    orders_of_period,
     period_summary,
     report_rows,
     report_totals,
@@ -71,6 +74,10 @@ def _base_context(request: Request) -> dict[str, Any]:
     return {
         "request": request,
         "version": __version__,
+        # Снаружи дашборд живёт под /dashboard/, а nginx отдаёт приложению путь
+        # уже без этой приставки. Ссылки в шаблонах строятся от неё, иначе
+        # переход внутрь страницы уводит мимо дашборда и получается 404.
+        "base": request.headers.get("x-forwarded-prefix", "").rstrip("/"),
         "settings": settings,
         "demo": settings.demo_mode,
         "sources_ready": settings.vats_configured and settings.synergy_configured,
@@ -139,21 +146,28 @@ async def manager_day(request: Request, vats_login: str, day: str | None = None)
 
 @app.get("/report", response_class=HTMLResponse)
 async def report(
-    request: Request, day: str | None = None, days: int = 1, manager: str | None = None,
+    request: Request, since: str = "", until: str = "",
+    day: str | None = None, days: int = 0, manager: str | None = None,
     need: str = "", objects: str = "", inn: str = "", task: str = "",
     contact: str = "", company: str = "", orders: str = "",
     transcript: str = "", missed: str = "", q: str = "", min_sec: int = 0,
 ) -> Any:
     """Развёрнутая таблица: что произошло по каждому разговору.
 
+    Период задаётся датами «с» и «по». Старый вид ссылки (`day` + `days`)
+    понимаем по-прежнему: на него ведут ссылки с других экранов.
+
     Каждая колонка фильтруется отдельно: «покажи разговоры без записанной
     потребности», «где поставлена задача», «где разбор нашёл упущенное».
     """
     settings: Settings = request.app.state.settings
     conn = request.app.state.db
-    until = day or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
-    days = max(1, min(days, 60))
-    since = (date.fromisoformat(until) - timedelta(days=days - 1)).isoformat()
+    today = local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    until = until or day or today
+    if not since:
+        since = (date.fromisoformat(until) - timedelta(days=max(days, 1) - 1)).isoformat()
+    if since > until:
+        since, until = until, since
 
     filters = {
         "need": need, "objects": objects, "inn": inn, "task": task,
@@ -163,21 +177,69 @@ async def report(
     rows = report_rows(conn, since, until, manager, settings.talk_threshold_sec, filters)
     ctx = _base_context(request)
     ctx.update({
-        "day": until,
         "since": since,
-        "days": days,
+        "until": until,
         "manager_login": manager,
         "manager": next((m for m in managers(conn) if m["vats_login"] == manager), None),
         "all_managers": managers(conn),
         "rows": rows,
         "totals": report_totals(rows),
         "filters": filters,
-        "filters_on": any(v not in ("", 0, None) for k, v in filters.items()),
+        "filters_on": any(value not in ("", 0, None) for value in filters.values()),
+        "link": report_link(ctx["base"], since, until, manager, filters),
         "card_window_min": settings.card_window_min,
         "order_window_hours": settings.order_window_hours,
         "threshold": settings.talk_threshold_sec,
     })
     return TEMPLATES.TemplateResponse("report.html", ctx)
+
+
+def report_link(
+    base: str, since: str, until: str, manager: str | None, filters: dict[str, Any],
+):
+    """Ссылка на тот же отчёт с изменённым параметром — для переключателей в шапке.
+
+    Фильтры в заголовке таблицы работают ссылками, а не формой с кнопкой:
+    так отбор занимает одну строку и переживает перезагрузку страницы.
+    """
+    current = {"since": since, "until": until, "manager": manager or "", **filters}
+
+    def build(**over: Any) -> str:
+        params = {**current, **over}
+        clean = {key: value for key, value in params.items() if value not in ("", 0, None)}
+        return f"{base}/report?{urlencode(clean)}"
+
+    return build
+
+
+@app.get("/orders", response_class=HTMLResponse)
+async def orders_page(
+    request: Request, since: str = "", until: str = "", kind: str = "",
+) -> Any:
+    """Заявки за период и чем они кончились."""
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    until = until or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    since = since or (date.fromisoformat(until) - timedelta(days=13)).isoformat()
+
+    rows = orders_of_period(conn, since, until, kind or None)
+    ctx = _base_context(request)
+    ctx.update({
+        "since": since, "until": until, "kind": kind, "orders": rows,
+        "won": sum(1 for r in rows if r["stage_kind"] == "won"),
+        "lost": sum(1 for r in rows if r["stage_kind"] == "lost"),
+        "analyzed": sum(1 for r in rows if r["verdict"]),
+    })
+    return TEMPLATES.TemplateResponse("orders.html", ctx)
+
+
+@app.get("/order/{order_id}", response_class=HTMLResponse)
+async def order_page(request: Request, order_id: str) -> Any:
+    """Одна заявка: что было в разговорах после неё и почему она не стала сделкой."""
+    conn = request.app.state.db
+    ctx = _base_context(request)
+    ctx.update({"order": order_detail(conn, order_id), "order_id": order_id})
+    return TEMPLATES.TemplateResponse("order.html", ctx)
 
 
 @app.get("/call/{uid}", response_class=HTMLResponse)

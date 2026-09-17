@@ -6,8 +6,8 @@
   <h1>{{ manager.display_name if manager else vats_login }}</h1>
   <span class="date">{{ day }}</span>
 </div>
-<p class="crumbs"><a href="/?day={{ day }}">← ко всем менеджерам</a> ·
-  <a href="/report?manager={{ vats_login }}&day={{ day }}">развёрнутый отчёт</a> ·
+<p class="crumbs"><a href="{{ base }}/?day={{ day }}">← ко всем менеджерам</a> ·
+  <a href="{{ base }}/report?manager={{ vats_login }}&day={{ day }}">развёрнутый отчёт</a> ·
   логин в ВАТС <code>{{ vats_login }}</code></p>
 
 <div class="card">
@@ -46,8 +46,8 @@
           {% else %}{{ c.orders_count }}<span class="dim">/{{ c.deals_count }}</span>{% endif %}
         </td>
         <td class="num">
-          {% if c.has_transcript %}<a href="/call/{{ c.uid }}">разбор</a>
-          {% elif not short %}<a href="/call/{{ c.uid }}" class="dim">открыть</a>{% endif %}
+          {% if c.has_transcript %}<a href="{{ base }}/call/{{ c.uid }}">разбор</a>
+          {% elif not short %}<a href="{{ base }}/call/{{ c.uid }}" class="dim">открыть</a>{% endif %}
         </td>
       </tr>
       {% endfor %}

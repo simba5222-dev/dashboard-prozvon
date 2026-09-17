@@ -25,14 +25,14 @@
 {% block content %}
 {% if not call %}
 <div class="top"><h1>Звонок не найден</h1></div>
-<p class="crumbs"><a href="/">← на дашборд</a></p>
+<p class="crumbs"><a href="{{ base }}/">← на дашборд</a></p>
 {% else %}
 <div class="top">
   <h1>{{ call.contact_name or call.client_phone }}</h1>
   <span class="date">{{ call.started_at[:16]|replace("T", " ") }}</span>
 </div>
 <p class="crumbs">
-  <a href="/report?manager={{ call.vats_login }}&day={{ call.local_date }}">← отчёт за {{ call.local_date }}</a>
+  <a href="{{ base }}/report?manager={{ call.vats_login }}&day={{ call.local_date }}">← отчёт за {{ call.local_date }}</a>
   · {{ call.display_name or call.vats_login }}
   · <span class="mono">{{ call.client_phone }}</span>
   · длительность {{ call.duration_sec }} с · ожидание {{ call.wait_sec }} с

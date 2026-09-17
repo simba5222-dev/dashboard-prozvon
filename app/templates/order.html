@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Заявка — дашборд прозвона{% endblock %}
+
+{% block extra_style %}
+<style>
+.dl{display:grid;grid-template-columns:180px 1fr;gap:7px 14px;margin:0}
+.dl dt{color:var(--ink-3)}
+.dl dd{margin:0}
+.reco{margin:0;padding-left:18px;line-height:1.6}
+.st{font-size:11px;letter-spacing:.05em;text-transform:uppercase;
+  font-family:ui-monospace,Menlo,monospace;padding:1px 7px;border-radius:2px;
+  background:var(--sunken);color:var(--ink-3)}
+.st.won{background:var(--ok-soft);color:var(--ok)}
+.st.lost{background:var(--stop-soft);color:var(--stop)}
+.st.opened{background:var(--accent-soft);color:var(--accent)}
+.line{display:grid;grid-template-columns:135px 190px 1fr;gap:12px;padding:8px 0;
+  border-bottom:1px solid var(--line);line-height:1.5}
+.line:last-child{border-bottom:none}
+.line .when{color:var(--ink-3);font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.line .who .tag{font-size:11px;color:var(--ink-3)}
+.gaps{color:var(--stop)}
+</style>
+{% endblock %}
+
+{% block content %}
+{% if not order %}
+<div class="top"><h1>Заявка не найдена</h1></div>
+<p class="crumbs"><a href="{{ base }}/orders">← ко всем заявкам</a></p>
+<p class="dim">В дашборде видны только заявки, заведённые после звонков прозвона:
+  их приносит сборщик вместе с проверкой карточек.</p>
+{% else %}
+<div class="top">
+  <h1>{{ order.name }}</h1>
+  <span class="date"><span class="st {{ order.stage_kind }}">{{ order.stage_name or "без стадии" }}</span></span>
+</div>
+<p class="crumbs">
+  <a href="{{ base }}/orders">← заявки</a> ·
+  <a href="{{ base }}/call/{{ order.call_uid }}">звонок, с которого она пошла</a> ·
+  заведена {{ (order.created_at or "")[:16]|replace("T", " ") }}
+</p>
+
+<div class="card">
+  <div class="card-head"><h2>Заявка</h2><span class="sub">по данным CRM</span></div>
+  <div class="card-body">
+    <dl class="dl">
+      <dt>ответственный</dt><dd>{{ order.responsible or "не назначен" }}</dd>
+      <dt>клиент</dt>
+      <dd>{{ order.contact_name or "без имени" }}{% if order.company_name %}, {{ order.company_name }}{% endif %}
+        <span class="mono dim">{{ order.client_phone }}</span></dd>
+      <dt>кто завёл</dt>
+      <dd>{{ order.display_name or order.vats_login }}, звонок
+        {{ (order.call_started_at or "")[:16]|replace("T", " ") }}</dd>
+      {% if order.need_value %}<dt>потребность в карточке</dt><dd>{{ order.need_value }}</dd>{% endif %}
+      {% if order.amount %}<dt>сумма</dt><dd>{{ order.amount }}</dd>{% endif %}
+    </dl>
+  </div>
+</div>
+
+{% if order.verdict %}
+{% set v = order.verdict %}
+<div class="card">
+  <div class="card-head">
+    <h2>Почему заявка не дошла до сделки</h2>
+    <span class="sub">по разговорам с клиентом после её создания</span>
+  </div>
+  <div class="card-body">
+    {% if v.no_calls %}
+    <p style="margin:0 0 10px">После создания заявки с клиентом не разговаривали
+      ни разу — ни ответственный, ни кто-либо ещё.</p>
+    {% endif %}
+    <dl class="dl">
+      {% if v.outcome %}<dt>что произошло</dt><dd>{{ v.outcome }}</dd>{% endif %}
+      {% if v.client_position %}<dt>позиция клиента</dt><dd>{{ v.client_position }}</dd>{% endif %}
+      {% if v.manager_actions %}
+      <dt>что сделал ответственный</dt>
+      <dd><ul class="reco">{% for a in v.manager_actions %}<li>{{ a }}</li>{% endfor %}</ul></dd>
+      {% endif %}
+      {% if v.gaps %}
+      <dt>чего не сделал</dt>
+      <dd class="gaps"><ul class="reco">{% for g in v.gaps %}<li>{{ g }}</li>{% endfor %}</ul></dd>
+      {% endif %}
+      {% if v.recoverable is not none %}
+      <dt>можно ли вернуть</dt>
+      <dd>{% if v.recoverable %}да, клиент не закрыт{% else %}нет, потребность закрыта или отпала{% endif %}</dd>
+      {% endif %}
+    </dl>
+    {% if v.recommendations %}
+    <h3 style="margin:16px 0 6px;font-size:13px">Что сделать сейчас</h3>
+    <ul class="reco">{% for r in v.recommendations %}<li>{{ r }}</li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+</div>
+{% else %}
+<div class="card"><div class="card-body dim">
+  Разбора заявки ещё нет. Он считается отдельно: сначала добираются звонки
+  с клиентом после её создания, потом их записи распознаются, потом модель
+  отвечает, почему сделка не состоялась —
+  <span class="mono">scripts/analyze_orders.py --order {{ order.order_id }}</span>.
+</div></div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>Разговоры с клиентом после заявки</h2>
+    <span class="sub">{{ order.calls|length }} звонков, включая звонки других менеджеров</span>
+  </div>
+  <div class="card-body">
+    {% for c in order.calls %}
+    <div class="line">
+      <span class="when">{{ (c.started_at or "")[:16]|replace("T", " ") }}</span>
+      <span class="who">
+        {{ c.display_name or c.vats_login }}<br>
+        <span class="tag">
+          {% if c.direction == "out" %}звонили клиенту{% else %}клиент звонил сам{% endif %},
+          {{ c.duration_sec }} с{% if not c.in_group %} · не прозвон{% endif %}
+        </span>
+      </span>
+      <span>
+        {% if c.analysis and c.analysis.summary %}{{ c.analysis.summary }}
+        {% elif c.has_transcript %}<span class="dim">расшифровка есть, разбора нет</span>
+        {% elif c.duration_sec < 15 %}<span class="dim">не дозвонились</span>
+        {% else %}<span class="dim">запись не разобрана</span>{% endif %}
+        <a href="{{ base }}/call/{{ c.uid }}" class="dim">открыть →</a>
+      </span>
+    </div>
+    {% else %}
+    <p class="dim" style="margin:0">Звонков с клиентом после создания заявки в базе нет.
+      Их приносит <span class="mono">scripts/analyze_orders.py</span>: дашборд сам
+      собирает только звонки прозвона, а заявку ведёт другой человек.</p>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

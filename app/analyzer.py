@@ -104,6 +104,123 @@ PROMPT = """Ты разбираешь запись исходящего звон
 """
 
 
+EMPTY_VERDICT: dict[str, Any] = {
+    "outcome": "",
+    "client_position": "",
+    "manager_actions": [],
+    "gaps": [],
+    "recommendations": [],
+    "recoverable": None,
+    "no_calls": False,
+}
+
+ORDER_PROMPT = """Ты разбираешь, почему заявка на аренду техники не дошла до сделки.
+Наша компания — «{own_company}». Заявку завёл менеджер тёплого прозвона, дальше
+её ведёт ответственный: он созванивается с клиентом, считает стоимость,
+согласовывает технику и сроки.
+
+ЗАЯВКА:
+{order}
+
+РАЗГОВОРЫ С КЛИЕНТОМ ПОСЛЕ СОЗДАНИЯ ЗАЯВКИ (в порядке времени):
+{calls}
+
+Расшифровки автоматические, с телефонной линии, местами рвутся. Додумывать
+нельзя: пиши только то, что видно из разговоров и полей заявки. Если разговоров
+нет вовсе — так и скажи, поставь "no_calls": true и не выдумывай причин.
+
+Верни JSON:
+{{
+  "outcome": "почему заявка не стала сделкой — 1-2 предложения, по существу",
+  "client_position": "что говорил клиент: цена, сроки, нашёл другого, передумал, не берёт трубку",
+  "manager_actions": ["что ответственный действительно сделал: перезвонил, посчитал, предложил замену"],
+  "gaps": ["чего он не сделал, хотя разговор этого требовал"],
+  "recommendations": ["что сделать сейчас, чтобы вернуть клиента — не больше трёх"],
+  "recoverable": true/false — есть ли смысл возвращаться к этому клиенту
+}}
+
+Правила:
+- «клиент не взял трубку» и «менеджер не перезвонил» — разные вещи, не путай:
+  первое видно по недозвонам, второе — по отсутствию звонков вообще;
+- не повторяй в "gaps" то, что уже написал в "outcome";
+- пиши по-русски, коротко, без вводных слов.
+"""
+
+
+def order_summary(order: dict[str, Any]) -> str:
+    """Заявка в виде, понятном модели."""
+    lines = [
+        f"- заявка №{order.get('number') or order.get('order_id')}: {order.get('name')}",
+        f"- создана: {(order.get('created_at') or '')[:16].replace('T', ' ')}",
+        f"- ответственный: {order.get('responsible') or 'не назначен'}",
+        f"- стадия сейчас: {order.get('stage_name') or 'неизвестна'}",
+    ]
+    if order.get("amount"):
+        lines.append(f"- сумма: {order['amount']}")
+    for key in ("description", "note", "address", "client_need"):
+        if order.get(key):
+            lines.append(f"- {key}: {order[key]}")
+    return "\n".join(lines)
+
+
+def calls_summary(calls: list[dict[str, Any]], limit: int = 14000) -> str:
+    """Звонки с клиентом: кто, когда, чем кончился, о чём говорили."""
+    blocks = []
+    for call in calls:
+        who = call.get("vats_login") or "неизвестно"
+        side = "менеджер звонил" if call.get("direction") == "out" else "клиент звонил сам"
+        head = (f"[{(call.get('started_at') or '')[:16].replace('T', ' ')}] {side}, "
+                f"{who}, {call.get('duration_sec', 0)} с")
+        if (call.get("duration_sec") or 0) < 15:
+            blocks.append(f"{head} — не поговорили")
+            continue
+        text = (call.get("transcript_text") or "").strip()
+        blocks.append(f"{head}\n{text}" if text else f"{head} — записи нет")
+    joined = "\n\n".join(blocks)
+    return joined[:limit] if joined else "разговоров с клиентом после создания заявки не найдено"
+
+
+def analyze_order(
+    order: dict[str, Any], calls: list[dict[str, Any]], *, api_key: str, model: str,
+    own_company: str = "Техно-Ресурс", timeout_sec: float = 180.0,
+) -> dict[str, Any]:
+    """Разобрать судьбу заявки по звонкам после её создания."""
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    prompt = ORDER_PROMPT.format(
+        own_company=own_company,
+        order=order_summary(order),
+        calls=calls_summary(calls),
+    )
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+        response_format={"type": "json_object"},
+    )
+    try:
+        data = json.loads(response.choices[0].message.content or "{}")
+    except ValueError:
+        return {**EMPTY_VERDICT, "no_calls": not calls}
+    return normalize_verdict(data)
+
+
+def normalize_verdict(data: dict[str, Any]) -> dict[str, Any]:
+    out = {**EMPTY_VERDICT, **{k: v for k, v in data.items() if k in EMPTY_VERDICT}}
+    for key in ("manager_actions", "gaps", "recommendations"):
+        value = out[key]
+        if isinstance(value, str):
+            value = [value]
+        out[key] = [str(item).strip() for item in (value or []) if str(item).strip()][:3]
+    for key in ("outcome", "client_position"):
+        out[key] = str(out[key] or "").strip()
+    if out["recoverable"] is not None:
+        out["recoverable"] = bool(out["recoverable"])
+    out["no_calls"] = bool(out["no_calls"])
+    return out
+
+
 def card_summary(call: dict[str, Any]) -> str:
     """Что менеджер внёс в CRM — в виде, понятном модели."""
     lines = [

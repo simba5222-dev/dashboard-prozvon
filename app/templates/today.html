@@ -19,7 +19,7 @@
 {% for r in rows %}
 <div class="card">
   <div class="card-head">
-    <h2><a href="/manager/{{ r.vats_login }}?day={{ day }}">{{ r.display_name }}</a></h2>
+    <h2><a href="{{ base }}/manager/{{ r.vats_login }}?day={{ day }}">{{ r.display_name }}</a></h2>
     {% if r.is_demo %}<span class="pill demo">демо</span>{% endif %}
     {% if r.plan_percent >= 100 %}<span class="pill ok">план выполнен</span>
     {% elif r.plan_percent >= 80 %}<span class="pill warn">близко к плану</span>

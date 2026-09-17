@@ -79,6 +79,8 @@ def main() -> int:
                     help="не распознавать, только разобрать готовые расшифровки")
     ap.add_argument("--redo", action="store_true", help="переразобрать уже разобранные")
     ap.add_argument("--no-analysis", action="store_true", help="только расшифровка")
+    ap.add_argument("--uid", help="разобрать именно эти звонки, через запятую: "
+                                  "нужно, когда разбираешь одну заявку, а не день")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -90,17 +92,29 @@ def main() -> int:
     init_schema(conn)
     records = Path(settings.records_dir)
 
-    rows = conn.execute(
-        """
-        SELECT k.uid, k.duration_sec, k.local_date, k.started_at,
-               t.text AS transcript_text, t.analysis_json
-        FROM calls k LEFT JOIN transcripts t ON t.call_uid = k.uid
-        WHERE k.local_date BETWEEN ? AND ? AND k.direction = 'out'
-          AND k.duration_sec >= ?
-        ORDER BY k.started_at DESC
-        """,
-        (since, until, args.min_sec or settings.talk_threshold_sec),
-    ).fetchall()
+    if args.uid:
+        uids = [u.strip() for u in args.uid.split(",") if u.strip()]
+        rows = conn.execute(
+            f"""
+            SELECT k.uid, k.duration_sec, k.local_date, k.started_at,
+                   t.text AS transcript_text, t.analysis_json
+            FROM calls k LEFT JOIN transcripts t ON t.call_uid = k.uid
+            WHERE k.uid IN ({",".join("?" * len(uids))})
+            ORDER BY k.started_at
+            """,
+            uids,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT k.uid, k.duration_sec, k.local_date, k.started_at,
+                   t.text AS transcript_text, t.analysis_json
+            FROM calls k LEFT JOIN transcripts t ON t.call_uid = k.uid
+            WHERE k.local_date BETWEEN ? AND ? AND k.duration_sec >= ?
+            ORDER BY k.started_at DESC
+            """,
+            (since, until, args.min_sec or settings.talk_threshold_sec),
+        ).fetchall()
 
     todo = []
     for row in rows:

@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS calls (
     wait_sec      INTEGER NOT NULL DEFAULT 0,
     duration_sec  INTEGER NOT NULL DEFAULT 0,
     record_url    TEXT,
+    in_group      INTEGER NOT NULL DEFAULT 1,  -- 0 — чужой звонок, взят ради разбора заявки
     is_demo       INTEGER NOT NULL DEFAULT 0,
     fetched_at    TEXT NOT NULL
 );
@@ -100,6 +101,17 @@ CREATE TABLE IF NOT EXISTS call_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_call_tasks_call ON call_tasks (call_uid);
 
+-- Разбор заявки: почему она не дошла до сделки. Считается по звонкам с
+-- клиентом после её создания, поэтому живёт отдельно от самой заявки —
+-- заявка приходит из CRM, а разбор делаем мы.
+CREATE TABLE IF NOT EXISTS order_reports (
+    order_id      TEXT PRIMARY KEY,
+    contact_id    TEXT,
+    calls_count   INTEGER NOT NULL DEFAULT 0,
+    verdict_json  TEXT,
+    created_at    TEXT NOT NULL
+);
+
 -- Расшифровка и разбор. Заполняется отдельно и может отставать.
 CREATE TABLE IF NOT EXISTS transcripts (
     call_uid      TEXT PRIMARY KEY REFERENCES calls (uid),
@@ -138,6 +150,9 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("card_checks", "contact_name", "TEXT"),
     ("card_checks", "company_name", "TEXT"),
     ("card_checks", "need_value", "TEXT"),
+    # Разбирая заявку, мы забираем и звонки чужих менеджеров — тех, кому её
+    # передали. В счётчиках прозвона им не место, поэтому они помечены нулём.
+    ("calls", "in_group", "INTEGER NOT NULL DEFAULT 1"),
 )
 
 
@@ -187,14 +202,15 @@ def save_call(conn: sqlite3.Connection, **row: Any) -> bool:
 
     Повторный опрос ВАТС приносит те же звонки — на это и стоит primary key.
     """
+    row.setdefault("in_group", 1)
     cur = conn.execute(
         """
         INSERT INTO calls (uid, vats_login, client_phone, direction, status,
                            started_at, local_date, local_hour, wait_sec,
-                           duration_sec, record_url, is_demo, fetched_at)
+                           duration_sec, record_url, in_group, is_demo, fetched_at)
         VALUES (:uid, :vats_login, :client_phone, :direction, :status,
                 :started_at, :local_date, :local_hour, :wait_sec,
-                :duration_sec, :record_url, :is_demo, :fetched_at)
+                :duration_sec, :record_url, :in_group, :is_demo, :fetched_at)
         ON CONFLICT (uid) DO NOTHING
         """,
         row,
@@ -279,6 +295,21 @@ def save_call_task(conn: sqlite3.Connection, **row: Any) -> None:
             status       = excluded.status,
             responsible  = excluded.responsible,
             completed_at = excluded.completed_at
+        """,
+        row,
+    )
+
+
+def save_order_report(conn: sqlite3.Connection, **row: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO order_reports (order_id, contact_id, calls_count, verdict_json, created_at)
+        VALUES (:order_id, :contact_id, :calls_count, :verdict_json, :created_at)
+        ON CONFLICT (order_id) DO UPDATE SET
+            contact_id   = excluded.contact_id,
+            calls_count  = excluded.calls_count,
+            verdict_json = excluded.verdict_json,
+            created_at   = excluded.created_at
         """,
         row,
     )
