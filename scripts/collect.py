@@ -20,8 +20,8 @@ from datetime import date, timedelta
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 
 from app.collector import (  # noqa: E402
-    SynergyClient, check_cards, check_pending_cards, collect_calls, collect_range,
-    refresh_tasks, sync_managers,
+    SynergyClient, check_cards, check_inbound_calls, check_pending_cards,
+    collect_calls, collect_range, refresh_tasks, sync_managers,
 )
 from app.config import get_settings  # noqa: E402
 from app.db import connect, init_schema  # noqa: E402
@@ -34,6 +34,8 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=1, help="сколько дней назад захватить")
     ap.add_argument("--no-cards", action="store_true", help="не проверять карточки")
     ap.add_argument("--cards-limit", type=int, default=0, help="ограничить число проверок")
+    ap.add_argument("--inbound", type=int, default=0,
+                    help="проверить столько входящих звонков: есть ли по ним заявка")
     ap.add_argument("--catch-up", type=int, default=0,
                     help="догнать столько непроверенных карточек за прошлые дни")
     ap.add_argument("--tasks-only", action="store_true",
@@ -58,6 +60,9 @@ def main() -> int:
     )
 
     sync_managers(conn, client, settings.synergy_group)
+    # Отдел продаж нужен для поиска потерянных заявок: клиенты звонят его
+    # менеджерам напрямую. В счётчики прозвона эти люди не попадают.
+    sync_managers(conn, client, settings.sales_group, dept=settings.sales_dept)
 
     last = date.fromisoformat(args.day) if args.day else local_now(settings.timezone_offset_hours).date()
 
@@ -92,6 +97,11 @@ def main() -> int:
             done = check_cards(conn, client, settings, day,
                                limit=args.cards_limit, refresh=args.refresh)
             print(f"{day}: проверено карточек {done}")
+
+    if args.inbound:
+        checked = check_inbound_calls(conn, client, settings, limit=args.inbound)
+        if checked:
+            print(f"входящих проверено: {checked}")
 
     if args.catch_up:
         caught = check_pending_cards(conn, client, settings, args.catch_up,

@@ -90,6 +90,33 @@ class Settings(BaseSettings):
     )
     synergy_retries: int = Field(default=5, description="Повторов при ответе 429.")
 
+    # --- Входящие звонки менеджерам: поиск потерянных заявок ---
+    sales_group: str = Field(
+        default="Отдел продаж",
+        description="Группа Synergy, чьи входящие проверяем. Клиент звонит "
+        "менеджеру продаж напрямую, и если тот не завёл заявку, о просьбе "
+        "не знает никто.",
+    )
+    sales_dept: str = Field(
+        default="продажи",
+        description="Как этот отдел помечен в таблице сотрудников.",
+    )
+    inbound_min_duration_sec: int = Field(
+        default=40,
+        description="Входящие короче не смотрим: за двадцать секунд запрос на "
+        "технику не звучит, а список они топят.",
+    )
+    inbound_wait_hours: int = Field(
+        default=3,
+        description="Сколько ждать после звонка, прежде чем считать заявку "
+        "незаведённой. Менеджер оформляет её не в ту же минуту, и список "
+        "не должен обвинять тех, кто просто ещё не дошёл до CRM.",
+    )
+    inbound_order_window_hours: int = Field(
+        default=24,
+        description="В каком окне после звонка заявка считается заведённой по нему.",
+    )
+
     # --- Разбор разговоров ---
     asr_url: str = Field(
         default="http://127.0.0.1:8080",
@@ -134,6 +161,23 @@ class Settings(BaseSettings):
         "не вытаскивала из разговора ничего: возвращала «потребность не "
         "прозвучала» там, где клиент называл и технику, и объект.",
     )
+    asr_analysis_token: str | None = Field(
+        default=None,
+        description="Ключ к ручке /analyze сервиса распознавания. Разбор для "
+        "CRM идёт через неё — той же схемой, что и звонки с общих номеров, "
+        "чтобы поля заявки заполнялись одинаково.",
+    )
+    crm_lead_order_name: str = Field(
+        default="Пойманная с прослушки",
+        description="Название заявки, которую заводит разбор входящего звонка.",
+    )
+    crm_lead_responsible: str | None = Field(
+        default=None, description="Пользователь Synergy, ответственный за такие заявки."
+    )
+    crm_lead_stage: str = Field(
+        default="Новый", description="Стадия, в которую кладём пойманную заявку."
+    )
+
     own_company: str = Field(
         default="Техно-Ресурс",
         description="Как называется наша компания. Нужно разбору: без этого "
@@ -152,6 +196,7 @@ class Settings(BaseSettings):
     # Пустая строка в .env означает «не задано», иначе /health врёт о настройках.
     @field_validator(
         "vats_api_token", "synergy_api_token", "openai_api_key",
+        "asr_analysis_token", "crm_lead_responsible",
         "record_ssh_host", "record_ssh_key",
         "field_need", "field_objects", "field_objects_extra", "field_inn",
         mode="before",

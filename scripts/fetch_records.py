@@ -61,6 +61,10 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="не больше стольких записей")
     ap.add_argument("--min-sec", type=int, default=0,
                     help="пропускать разговоры короче, секунд (0 — порог из настроек)")
+    ap.add_argument("--leads", action="store_true",
+                    help="только входящие отдела продаж: их разбирает поиск "
+                         "потерянных заявок. Без этого качается всё подряд, а "
+                         "в базе теперь лежат все звонки компании — это гигабайты")
     args = ap.parse_args()
 
     settings = settings_without_secrets()
@@ -77,14 +81,21 @@ def main() -> int:
 
     conn = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    where = ["local_date BETWEEN ? AND ?", "duration_sec >= ?",
+             "record_url IS NOT NULL", "record_url <> ''"]
+    params: list = [since, until, min_sec]
+    if args.leads:
+        where.append("direction = 'in'")
+        where.append("vats_login IN (SELECT vats_login FROM managers "
+                     "WHERE dept = ? AND active = 1)")
+        params.append(settings.sales_dept)
     rows = conn.execute(
-        """
+        f"""
         SELECT uid, record_url, duration_sec, local_date FROM calls
-        WHERE local_date BETWEEN ? AND ? AND duration_sec >= ?
-          AND record_url IS NOT NULL AND record_url <> ''
+        WHERE {' AND '.join(where)}
         ORDER BY started_at DESC
         """,
-        (since, until, min_sec),
+        params,
     ).fetchall()
     conn.close()
 

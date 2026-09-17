@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Возможные заявки — дашборд прозвона{% endblock %}
+
+{% block extra_style %}
+<style>
+.wrap{max-width:1500px}
+.lead{font-size:13px}
+.lead th{padding-right:14px}
+.lead td{padding-right:14px;vertical-align:top}
+.lead tr:hover td{background:var(--surface-2)}
+.lead .who{min-width:170px}
+.lead .what{min-width:300px;color:var(--ink-2);line-height:1.45}
+.lead audio{height:30px;vertical-align:middle}
+.filt{display:flex;gap:10px;align-items:center;font-size:13px;flex-wrap:wrap;margin-bottom:12px}
+.filt input,.filt select{font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--line-2);
+  border-radius:2px;background:var(--surface);color:var(--ink)}
+.filt button{font:inherit;font-size:12px;padding:4px 12px;border:1px solid var(--accent);
+  background:var(--accent);color:#fff;border-radius:2px;cursor:pointer}
+.modes a{margin-right:12px;color:var(--ink-3)}
+.modes a.on{color:var(--accent);font-weight:600}
+.act{color:var(--ink-3);font-size:12px;white-space:nowrap}
+.ordered{color:var(--ok)}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="top">
+  <h1>Возможные заявки</h1>
+  <span class="date">{{ since }} — {{ until }}</span>
+</div>
+<p class="crumbs">
+  <a href="{{ base }}/">← дашборд</a> ·
+  входящие разговоры дольше {{ min_sec }} с, по которым за {{ window_hours }} ч не появилось заявки ·
+  звонок попадает сюда не раньше чем через {{ wait_hours }} ч — менеджеру дают время оформить самому
+</p>
+
+<div class="card">
+  <div class="tiles">
+    <div class="tile"><div class="n">{{ totals.all_calls }}</div><div class="l">входящих за период</div></div>
+    <div class="tile"><div class="n">{{ totals.checked }}</div><div class="l">проверено по CRM</div></div>
+    <div class="tile good"><div class="n">{{ totals.with_order }}</div><div class="l">заявка заведена</div></div>
+    <div class="tile {% if totals.open_calls %}bad{% endif %}">
+      <div class="n">{{ totals.open_calls }}</div><div class="l">заявки нет — смотреть</div></div>
+    <div class="tile"><div class="n">{{ totals.dismissed }}</div><div class="l">отмечено «запроса не было»</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Разговоры</h2>
+    <span class="modes">
+      <a class="{{ 'on' if mode != 'all' }}" href="{{ base }}/leads?since={{ since }}&until={{ until }}">только без заявки</a>
+      <a class="{{ 'on' if mode == 'all' }}" href="{{ base }}/leads?since={{ since }}&until={{ until }}&mode=all">все входящие</a>
+    </span>
+  </div>
+  <div class="card-body scroll">
+    <form class="filt" method="get" action="{{ base }}/leads">
+      <input type="hidden" name="mode" value="{{ mode }}">
+      с <input type="date" name="since" value="{{ since }}">
+      по <input type="date" name="until" value="{{ until }}">
+      дольше <input type="number" name="min_sec" value="{{ min_sec }}" style="width:64px"> с
+      <select name="manager">
+        <option value="">все, кому звонили</option>
+        {% for m in all_managers %}
+        <option value="{{ m.vats_login }}" {% if m.vats_login == manager_login %}selected{% endif %}>{{ m.display_name }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Показать</button>
+    </form>
+
+    {% if not rows %}
+    <p class="dim" style="margin:0">
+      {% if mode != 'all' %}Входящих без заявки за этот период нет — либо всё оформлено,
+      либо проверка ещё не дошла до этих звонков.{% else %}Входящих за этот период нет.{% endif %}
+    </p>
+    {% else %}
+    <table class="lead">
+      <tr>
+        <th>Когда</th>
+        <th>Кому звонили</th>
+        <th class="who">Клиент</th>
+        <th class="num">Длит.</th>
+        <th>Запись</th>
+        <th class="what">Что известно</th>
+        <th></th>
+      </tr>
+      {% for r in rows %}
+      <tr>
+        <td class="mono" style="white-space:nowrap">{{ r.local_date[5:] }} {{ r.started_at[11:16] }}</td>
+        <td>{{ r.display_name or r.vats_login }}</td>
+        <td class="who">
+          {{ r.contact_name or "нет в CRM" }}
+          {% if r.company_name %}<br><span class="dim">{{ r.company_name }}</span>{% endif %}
+          <br><span class="mono dim">{{ r.client_phone }}</span>
+        </td>
+        <td class="num">{{ r.duration_sec }} с</td>
+        <td>
+          {% if r.record_url %}
+          <audio controls preload="none" src="{{ base }}/record/{{ r.uid }}.mp3"></audio>
+          {% else %}<span class="dim">нет</span>{% endif %}
+        </td>
+        <td class="what">
+          {% if not r.checked %}<span class="dim">ещё не проверялся по CRM</span>
+          {% elif r.orders_after %}
+          <span class="ordered">заявка есть: {{ r.order_names }}</span>
+          {% else %}
+          заявки за {{ window_hours }} ч после разговора нет
+          {% endif %}
+          {% if r.analysis and r.analysis.client_need %}
+          <br><b>просил:</b> {{ r.analysis.client_need }}
+          {% elif r.has_transcript %}<br><span class="dim">расшифровка есть</span>{% endif %}
+        </td>
+        <td class="act">
+          <a href="{{ base }}/call/{{ r.uid }}">разбор</a>
+          {% if r.dismissed %}
+          · <a href="{{ base }}/leads/dismiss/{{ r.uid }}?back=1">вернуть в список</a>
+          {% elif r.checked and not r.orders_after %}
+          · <a href="{{ base }}/leads/dismiss/{{ r.uid }}">запроса не было</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<p class="dim" style="font-size:12.5px">
+  Это дешёвая проверка: она смотрит только на факт заявки, а не на содержание разговора.
+  «Заявки нет» не значит «менеджер потерял заказ» — клиент мог звонить по текущей аренде
+  или по делу, не связанному с техникой. Отметка «запроса не было» убирает строку из
+  списка и остаётся в базе: по ней считается, насколько точно работает отбор.
+  Записи слышны только те, что уже скачаны на сервер.
+</p>
+{% endblock %}

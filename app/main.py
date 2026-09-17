@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 from pathlib import Path
 from typing import Any
@@ -21,11 +21,15 @@ from fastapi.templating import Jinja2Templates
 
 from app import __version__
 from app.config import Settings, get_settings
-from app.db import CARD_FIELDS, connect, has_any_data, init_schema
+from app.db import CARD_FIELDS, connect, dismiss_inbound, has_any_data, init_schema
+from fastapi.responses import FileResponse, RedirectResponse
+
 from app.stats import (
     call_detail,
     calls_of_day,
     day_summary,
+    inbound_rows,
+    inbound_totals,
     local_now,
     managers,
     order_detail,
@@ -234,6 +238,68 @@ def report_link(
         return f"{base}/report?{urlencode(clean)}"
 
     return build
+
+
+@app.get("/leads", response_class=HTMLResponse)
+async def leads_page(
+    request: Request, since: str = "", until: str = "", manager: str = "",
+    mode: str = "open", min_sec: str = "",
+) -> Any:
+    """Входящие звонки менеджерам, по которым заявки нет.
+
+    Клиент звонит менеджеру напрямую и просит технику. Если менеджер не завёл
+    заявку — о просьбе не знает никто. Здесь дешёвая проверка по метаданным:
+    разговор был, заявки за сутки после него не появилось.
+    """
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    until = as_date(until) or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    since = as_date(since) or (date.fromisoformat(until) - timedelta(days=6)).isoformat()
+    if since > until:
+        since, until = until, since
+    threshold = as_int(min_sec) or settings.inbound_min_duration_sec
+
+    rows = inbound_rows(conn, since, until, only_open=(mode != "all"),
+                        manager=manager or None, min_sec=threshold)
+    ctx = _base_context(request)
+    ctx.update({
+        "since": since, "until": until, "mode": mode, "manager_login": manager,
+        "min_sec": threshold, "rows": rows,
+        "all_managers": managers(conn),
+        "totals": inbound_totals(conn, since, until, threshold),
+        "wait_hours": settings.inbound_wait_hours,
+        "window_hours": settings.inbound_order_window_hours,
+        "records_dir": settings.records_dir,
+    })
+    return TEMPLATES.TemplateResponse("leads.html", ctx)
+
+
+@app.get("/leads/dismiss/{uid}")
+async def leads_dismiss(request: Request, uid: str, back: int = 0) -> Any:
+    """Пометить звонок как «запроса не было» — или вернуть его в список.
+
+    Строка не удаляется: по отметкам потом считается, насколько точно отбор
+    находит настоящие запросы.
+    """
+    conn = request.app.state.db
+    dismiss_inbound(conn, uid, datetime.now(timezone.utc).isoformat(), back=bool(back))
+    conn.commit()
+    base = request.headers.get("x-forwarded-prefix", "").rstrip("/")
+    return RedirectResponse(f"{base}/leads", status_code=303)
+
+
+@app.get("/record/{uid}.mp3")
+async def record_file(request: Request, uid: str) -> Any:
+    """Отдать скачанную запись разговора, если она уже лежит на сервере.
+
+    Сама ВАТС записи наружу не отдаёт: они доступны только с российского
+    адреса. Поэтому слушать можно то, что уже скачано `fetch_records.py`.
+    """
+    settings: Settings = request.app.state.settings
+    path = Path(settings.records_dir) / f"{uid}.mp3"
+    if not path.exists():
+        return HTMLResponse("Запись ещё не скачана", status_code=404)
+    return FileResponse(path, media_type="audio/mpeg")
 
 
 @app.get("/orders", response_class=HTMLResponse)

@@ -66,9 +66,11 @@ class ManagerDay:
         return round(full / self.checked * 100)
 
 
-def managers(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def managers(conn: sqlite3.Connection, dept: str = "прозвон") -> list[sqlite3.Row]:
+    """Сотрудники отдела. По умолчанию — прозвон: его считает весь дашборд."""
     return conn.execute(
-        "SELECT * FROM managers WHERE active = 1 ORDER BY display_name"
+        "SELECT * FROM managers WHERE active = 1 AND dept = ? ORDER BY display_name",
+        (dept,),
     ).fetchall()
 
 
@@ -332,6 +334,75 @@ def call_detail(conn: sqlite3.Connection, uid: str) -> dict[str, Any] | None:
             "SELECT * FROM call_orders WHERE call_uid = ? ORDER BY created_at", (uid,))
     ]
     return data
+
+
+def inbound_rows(
+    conn: sqlite3.Connection, since: str, until: str,
+    only_open: bool = True, manager: str | None = None, min_sec: int = 0,
+    dept: str = "продажи",
+) -> list[dict[str, Any]]:
+    """Входящие звонки менеджерам и что из них вышло.
+
+    `only_open` оставляет те, по которым заявки нет и никто не сказал «запроса
+    не было» — это и есть список на проверку. Без него виден весь поток,
+    включая те звонки, по которым менеджер всё оформил сам.
+    """
+    where = ["k.direction = 'in'", "k.local_date BETWEEN ? AND ?",
+             "k.vats_login IN (SELECT vats_login FROM managers WHERE dept = ? AND active = 1)"]
+    params: list[Any] = [since, until, dept]
+    if min_sec:
+        where.append("k.duration_sec >= ?")
+        params.append(min_sec)
+    if manager:
+        where.append("k.vats_login = ?")
+        params.append(manager)
+    if only_open:
+        where.append("c.call_uid IS NOT NULL AND c.orders_after = 0 AND c.dismissed = 0")
+
+    rows = conn.execute(
+        f"""
+        SELECT k.uid, k.started_at, k.local_date, k.client_phone, k.duration_sec,
+               k.vats_login, k.record_url, m.display_name,
+               c.contact_id, c.contact_found, c.contact_name, c.company_name,
+               c.orders_after, c.order_names, c.checked_at, c.dismissed,
+               t.text IS NOT NULL AS has_transcript, t.analysis_json
+        FROM calls k
+        LEFT JOIN managers m ON m.vats_login = k.vats_login
+        LEFT JOIN inbound_checks c ON c.call_uid = k.uid
+        LEFT JOIN transcripts t ON t.call_uid = k.uid
+        WHERE {' AND '.join(where)}
+        ORDER BY k.started_at DESC
+        """,
+        params,
+    ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["analysis"] = _parsed_analysis(row["analysis_json"])
+        item["checked"] = row["checked_at"] is not None
+        out.append(item)
+    return out
+
+
+def inbound_totals(
+    conn: sqlite3.Connection, since: str, until: str, min_sec: int,
+    dept: str = "продажи",
+) -> dict[str, int]:
+    """Сколько входящих, сколько проверено, по скольким нет заявки."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS all_calls,
+               SUM(c.call_uid IS NOT NULL) AS checked,
+               SUM(c.orders_after > 0) AS with_order,
+               SUM(c.call_uid IS NOT NULL AND c.orders_after = 0 AND c.dismissed = 0) AS open_calls,
+               SUM(c.dismissed = 1) AS dismissed
+        FROM calls k LEFT JOIN inbound_checks c ON c.call_uid = k.uid
+        WHERE k.direction = 'in' AND k.local_date BETWEEN ? AND ? AND k.duration_sec >= ?
+          AND k.vats_login IN (SELECT vats_login FROM managers WHERE dept = ? AND active = 1)
+        """,
+        (since, until, min_sec, dept),
+    ).fetchone()
+    return {key: (row[key] or 0) for key in row.keys()}
 
 
 def order_detail(conn: sqlite3.Connection, order_id: str) -> dict[str, Any] | None:

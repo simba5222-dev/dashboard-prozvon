@@ -28,11 +28,16 @@ from app.db import (
     save_call_order,
     save_call_task,
     save_card_check,
+    save_inbound_check,
     upsert_manager,
 )
 from app.stats import local_parts
 
 logger = logging.getLogger(__name__)
+
+# Виды стадий, после которых заявка больше не живёт: сделка состоялась или
+# провалена. Всё остальное — работа в процессе.
+INACTIVE_STAGE_KINDS = ("won", "lost")
 
 # Поле звонка, где Synergy хранит «Фамилия Имя Отчество добавочный».
 CALL_AUTHOR_FIELD = "custom-28722"
@@ -88,6 +93,49 @@ class SynergyClient:
                 time.sleep(min(pause, 20.0))
         assert last is not None
         logger.warning("Synergy: 429 после %s попыток — %s", self._retries, path)
+        last.raise_for_status()
+        return {}
+
+    def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Запись в Synergy. Тот же тормоз и те же повторы, что у чтения.
+
+        Раньше повторы были только у чтения, и записи молча терялись при 429 —
+        в сервисе распознавания это уже проходили.
+        """
+        url = f"{self._base}/{path.lstrip('/')}"
+        headers = {**self._headers, "Content-Type": "application/vnd.api+json"}
+        last: httpx.Response | None = None
+        for attempt in range(1, self._retries + 1):
+            self._wait()
+            response = httpx.post(url, json=payload, headers=headers, timeout=self._timeout)
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response.json() if response.content else {}
+            last = response
+            if attempt < self._retries:
+                hinted = response.headers.get("Retry-After")
+                pause = float(hinted) if hinted else min(1.5 * (2 ** (attempt - 1)), 12.0)
+                logger.info("Synergy ответила 429 на запись, жду %.1f с", pause)
+                time.sleep(min(pause, 20.0))
+        assert last is not None
+        last.raise_for_status()
+        return {}
+
+    def patch(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Правка записи в Synergy. Тот же тормоз и повторы, что у остальных."""
+        url = f"{self._base}/{path.lstrip('/')}"
+        headers = {**self._headers, "Content-Type": "application/vnd.api+json"}
+        last: httpx.Response | None = None
+        for attempt in range(1, self._retries + 1):
+            self._wait()
+            response = httpx.patch(url, json=payload, headers=headers, timeout=self._timeout)
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response.json() if response.content else {}
+            last = response
+            if attempt < self._retries:
+                time.sleep(min(1.5 * (2 ** (attempt - 1)), 12.0))
+        assert last is not None
         last.raise_for_status()
         return {}
 
@@ -230,8 +278,17 @@ def parse_author(raw: Any) -> tuple[str, str]:
     return text, ""
 
 
-def sync_managers(conn: sqlite3.Connection, client: SynergyClient, group_name: str) -> list[str]:
-    """Обновить список менеджеров из группы Synergy. Возвращает фамилии."""
+def sync_managers(
+    conn: sqlite3.Connection, client: SynergyClient, group_name: str,
+    dept: str = "прозвон",
+) -> list[str]:
+    """Обновить список сотрудников из группы Synergy. Возвращает фамилии.
+
+    `dept` разделяет два списка: «прозвон» — те, чью дисциплину считает
+    дашборд, «продажи» — те, кому клиенты звонят напрямую. Один и тот же
+    человек может быть в обеих группах, тогда за ним остаётся последний
+    записанный отдел — это осознанно: отчёты по нему всё равно разные.
+    """
     groups = client.get("user-groups", per_page=100).get("data") or []
     target = next(
         (g for g in groups
@@ -257,12 +314,13 @@ def sync_managers(conn: sqlite3.Connection, client: SynergyClient, group_name: s
             synergy_user=user["id"],
             plan_calls=None,
             active=0 if attrs.get("disabled") else 1,
+            dept=dept,
             is_demo=0,
         )
         if not attrs.get("disabled"):
             surnames.append(surname_of(name))
     conn.commit()
-    logger.info("группа «%s»: активных менеджеров %s", group_name, len(surnames))
+    logger.info("группа «%s» (%s): активных сотрудников %s", group_name, dept, len(surnames))
     return surnames
 
 
@@ -324,32 +382,10 @@ def collect_range(
                 continue
             if created > until:
                 continue
-            author, _ = parse_author((attrs.get("customs") or {}).get(CALL_AUTHOR_FIELD))
-            surname = surname_of(author)
-            in_group = surname in known
-            if in_group and attrs.get("direction") == "outgoing":
+            is_new, in_group = store_call(conn, item, settings, known, now)
+            if in_group:
                 seen += 1
-            outgoing = attrs.get("direction") == "outgoing"
-            started = attrs.get("started-at") or attrs.get("created-at") or ""
-            local_date, local_hour = local_parts(started, settings.timezone_offset_hours)
-            # Чужие звонки сохраняем заодно: страницы всё равно пролистаны, а
-            # без них разбор заявки потом упирается в пятнадцатиминутное
-            # листание истории. В отчёт по прозвону они не попадают — там
-            # стоит условие in_group = 1.
-            if save_call(
-                conn, uid=str(item["id"]), vats_login=surname or "неизвестно",
-                client_phone=str(
-                    (attrs.get("dst-phone-number") if outgoing
-                     else attrs.get("src-phone-number")) or ""),
-                direction="out" if outgoing else "in",
-                status=str(attrs.get("status") or ""),
-                started_at=started, local_date=local_date, local_hour=local_hour,
-                wait_sec=int(float(attrs.get("wait") or 0)),
-                duration_sec=int(float(attrs.get("duration") or 0)),
-                record_url=attrs.get("recording") or None,
-                in_group=int(in_group and outgoing), is_demo=0, fetched_at=now,
-            ) and in_group and outgoing:
-                new += 1
+                new += int(is_new)
         conn.commit()
         if page % 20 == 0:
             logger.info("просмотрено страниц %s, звонков менеджеров %s", page, seen)
@@ -358,6 +394,45 @@ def collect_range(
     conn.commit()
     logger.info("период %s…%s: найдено %s, новых %s", since, until, seen, new)
     return new, seen
+
+
+def store_call(
+    conn: sqlite3.Connection, item: dict[str, Any], settings: Settings,
+    known: set[str], now: str,
+) -> tuple[bool, bool]:
+    """Сохранить звонок как он пришёл из Synergy.
+
+    Возвращает (новый ли, звонок ли прозвона). Входящие и звонки чужих
+    менеджеров сохраняем наравне с остальными: страницы всё равно пролистаны,
+    а без них не найти заявку, о которой клиент попросил напрямую менеджера.
+    В счётчики прозвона они не попадают — там условие `in_group = 1`.
+    """
+    attrs = item["attributes"]
+    outgoing = attrs.get("direction") == "outgoing"
+    author, _ = parse_author((attrs.get("customs") or {}).get(CALL_AUTHOR_FIELD))
+    surname = surname_of(author)
+    in_group = bool(surname in known and outgoing)
+    started = attrs.get("started-at") or attrs.get("created-at") or ""
+    local_date, local_hour = local_parts(started, settings.timezone_offset_hours)
+    phone = (attrs.get("dst-phone-number") if outgoing else attrs.get("src-phone-number")) or ""
+    is_new = save_call(
+        conn,
+        uid=str(item["id"]),
+        vats_login=surname or "неизвестно",
+        client_phone=str(phone),
+        direction="out" if outgoing else "in",
+        status=str(attrs.get("status") or ""),
+        started_at=started,
+        local_date=local_date,
+        local_hour=local_hour,
+        wait_sec=int(float(attrs.get("wait") or 0)),
+        duration_sec=int(float(attrs.get("duration") or 0)),
+        record_url=attrs.get("recording") or None,
+        in_group=int(in_group),
+        is_demo=0,
+        fetched_at=now,
+    )
+    return is_new, in_group
 
 
 def collect_calls(
@@ -372,33 +447,10 @@ def collect_calls(
     now = datetime.now(timezone.utc).isoformat()
     new = seen = 0
     for item in iter_calls_for_day(client, day):
-        attrs = item["attributes"]
-        if attrs.get("direction") != "outgoing":
-            continue
-        author, _ext = parse_author((attrs.get("customs") or {}).get(CALL_AUTHOR_FIELD))
-        surname = surname_of(author)
-        if surname not in known:
-            continue
-        seen += 1
-        started = attrs.get("started-at") or attrs.get("created-at") or ""
-        local_date, local_hour = local_parts(started, settings.timezone_offset_hours)
-        if save_call(
-            conn,
-            uid=str(item["id"]),
-            vats_login=surname,
-            client_phone=str(attrs.get("dst-phone-number") or ""),
-            direction="out",
-            status=str(attrs.get("status") or ""),
-            started_at=started,
-            local_date=local_date,
-            local_hour=local_hour,
-            wait_sec=int(float(attrs.get("wait") or 0)),
-            duration_sec=int(float(attrs.get("duration") or 0)),
-            record_url=attrs.get("recording") or None,
-            is_demo=0,
-            fetched_at=now,
-        ):
-            new += 1
+        is_new, in_group = store_call(conn, item, settings, known, now)
+        if in_group:
+            seen += 1
+            new += int(is_new)
     conn.commit()
     logger.info("звонки за %s: найдено %s, новых %s", day, seen, new)
     return new, seen
@@ -522,6 +574,118 @@ def collect_calls_for_phones(
     logger.info("звонки клиентов за %s…%s: новых %s, просмотрено до %s",
                 since, until, saved, reached)
     return saved, reached
+
+
+def contact_orders_around(
+    client: SynergyClient, contact_id: str, call_iso: str, stages: dict[str, tuple[str, str]],
+) -> tuple[list[str], list[str]]:
+    """Заявки контакта: заведённые после звонка и открытые на момент звонка.
+
+    Заявка в Synergy привязана к контакту, поэтому проверять надо именно по
+    нему, а не по времени: «после этого звонка по клиенту появилась заявка» —
+    вот признак того, что менеджер её оформил. Верхнего окна нет: он мог
+    завести её и через два дня.
+
+    Открытые заявки возвращаем отдельно — это контекст. Клиент часто звонит
+    по уже заведённой заявке, и такой разговор запросом не считается.
+    """
+    try:
+        payload = client.get(f"contacts/{contact_id}/orders",
+                             include="stage", sort="-created-at", per_page=50)
+    except (httpx.HTTPError, ValueError):
+        return [], []
+    try:
+        call_time = datetime.fromisoformat(call_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return [], []
+
+    after: list[str] = []
+    active: list[str] = []
+    for row in payload.get("data") or []:
+        attrs = row.get("attributes") or {}
+        name = str(attrs.get("name") or f"№{attrs.get('number') or row['id']}").strip()
+        stage_ref = (((row.get("relationships") or {}).get("stage") or {}).get("data") or {})
+        _stage_name, kind = stages.get(str(stage_ref.get("id") or ""), ("", ""))
+        created = str(attrs.get("created-at") or "")
+        try:
+            made = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if made >= call_time:
+            after.append(name)
+        elif kind not in INACTIVE_STAGE_KINDS:
+            active.append(name)
+    return after, active
+
+
+def check_inbound_calls(
+    conn: sqlite3.Connection, client: SynergyClient, settings: Settings,
+    limit: int = 40, recheck_hours: int = 0,
+) -> int:
+    """Проверить входящие звонки: завели ли по ним заявку.
+
+    Клиент часто звонит менеджеру напрямую и просит технику. Если менеджер не
+    оформил заявку, о просьбе не знает никто — это и есть потерянный заказ.
+    Здесь дешёвая проверка по метаданным: нашёлся ли клиент в CRM и появилась
+    ли заявка в окне после разговора.
+
+    Проверяем не сразу: `inbound_wait_hours` даёт менеджеру время оформить
+    заявку самому. Иначе список наполнится теми, кто как раз всё делает верно.
+    """
+    ready_before = (
+        datetime.now(timezone.utc) - timedelta(hours=settings.inbound_wait_hours)
+    ).isoformat()
+    # Только отдел продаж: клиенты звонят напрямую им, и именно их заявки
+    # теряются. Весь остальной входящий поток компании сюда не относится.
+    rows = conn.execute(
+        """
+        SELECT k.uid, k.client_phone, k.started_at FROM calls k
+        LEFT JOIN inbound_checks c ON c.call_uid = k.uid
+        WHERE k.direction = 'in' AND k.duration_sec >= ?
+          AND k.started_at <= ? AND c.call_uid IS NULL
+          AND k.vats_login IN (SELECT vats_login FROM managers WHERE dept = ? AND active = 1)
+        ORDER BY k.started_at DESC
+        LIMIT ?
+        """,
+        (settings.inbound_min_duration_sec, ready_before, settings.sales_dept, limit),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    now = datetime.now(timezone.utc).isoformat()
+    stages = load_stages(client)
+    done = 0
+    for row in rows:
+        contact = find_contact(client, row["client_phone"])
+        if contact is None:
+            save_inbound_check(
+                conn, call_uid=row["uid"], contact_id=None, contact_found=0,
+                contact_name=None, company_name=None, orders_after=0,
+                order_names="", checked_at=now,
+            )
+            conn.commit()
+            done += 1
+            continue
+        contact_id = contact["id"]
+        attrs = contact.get("attributes") or {}
+        after, active = contact_orders_around(client, contact_id, row["started_at"], stages)
+        save_inbound_check(
+            conn, call_uid=row["uid"], contact_id=contact_id, contact_found=1,
+            contact_name=str(attrs.get("as-string") or "").strip(),
+            company_name=contact_company(client, contact_id),
+            orders_after=len(after), order_names="; ".join(after),
+            active_orders=len(active), active_names="; ".join(active[:5]),
+            checked_at=now,
+        )
+        # Фиксируем каждую проверку: обход сотни звонков идёт минутами, и по
+        # незакрытой транзакции снаружи не видно, сколько уже сделано.
+        conn.commit()
+        done += 1
+        if done % 25 == 0:
+            logger.info("входящих проверено %s из %s", done, len(rows))
+    conn.commit()
+    logger.info("входящих проверено: %s", done)
+    return done
 
 
 def manager_user_ids(conn: sqlite3.Connection) -> list[str]:

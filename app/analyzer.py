@@ -240,6 +240,92 @@ def normalize_verdict(data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+EMPTY_SCREEN: dict[str, Any] = {
+    "is_request": False,
+    "equipment": "",
+    "request": "",
+    "quote": "",
+    "about_existing": False,
+    "confidence": 0,
+}
+
+SCREEN_PROMPT = """Ты просматриваешь начало входящего звонка клиента менеджеру
+компании «{own_company}». Вопрос ровно один: **прозвучал ли запрос на технику**,
+то есть клиент просит машину, спрашивает наличие, цену или сроки аренды.
+
+{domain}
+
+Запросом НЕ считается:
+- разговор по уже идущей аренде: где машина, когда приедет, почему опаздывает;
+- документы, счета, оплата, акты;
+- звонок не по адресу, ошибка номером, личный разговор;
+- предложение услуг нам (продавцы, реклама).
+
+ОТКРЫТЫЕ ЗАЯВКИ ЭТОГО КЛИЕНТА (по ним он может звонить, и это не новый запрос):
+{active}
+
+РАСШИФРОВКА НАЧАЛА РАЗГОВОРА (распознана начерно, слова искажены):
+{transcript}
+
+Верни JSON:
+{{
+  "is_request": true/false — прозвучал ли запрос на технику,
+  "equipment": "какая техника, нашими словами; пусто, если не названа",
+  "request": "суть просьбы одной строкой: что, куда, когда",
+  "quote": "дословный кусок расшифровки, где это слышно",
+  "about_existing": true/false — разговор об уже открытой заявке из списка выше,
+  "confidence": 0-100 — насколько уверен
+}}
+
+Расшифровка черновая: если разобрать нельзя — "is_request": false и
+"confidence" пониже. Выдумывать запрос нельзя, цитата обязана быть из текста.
+"""
+
+
+def screen_call(
+    transcript: str, active_orders: str, *, api_key: str, model: str,
+    own_company: str = "Техно-Ресурс", timeout_sec: float = 60.0,
+) -> dict[str, Any]:
+    """Быстрый просев: есть ли в разговоре запрос на технику.
+
+    Работает по черновой расшифровке начала разговора — полное распознавание
+    всего потока входящих не помещается в сутки, а запрос звучит в первую
+    минуту. Дальше в полный разбор уходят только те, где просев нашёл запрос.
+    """
+    from openai import OpenAI
+
+    if not transcript.strip():
+        return {**EMPTY_SCREEN}
+    client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": SCREEN_PROMPT.format(
+            own_company=own_company, domain=knowledge.DOMAIN, transcript=transcript[:6000],
+            active=active_orders or "открытых заявок нет",
+        )}],
+        temperature=0.0,
+        response_format={"type": "json_object"},
+    )
+    try:
+        data = json.loads(response.choices[0].message.content or "{}")
+    except ValueError:
+        return {**EMPTY_SCREEN}
+    out = {**EMPTY_SCREEN, **{k: v for k, v in data.items() if k in EMPTY_SCREEN}}
+    out["is_request"] = bool(out["is_request"])
+    out["about_existing"] = bool(out["about_existing"])
+    try:
+        out["confidence"] = max(0, min(100, int(out["confidence"])))
+    except (TypeError, ValueError):
+        out["confidence"] = 0
+    for key in ("equipment", "request", "quote"):
+        out[key] = str(out[key] or "").strip()
+    # Цитата обязана быть из расшифровки — то же правило, что и в разборе.
+    if out["is_request"] and out["quote"] and not quote_found(out["quote"], transcript, 0.6):
+        logger.info("просев: цитата не найдена в записи, запрос снят")
+        out["is_request"] = False
+    return out
+
+
 def card_summary(call: dict[str, Any]) -> str:
     """Что менеджер внёс в CRM — в виде, понятном модели."""
     lines = [

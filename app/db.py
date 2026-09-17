@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS managers (
     synergy_user  TEXT,
     plan_calls    INTEGER,          -- NULL → берём общий план из настроек
     active        INTEGER NOT NULL DEFAULT 1,
+    -- Отдел: «прозвон» — те, чью дисциплину считает дашборд; «продажи» — те,
+    -- кому клиенты звонят напрямую. Списки разные, и смешивать их нельзя:
+    -- у продаж нет плана по звонкам, а у прозвона нет входящего потока.
+    dept          TEXT NOT NULL DEFAULT 'прозвон',
     is_demo       INTEGER NOT NULL DEFAULT 0
 );
 
@@ -112,6 +116,40 @@ CREATE TABLE IF NOT EXISTS order_reports (
     created_at    TEXT NOT NULL
 );
 
+-- Входящие звонки менеджерам: есть ли по клиенту заявка после разговора.
+-- Клиент часто звонит менеджеру напрямую, и если тот не завёл заявку, о
+-- просьбе не знает никто. Эта таблица — след проверки: кого звали, нашёлся ли
+-- клиент в CRM и появилась ли заявка в окне после звонка.
+CREATE TABLE IF NOT EXISTS inbound_checks (
+    call_uid      TEXT PRIMARY KEY REFERENCES calls (uid),
+    contact_id    TEXT,
+    contact_found INTEGER NOT NULL DEFAULT 0,
+    contact_name  TEXT,
+    company_name  TEXT,
+    orders_after  INTEGER NOT NULL DEFAULT 0,   -- заявок у контакта после звонка
+    order_names   TEXT,                          -- какие именно, через «;»
+    active_orders INTEGER NOT NULL DEFAULT 0,   -- открытые заявки контакта на момент звонка
+    active_names  TEXT,
+    tasks_after   INTEGER,                       -- NULL — не проверяли
+    checked_at    TEXT NOT NULL,
+    -- Человек посмотрел и сказал «запроса не было». Такие строки из списка
+    -- уходят, но не удаляются: по ним потом считается точность отбора.
+    dismissed     INTEGER NOT NULL DEFAULT 0,
+    dismissed_at  TEXT
+);
+
+-- Просев входящих: по началу разговора — был ли запрос на технику.
+-- Черновая расшифровка хранится, но людям не показывается: она нужна только
+-- для ответа «запрос или нет» и чтобы можно было перепроверить решение.
+CREATE TABLE IF NOT EXISTS screens (
+    call_uid     TEXT PRIMARY KEY REFERENCES calls (uid),
+    head_text    TEXT,
+    verdict_json TEXT,
+    is_request   INTEGER NOT NULL DEFAULT 0,
+    created_order_id TEXT,        -- заявка, которую мы завели по этому звонку
+    created_at   TEXT NOT NULL
+);
+
 -- Расшифровка и разбор. Заполняется отдельно и может отставать.
 CREATE TABLE IF NOT EXISTS transcripts (
     call_uid      TEXT PRIMARY KEY REFERENCES calls (uid),
@@ -158,6 +196,10 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # Разбирая заявку, мы забираем и звонки чужих менеджеров — тех, кому её
     # передали. В счётчиках прозвона им не место, поэтому они помечены нулём.
     ("calls", "in_group", "INTEGER NOT NULL DEFAULT 1"),
+    ("managers", "dept", "TEXT NOT NULL DEFAULT 'прозвон'"),
+    ("inbound_checks", "active_orders", "INTEGER NOT NULL DEFAULT 0"),
+    ("inbound_checks", "active_names", "TEXT"),
+    ("screens", "created_order_id", "TEXT"),
 )
 
 
@@ -183,13 +225,16 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 def upsert_manager(conn: sqlite3.Connection, **row: Any) -> None:
     conn.execute(
         """
-        INSERT INTO managers (vats_login, display_name, synergy_user, plan_calls, active, is_demo)
-        VALUES (:vats_login, :display_name, :synergy_user, :plan_calls, :active, :is_demo)
+        INSERT INTO managers (vats_login, display_name, synergy_user, plan_calls,
+                              active, dept, is_demo)
+        VALUES (:vats_login, :display_name, :synergy_user, :plan_calls,
+                :active, :dept, :is_demo)
         ON CONFLICT (vats_login) DO UPDATE SET
             display_name = excluded.display_name,
             synergy_user = excluded.synergy_user,
             plan_calls   = excluded.plan_calls,
-            active       = excluded.active
+            active       = excluded.active,
+            dept         = excluded.dept
         """,
         {
             "vats_login": row["vats_login"],
@@ -197,6 +242,7 @@ def upsert_manager(conn: sqlite3.Connection, **row: Any) -> None:
             "synergy_user": row.get("synergy_user"),
             "plan_calls": row.get("plan_calls"),
             "active": int(row.get("active", 1)),
+            "dept": row.get("dept") or "прозвон",
             "is_demo": int(row.get("is_demo", 0)),
         },
     )
@@ -300,6 +346,57 @@ def save_call_task(conn: sqlite3.Connection, **row: Any) -> None:
             status       = excluded.status,
             responsible  = excluded.responsible,
             completed_at = excluded.completed_at
+        """,
+        row,
+    )
+
+
+def save_inbound_check(conn: sqlite3.Connection, **row: Any) -> None:
+    row.setdefault("tasks_after", None)
+    row.setdefault("active_orders", 0)
+    row.setdefault("active_names", "")
+    conn.execute(
+        """
+        INSERT INTO inbound_checks (call_uid, contact_id, contact_found, contact_name,
+                                    company_name, orders_after, order_names,
+                                    active_orders, active_names, tasks_after, checked_at)
+        VALUES (:call_uid, :contact_id, :contact_found, :contact_name,
+                :company_name, :orders_after, :order_names,
+                :active_orders, :active_names, :tasks_after, :checked_at)
+        ON CONFLICT (call_uid) DO UPDATE SET
+            contact_id    = excluded.contact_id,
+            contact_found = excluded.contact_found,
+            contact_name  = excluded.contact_name,
+            company_name  = excluded.company_name,
+            orders_after  = excluded.orders_after,
+            order_names   = excluded.order_names,
+            active_orders = excluded.active_orders,
+            active_names  = excluded.active_names,
+            tasks_after   = excluded.tasks_after,
+            checked_at    = excluded.checked_at
+        """,
+        row,
+    )
+
+
+def dismiss_inbound(conn: sqlite3.Connection, call_uid: str, when: str, back: bool = False) -> None:
+    """Пометить звонок как «запроса не было» или вернуть его в список."""
+    conn.execute(
+        "UPDATE inbound_checks SET dismissed = ?, dismissed_at = ? WHERE call_uid = ?",
+        (0 if back else 1, None if back else when, call_uid),
+    )
+
+
+def save_screen(conn: sqlite3.Connection, **row: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO screens (call_uid, head_text, verdict_json, is_request, created_at)
+        VALUES (:call_uid, :head_text, :verdict_json, :is_request, :created_at)
+        ON CONFLICT (call_uid) DO UPDATE SET
+            head_text    = excluded.head_text,
+            verdict_json = excluded.verdict_json,
+            is_request   = excluded.is_request,
+            created_at   = excluded.created_at
         """,
         row,
     )
