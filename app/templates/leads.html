@@ -100,21 +100,28 @@
           {% else %}<span class="dim">нет</span>{% endif %}
         </td>
         <td class="what">
-          {% if not r.checked %}<span class="dim">ещё не проверялся по CRM</span>
-          {% elif r.orders_after %}
-          <span class="ordered">заявка есть: {{ r.order_names }}</span>
-          {% else %}
-          заявки за {{ window_hours }} ч после разговора нет
-          {% endif %}
-          {% if r.analysis and r.analysis.client_need %}
-          <br><b>просил:</b> {{ r.analysis.client_need }}
-          {% elif r.has_transcript %}<br><span class="dim">расшифровка есть</span>{% endif %}
+          {% if r.screen and r.screen.is_request %}
+          <b>просит: {{ r.screen.request or r.screen.equipment }}</b>
+          {% if r.screen.quote %}<br><span class="dim">«{{ r.screen.quote[:130] }}»</span>{% endif %}
+          {% elif r.screen %}
+          <span class="dim">просев запроса не нашёл{% if r.screen.asked_by == "our_manager" %}: технику искал сам менеджер{% endif %}</span>
+          {% elif not r.checked %}<span class="dim">ещё не проверялся по CRM</span>
+          {% else %}<span class="dim">запись ещё не просеяна</span>{% endif %}
+          {% if r.orders_after %}<br><span class="ordered">заявка есть: {{ r.order_names }}</span>{% endif %}
+          {% if r.created_order_id %}<br><span class="ordered">заведена заявка {{ r.created_order_id }}</span>{% endif %}
         </td>
         <td class="act">
           <a href="{{ base }}/call/{{ r.uid }}">разбор</a>
+          {% if r.created_order_id %}
+          {% elif r.approved %}
+          · <span class="dim">подтверждено, заявка будет заведена</span>
+          · <a href="{{ base }}/leads/approve/{{ r.uid }}?back=1">отменить</a>
+          {% elif r.screen and r.screen.is_request %}
+          · <a href="{{ base }}/leads/approve/{{ r.uid }}"><b>завести заявку</b></a>
+          {% endif %}
           {% if r.dismissed %}
           · <a href="{{ base }}/leads/dismiss/{{ r.uid }}?back=1">вернуть в список</a>
-          {% elif r.checked and not r.orders_after %}
+          {% elif r.checked and not r.orders_after and not r.created_order_id %}
           · <a href="{{ base }}/leads/dismiss/{{ r.uid }}">запроса не было</a>
           {% endif %}
         </td>
@@ -126,7 +133,10 @@
 </div>
 
 <p class="dim" style="font-size:12.5px">
-  Это дешёвая проверка: она смотрит только на факт заявки, а не на содержание разговора.
+  Заявка в CRM заводится только по нажатию «завести заявку»: точность просева на
+  17.09.2026 — 69%, каждая третья была бы мусорной. Автоматическое создание вернём,
+  когда точность дойдёт до 90%. Проверка «есть ли заявка» смотрит только на факт заявки,
+  а не на содержание разговора.
   «Заявки нет» не значит «менеджер потерял заказ» — клиент мог звонить по текущей аренде
   или по делу, не связанному с техникой. Отметка «запроса не было» убирает строку из
   списка и остаётся в базе: по ней считается, насколько точно работает отбор.

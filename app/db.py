@@ -147,6 +147,11 @@ CREATE TABLE IF NOT EXISTS screens (
     verdict_json TEXT,
     is_request   INTEGER NOT NULL DEFAULT 0,
     created_order_id TEXT,        -- заявка, которую мы завели по этому звонку
+    -- Мягкий режим: находку подтверждает человек, и только после этого
+    -- заводится заявка. Точность просева на 17.09.2026 — 69%, каждая третья
+    -- заявка была бы мусорной, поэтому автомат отключён до 90%.
+    approved     INTEGER NOT NULL DEFAULT 0,
+    approved_at  TEXT,
     created_at   TEXT NOT NULL
 );
 
@@ -200,6 +205,8 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("inbound_checks", "active_orders", "INTEGER NOT NULL DEFAULT 0"),
     ("inbound_checks", "active_names", "TEXT"),
     ("screens", "created_order_id", "TEXT"),
+    ("screens", "approved", "INTEGER NOT NULL DEFAULT 0"),
+    ("screens", "approved_at", "TEXT"),
 )
 
 
@@ -376,6 +383,14 @@ def save_inbound_check(conn: sqlite3.Connection, **row: Any) -> None:
             checked_at    = excluded.checked_at
         """,
         row,
+    )
+
+
+def approve_screen(conn: sqlite3.Connection, call_uid: str, when: str, back: bool = False) -> None:
+    """Подтвердить находку просева — по ней заведут заявку — или снять подтверждение."""
+    conn.execute(
+        "UPDATE screens SET approved = ?, approved_at = ? WHERE call_uid = ?",
+        (0 if back else 1, None if back else when, call_uid),
     )
 
 

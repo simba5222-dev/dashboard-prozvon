@@ -364,12 +364,14 @@ def inbound_rows(
         SELECT k.uid, k.started_at, k.local_date, k.client_phone, k.duration_sec,
                k.vats_login, k.record_url, m.display_name,
                c.contact_id, c.contact_found, c.contact_name, c.company_name,
-               c.orders_after, c.order_names, c.checked_at, c.dismissed,
-               t.text IS NOT NULL AS has_transcript, t.analysis_json
+               c.orders_after, c.order_names, c.active_names, c.checked_at, c.dismissed,
+               t.text IS NOT NULL AS has_transcript, t.analysis_json,
+               s.verdict_json, s.is_request, s.approved, s.created_order_id
         FROM calls k
         LEFT JOIN managers m ON m.vats_login = k.vats_login
         LEFT JOIN inbound_checks c ON c.call_uid = k.uid
         LEFT JOIN transcripts t ON t.call_uid = k.uid
+        LEFT JOIN screens s ON s.call_uid = k.uid
         WHERE {' AND '.join(where)}
         ORDER BY k.started_at DESC
         """,
@@ -379,6 +381,7 @@ def inbound_rows(
     for row in rows:
         item = dict(row)
         item["analysis"] = _parsed_analysis(row["analysis_json"])
+        item["screen"] = _parsed_analysis(row["verdict_json"])
         item["checked"] = row["checked_at"] is not None
         out.append(item)
     return out

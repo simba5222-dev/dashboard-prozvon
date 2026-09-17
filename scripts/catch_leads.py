@@ -75,6 +75,9 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--apply", action="store_true",
                     help="создавать заявки в CRM; без него только показать")
+    ap.add_argument("--only-approved", action="store_true",
+                    help="заводить заявки только по подтверждённым человеком "
+                         "находкам — мягкий режим, включён в часовом таймере")
     ap.add_argument("--fix", action="store_true",
                     help="не создавать новые, а дозаполнить уже заведённые: "
                          "выжимка, соисполнитель, ответственный")
@@ -101,6 +104,7 @@ def main() -> int:
                        settings.crm_lead_stage)
 
     have_order = "IS NOT NULL" if args.fix else "IS NULL"
+    approved = "AND s.approved = 1" if args.only_approved else ""
     rows = conn.execute(
         f"""
         SELECT k.uid, k.started_at, k.duration_sec, k.client_phone, k.vats_login,
@@ -112,6 +116,7 @@ def main() -> int:
         LEFT JOIN managers m ON m.vats_login = k.vats_login
         LEFT JOIN transcripts t ON t.call_uid = s.call_uid
         WHERE s.is_request = 1 AND s.created_order_id {have_order}
+          {approved}
           AND c.contact_id IS NOT NULL AND c.dismissed = 0
           AND k.local_date BETWEEN ? AND ?
         ORDER BY k.started_at

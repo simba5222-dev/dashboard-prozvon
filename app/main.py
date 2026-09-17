@@ -21,7 +21,9 @@ from fastapi.templating import Jinja2Templates
 
 from app import __version__
 from app.config import Settings, get_settings
-from app.db import CARD_FIELDS, connect, dismiss_inbound, has_any_data, init_schema
+from app.db import (
+    CARD_FIELDS, approve_screen, connect, dismiss_inbound, has_any_data, init_schema,
+)
 from fastapi.responses import FileResponse, RedirectResponse
 
 from app.stats import (
@@ -283,6 +285,20 @@ async def leads_dismiss(request: Request, uid: str, back: int = 0) -> Any:
     """
     conn = request.app.state.db
     dismiss_inbound(conn, uid, datetime.now(timezone.utc).isoformat(), back=bool(back))
+    conn.commit()
+    base = request.headers.get("x-forwarded-prefix", "").rstrip("/")
+    return RedirectResponse(f"{base}/leads", status_code=303)
+
+
+@app.get("/leads/approve/{uid}")
+async def leads_approve(request: Request, uid: str, back: int = 0) -> Any:
+    """Подтвердить находку: по ней будет заведена заявка в CRM.
+
+    Заявка создаётся не здесь, а ближайшим часовым запуском: распознавание
+    записи целиком занимает минуты, столько держать страницу нельзя.
+    """
+    conn = request.app.state.db
+    approve_screen(conn, uid, datetime.now(timezone.utc).isoformat(), back=bool(back))
     conn.commit()
     base = request.headers.get("x-forwarded-prefix", "").rstrip("/")
     return RedirectResponse(f"{base}/leads", status_code=303)

@@ -99,10 +99,16 @@ def main() -> int:
             response = httpx.post(
                 f"{settings.asr_url.rstrip('/')}/transcribe",
                 files={"file": (f"{uid}.mp3", audio, "audio/mpeg")},
-                data={"mode": "mono"}, timeout=settings.asr_timeout_sec,
+                # Делим стерео на дорожки: без ролей не отличить «клиент
+                # просит технику» от «наш менеджер ищет её у подрядчика».
+                data={"mode": "split"}, timeout=settings.asr_timeout_sec,
             )
             response.raise_for_status()
             text = analyzer.dialog_text(response.json().get("dialog") or [])
+            # Роли по каналам у входящих ненадёжны: в одной записи «оператор» —
+            # наш менеджер, в другой — позвонивший. Проверено на записях.
+            # Поэтому стороны обезличиваем, а кто есть кто, решает разбор.
+            text = text.replace("operator:", "сторона A:").replace("client:", "сторона B:")
             verdict = analyzer.screen_call(
                 text, row["active_names"] or "",
                 api_key=settings.openai_api_key, model=settings.analysis_model,
