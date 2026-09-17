@@ -73,6 +73,8 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=1, help="за сколько последних дней")
     ap.add_argument("--day", help="по какую дату, ГГГГ-ММ-ДД")
     ap.add_argument("--limit", type=int, default=0, help="не больше стольких разговоров")
+    ap.add_argument("--min-sec", type=int, default=0,
+                    help="не брать разговоры короче, секунд (0 — порог из настроек)")
     ap.add_argument("--analyze-only", action="store_true",
                     help="не распознавать, только разобрать готовые расшифровки")
     ap.add_argument("--redo", action="store_true", help="переразобрать уже разобранные")
@@ -97,7 +99,7 @@ def main() -> int:
           AND k.duration_sec >= ?
         ORDER BY k.started_at DESC
         """,
-        (since, until, settings.talk_threshold_sec),
+        (since, until, args.min_sec or settings.talk_threshold_sec),
     ).fetchall()
 
     todo = []
