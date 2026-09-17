@@ -196,6 +196,30 @@ def check_asr(rep: Report, url: str) -> None:
     rep.fact(f"распознавание: модель {'загружена' if body.get('model_loaded') else 'ещё не загружена'}")
 
 
+def check_backup(rep: Report) -> None:
+    """Свежесть резервной копии. Бэкап без строки завершения не считается."""
+    log = Path("/var/backups/projects/backup.log")
+    db_dir = Path("/var/backups/projects/db")
+    if not log.exists():
+        rep.problem("резервного копирования нет вовсе")
+        return
+    dumps = sorted(db_dir.glob("*.db.gz"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not dumps:
+        rep.problem("копий базы нет в /var/backups/projects/db")
+        return
+    age_h = (datetime.now().timestamp() - dumps[0].stat().st_mtime) / 3600
+    # «ГОТОВО» пишется последней строкой: упавший на середине бэкап оставляет
+    # файлы, которые выглядят целыми, и без этой проверки читается как успех.
+    tail = log.read_text(errors="replace").splitlines()[-25:]
+    finished = any(l.startswith("ГОТОВО") for l in tail)
+    text = f"последняя копия {age_h:.0f} ч назад ({len(dumps)} шт), {dumps[0].stat().st_size // 1024} КБ"
+    if age_h > 36 or not finished:
+        rep.problem(f"резервное копирование: {text}"
+                    + ("" if finished else ", в логе нет строки завершения"))
+    else:
+        rep.fact(f"резервное копирование: {text}")
+
+
 def check_disk(rep: Report, db_path: Path, records: Path) -> None:
     """Место на диске и размеры того, что растёт."""
     out = subprocess.run(["df", "-BG", "--output=avail,pcent", str(db_path.parent)],
@@ -232,6 +256,7 @@ def main() -> int:
     check_logs(rep, db_path.parent)
     check_running(rep)
     check_asr(rep, settings.asr_url)
+    check_backup(rep)
     check_disk(rep, db_path, records)
 
     now = datetime.now(timezone.utc)

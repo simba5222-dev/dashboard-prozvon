@@ -147,10 +147,24 @@ def machines_section() -> Section:
 def safety_section() -> Section:
     s = Section("Уязвимые места")
 
-    # 1. Копии данных. Записи и разбор живут в одном экземпляре на одном диске.
-    size = sum(f.stat().st_size for f in RECORDS.glob("*.mp3")) / 1024 / 1024 if RECORDS.exists() else 0
-    s.add("резервная копия базы и записей",
-          f"нет; на диске {size:.0f} МБ записей и база с разбором", "beda")
+    # 1. Копии данных: есть ли свежая и дошла ли она до второго сервера.
+    dumps = sorted(Path("/var/backups/projects/db").glob("*.db.gz"),
+                   key=lambda f: f.stat().st_mtime, reverse=True)
+    log = Path("/var/backups/projects/backup.log")
+    if not dumps:
+        s.add("резервная копия базы и записей", "копий нет", "beda")
+    else:
+        age_h = (datetime.now().timestamp() - dumps[0].stat().st_mtime) / 3600
+        tail = log.read_text(errors="replace").splitlines()[-25:] if log.exists() else []
+        finished = any(l.startswith("ГОТОВО") for l in tail)
+        level = "ok" if age_h <= 36 and finished else "beda"
+        note = f"последняя {age_h:.0f} ч назад, копий {len(dumps)}"
+        if not finished:
+            note += "; в логе нет строки завершения"
+        s.add("резервная копия базы и записей", note, level)
+        remote = ssh_prod("du -sh /opt/backups/ams/records 2>/dev/null | cut -f1")
+        s.add("копия на втором сервере (Россия)", remote or "не найдена",
+              "ok" if remote else "vnimanie")
 
     # 2. Незапушенные коммиты: код есть только здесь.
     for proj in PROJECTS:
