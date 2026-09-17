@@ -141,52 +141,101 @@ def calls_of_day(
     return [dict(r) for r in rows]
 
 
+# Фильтры отчёта: имя в адресе → условие SQL. Значение «1» означает «да»,
+# «0» — «нет». Пусто — колонка не фильтруется.
+REPORT_FLAG_FILTERS: dict[str, str] = {
+    "need": "c.need_filled",
+    "objects": "c.objects_filled",
+    "inn": "c.inn_filled",
+    "task": "c.task_created",
+    "contact": "c.contact_found",
+    "company": "(c.company_name IS NOT NULL AND c.company_name <> '')",
+    "orders": "EXISTS (SELECT 1 FROM call_orders o WHERE o.call_uid = k.uid)",
+    "transcript": "EXISTS (SELECT 1 FROM transcripts t WHERE t.call_uid = k.uid)",
+    # Упущенное в CRM видно только из разбора: его складывает разборщик в
+    # analysis_json. Отдельной колонки под это нет — фильтруем по содержимому.
+    "missed": (
+        "EXISTS (SELECT 1 FROM transcripts t WHERE t.call_uid = k.uid"
+        " AND t.analysis_json LIKE '%\"missed\": [{%')"
+    ),
+}
+
+
 def report_rows(
     conn: sqlite3.Connection, since: str, until: str,
     vats_login: str | None = None, threshold_sec: int = 15,
+    filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Развёрнутая строка на каждый состоявшийся разговор.
 
     Дашборд отвечает «сколько и насколько дисциплинированно», а это — «что
-    именно произошло»: с кем говорили, что записали в карточку, завели ли
-    заявку, на кого её назначили и чем она кончилась.
+    именно произошло»: с кем говорили, что записали в карточку, какую задачу
+    поставил, завёл ли заявку, на кого её назначили и чем она кончилась.
 
     Недозвоны сюда не берём: рассказывать о них нечего, а таблицу они топят.
     """
+    filters = filters or {}
     where = ["k.local_date BETWEEN ? AND ?", "k.direction = 'out'", "k.duration_sec >= ?"]
     params: list[Any] = [since, until, threshold_sec]
     if vats_login:
         where.append("k.vats_login = ?")
         params.append(vats_login)
 
-    rows = conn.execute(
-        f"""
+    for name, expression in REPORT_FLAG_FILTERS.items():
+        value = filters.get(name)
+        if value in (None, ""):
+            continue
+        # «Нет» должно ловить и NULL: непроверенная карточка — это не «да».
+        where.append(expression if str(value) == "1" else f"NOT COALESCE({expression}, 0)")
+
+    if filters.get("min_sec"):
+        where.append("k.duration_sec >= ?")
+        params.append(int(filters["min_sec"]))
+
+    query = (filters.get("q") or "").strip()
+    if query:
+        # Условие с поиском добавляется последним, поэтому его четыре значения
+        # спокойно идут в хвост списка параметров.
+        where.append(
+            "(c.contact_name LIKE ? OR c.company_name LIKE ? OR c.need_value LIKE ?"
+            " OR k.client_phone LIKE ?)"
+        )
+        params.extend([f"%{query}%"] * 4)
+
+    sql = f"""
         SELECT k.uid, k.started_at, k.local_date, k.local_hour, k.client_phone,
                k.duration_sec, k.vats_login, m.display_name,
                c.contact_id, c.contact_found, c.contact_name, c.company_name,
                c.need_value, c.need_filled, c.objects_filled, c.inn_filled,
-               c.task_created, c.orders_count, c.deals_count, c.checked_at
+               c.task_created, c.orders_count, c.deals_count, c.checked_at,
+               t.text AS transcript_text, t.analysis_json
         FROM calls k
         LEFT JOIN managers m ON m.vats_login = k.vats_login
         LEFT JOIN card_checks c ON c.call_uid = k.uid
+        LEFT JOIN transcripts t ON t.call_uid = k.uid
         WHERE {' AND '.join(where)}
         ORDER BY k.started_at DESC
-        """,
-        params,
-    ).fetchall()
+    """
+    rows = conn.execute(sql, params).fetchall()
     if not rows:
         return []
 
     uids = [r["uid"] for r in rows]
-    orders: dict[str, list[dict[str, Any]]] = {}
-    # Заявок на звонок обычно одна-две, поэтому забираем их одним запросом,
-    # а не по строке: так таблица за две недели не превращается в тысячу чтений.
+    # Заявки и задачи забираем одним запросом на всю таблицу, а не по строке:
+    # так отчёт за две недели не превращается в тысячу чтений.
     marks = ",".join("?" * len(uids))
+    orders: dict[str, list[dict[str, Any]]] = {}
     for row in conn.execute(
         f"SELECT * FROM call_orders WHERE call_uid IN ({marks}) ORDER BY created_at",
         uids,
     ):
         orders.setdefault(row["call_uid"], []).append(dict(row))
+    tasks: dict[str, list[dict[str, Any]]] = {}
+    for row in conn.execute(
+        f"SELECT * FROM call_tasks WHERE call_uid IN ({marks}) ORDER BY created_at",
+        uids,
+    ):
+        tasks.setdefault(row["call_uid"], []).append(dict(row))
 
     out = []
     for row in rows:
@@ -194,13 +243,26 @@ def report_rows(
         item["orders"] = orders.get(row["uid"], [])
         item["orders_made"] = len(item["orders"])
         item["responsibles"] = sorted({o["responsible"] for o in item["orders"] if o["responsible"]})
+        item["tasks"] = tasks.get(row["uid"], [])
         item["checked"] = row["checked_at"] is not None
         # Звонки, проверенные до появления отчёта, знают галочки, но не
         # подробности. Пустая колонка у них означает «ещё не дособрано», а не
         # «менеджер не внёс» — путать эти два состояния нельзя.
         item["detailed"] = row["contact_name"] is not None
+        item["analysis"] = _parsed_analysis(row["analysis_json"])
+        item["missed"] = (item["analysis"] or {}).get("missed") or []
         out.append(item)
     return out
+
+
+def _parsed_analysis(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def report_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -214,6 +276,10 @@ def report_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "no_details": sum(1 for r in rows if r["checked"] and not r["detailed"]),
         "inn": sum(1 for r in rows if r["inn_filled"]),
         "tasks": sum(1 for r in rows if r["task_created"]),
+        "tasks_made": sum(len(r.get("tasks") or []) for r in rows),
+        "analyzed": sum(1 for r in rows if r.get("analysis")),
+        "with_missed": sum(1 for r in rows if r.get("missed")),
+        "missed_items": sum(len(r.get("missed") or []) for r in rows),
         "orders": len(orders),
         "won": sum(1 for o in orders if o["stage_kind"] == "won"),
         "lost": sum(1 for o in orders if o["stage_kind"] == "lost"),
@@ -241,11 +307,16 @@ def call_detail(conn: sqlite3.Connection, uid: str) -> dict[str, Any] | None:
     if row is None:
         return None
     data = dict(row)
-    if data.get("analysis_json"):
-        try:
-            data["analysis"] = json.loads(data["analysis_json"])
-        except ValueError:
-            data["analysis"] = None
+    data["analysis"] = _parsed_analysis(data.get("analysis_json"))
+    data["missed"] = (data["analysis"] or {}).get("missed") or []
+    data["tasks"] = [
+        dict(r) for r in conn.execute(
+            "SELECT * FROM call_tasks WHERE call_uid = ? ORDER BY created_at", (uid,))
+    ]
+    data["orders"] = [
+        dict(r) for r in conn.execute(
+            "SELECT * FROM call_orders WHERE call_uid = ? ORDER BY created_at", (uid,))
+    ]
     return data
 
 

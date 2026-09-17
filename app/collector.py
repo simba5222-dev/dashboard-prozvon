@@ -23,7 +23,13 @@ from typing import Any, Iterable
 import httpx
 
 from app.config import Settings
-from app.db import save_call, save_call_order, save_card_check, upsert_manager
+from app.db import (
+    save_call,
+    save_call_order,
+    save_call_task,
+    save_card_check,
+    upsert_manager,
+)
 from app.stats import local_parts
 
 logger = logging.getLogger(__name__)
@@ -407,29 +413,133 @@ def find_contact(client: SynergyClient, phone: str) -> dict[str, Any] | None:
     return None
 
 
-def has_task_after_call(client: SynergyClient, contact_id: str, after_iso: str, window_min: int) -> bool:
-    """Поставлена ли задача по контакту вскоре после звонка."""
-    try:
-        rows = client.get("diaries", **{"filter[contact-id]": contact_id,
-                                        "per_page": 20, "sort": "-created-at"}).get("data") or []
-    except (httpx.HTTPError, ValueError):
-        return False
+def manager_user_ids(conn: sqlite3.Connection) -> list[str]:
+    """Идентификаторы менеджеров в Synergy — по ним отбираются задачи."""
+    return [
+        str(row["synergy_user"])
+        for row in conn.execute(
+            "SELECT synergy_user FROM managers WHERE active = 1 AND synergy_user IS NOT NULL"
+        )
+    ]
+
+
+def refresh_tasks(
+    conn: sqlite3.Connection, client: SynergyClient, settings: Settings,
+    since: str, until: str,
+) -> int:
+    """Пересобрать задачи по уже проверенным звонкам за период.
+
+    Отдельно от проверки карточек: та стоит шесть обращений на звонок, а здесь
+    хватает одного списка задач на период. Нужно, чтобы починить историю —
+    до 17.09.2026 задачи отбирались фильтром, которого у Synergy нет, и по всем
+    звонкам подряд стояло «задача не поставлена».
+    """
+    rows = conn.execute(
+        """
+        SELECT k.uid, k.started_at, c.contact_id FROM calls k
+        JOIN card_checks c ON c.call_uid = k.uid
+        WHERE k.local_date BETWEEN ? AND ? AND k.direction = 'out'
+          AND k.duration_sec >= ? AND c.contact_found = 1 AND c.contact_id IS NOT NULL
+        ORDER BY k.started_at
+        """,
+        (since, until, settings.talk_threshold_sec),
+    ).fetchall()
+    if not rows:
+        return 0
+    tasks = load_tasks_index(client, manager_user_ids(conn), since=since)
+    found = 0
+    for row in rows:
+        made = tasks_after_call(tasks, row["contact_id"], row["started_at"],
+                                settings.card_window_min)
+        conn.execute(
+            "UPDATE card_checks SET task_created = ? WHERE call_uid = ?",
+            (int(bool(made)), row["uid"]),
+        )
+        for task in made:
+            save_call_task(conn, call_uid=row["uid"], is_demo=0, **task)
+        found += len(made)
+    conn.commit()
+    logger.info("задачи за %s…%s: звонков %s, задач привязано %s",
+                since, until, len(rows), found)
+    return found
+
+
+def load_tasks_index(
+    client: SynergyClient, user_ids: Iterable[str], since: str, max_pages: int = 20,
+) -> dict[str, list[dict[str, Any]]]:
+    """Задачи менеджеров с даты `since`, разложенные по контактам.
+
+    Отбирать задачи по контакту нельзя: `filter[contact-id]` на `diaries`
+    Synergy отвечает 400. Зато фильтр по автору работает, а задач у менеджера
+    десятки в месяц — дешевле забрать их разом и разложить здесь. Заодно это
+    одно обращение на период вместо одного на каждый звонок.
+    """
+    index: dict[str, list[dict[str, Any]]] = {}
+    for user_id in user_ids:
+        if not user_id:
+            continue
+        for page in range(1, max_pages + 1):
+            try:
+                # Связь с контактом приходит только по `include`: без него
+                # у задачи есть ссылка на контакт, но нет его идентификатора.
+                payload = client.get(
+                    "diaries", include="contact,responsible", per_page=100, page=page,
+                    sort="-created-at", **{"filter[user-id]": str(user_id)},
+                )
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.warning("задачи пользователя %s не прочитались: %s", user_id, exc)
+                break
+            rows = payload.get("data") or []
+            if not rows:
+                break
+            names = {
+                str(item["id"]): str((item.get("attributes") or {}).get("as-string") or "")
+                for item in payload.get("included") or []
+                if item.get("type") == "users"
+            }
+            too_old = False
+            for row in rows:
+                attrs = row.get("attributes") or {}
+                created = str(attrs.get("created-at") or "")
+                if created[:10] < since:
+                    too_old = True
+                    continue
+                ref = ((row.get("relationships") or {}).get("contact") or {}).get("data")
+                if not ref:
+                    continue
+                index.setdefault(str(ref["id"]), []).append({
+                    "task_id": str(row["id"]),
+                    "name": str(attrs.get("name") or ""),
+                    "created_at": created,
+                    "due_date": str(attrs.get("due-date") or ""),
+                    "status": str(attrs.get("status") or ""),
+                    "completed_at": str(attrs.get("completed-at") or ""),
+                    "responsible": names.get(str(attrs.get("responsible-id") or ""), ""),
+                })
+            if too_old:
+                break
+    logger.info("задачи: контактов с задачами %s", len(index))
+    return index
+
+
+def tasks_after_call(
+    index: dict[str, list[dict[str, Any]]], contact_id: str, after_iso: str, window_min: int,
+) -> list[dict[str, Any]]:
+    """Задачи по контакту, поставленные в окне после звонка."""
     try:
         call_time = datetime.fromisoformat(after_iso.replace("Z", "+00:00"))
     except ValueError:
-        return False
+        return []
     limit = call_time + timedelta(minutes=window_min)
-    for task in rows:
-        created = (task.get("attributes") or {}).get("created-at")
-        if not created:
-            continue
+    out = []
+    for task in index.get(str(contact_id), []):
         try:
-            made = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            made = datetime.fromisoformat(task["created_at"].replace("Z", "+00:00"))
         except ValueError:
             continue
         if call_time <= made <= limit:
-            return True
-    return False
+            out.append(task)
+    return sorted(out, key=lambda t: t["created_at"])
 
 
 def check_pending_cards(
@@ -460,9 +570,11 @@ def check_pending_cards(
     by_day: dict[str, int] = {}
     for row in rows:
         by_day[row["local_date"]] = by_day.get(row["local_date"], 0) + 1
+    tasks = load_tasks_index(client, manager_user_ids(conn), since=min(by_day))
     done = 0
     for day, _count in by_day.items():
-        done += check_cards(conn, client, settings, day, limit=limit - done, refresh=refresh)
+        done += check_cards(conn, client, settings, day, limit=limit - done,
+                            refresh=refresh, tasks=tasks)
         if done >= limit:
             break
     logger.info("догнано карточек: %s", done)
@@ -472,12 +584,17 @@ def check_pending_cards(
 def check_cards(
     conn: sqlite3.Connection, client: SynergyClient, settings: Settings, day: str,
     limit: int = 0, refresh: bool = False,
+    tasks: dict[str, list[dict[str, Any]]] | None = None,
 ) -> int:
     """Проверить карточки клиентов по состоявшимся звонкам за день.
 
     Обычно берём только непроверённые звонки. С `refresh` захватываем и те,
     что проверялись до появления развёрнутого отчёта: у них в базе есть
     галочки, но нет ни имени клиента, ни компании, ни заявок.
+
+    `tasks` — готовый указатель задач по контактам. Когда его не передали,
+    строим на этот день сами: задачи отбираются по автору, а не по контакту,
+    поэтому дешевле взять их одним запросом на период.
     """
     condition = "c.call_uid IS NULL"
     if refresh:
@@ -494,8 +611,13 @@ def check_cards(
     ).fetchall()
     if limit:
         rows = rows[:limit]
+    if not rows:
+        logger.info("карточек проверено за %s: 0", day)
+        return 0
 
     stages = load_stages(client)
+    if tasks is None:
+        tasks = load_tasks_index(client, manager_user_ids(conn), since=day)
     now = datetime.now(timezone.utc).isoformat()
     done = 0
     for row in rows:
@@ -523,6 +645,8 @@ def check_cards(
             return int(bool(str(value).strip())) if value is not None else 0
 
         objects = max(filled(settings.field_objects), filled(settings.field_objects_extra))
+        made_tasks = tasks_after_call(
+            tasks, contact_id, row["started_at"], settings.card_window_min)
         save_card_check(
             conn,
             call_uid=row["uid"],
@@ -531,8 +655,7 @@ def check_cards(
             need_filled=filled(settings.field_need),
             objects_filled=objects,
             inn_filled=filled(settings.field_inn),
-            task_created=int(has_task_after_call(
-                client, contact_id, row["started_at"], settings.card_window_min)),
+            task_created=int(bool(made_tasks)),
             orders_count=client.count(f"contacts/{contact_id}/orders"),
             deals_count=client.count(f"contacts/{contact_id}/deals"),
             # Пустая строка, а не NULL: NULL здесь означает «ещё не проверяли»,
@@ -547,6 +670,8 @@ def check_cards(
         for order in orders_after_call(client, contact_id, row["started_at"],
                                        settings.order_window_hours, stages):
             save_call_order(conn, call_uid=row["uid"], is_demo=0, **order)
+        for task in made_tasks:
+            save_call_task(conn, call_uid=row["uid"], is_demo=0, **task)
         done += 1
     conn.commit()
     logger.info("карточек проверено за %s: %s", day, done)

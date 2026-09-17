@@ -105,6 +105,40 @@ class Settings(BaseSettings):
         description="Разбор разговоров выключен по умолчанию: на 4 ядрах он "
         "не помещается в сутки при плане 120 звонков. Расчёт в PLAN.md.",
     )
+    asr_timeout_sec: float = Field(
+        default=900.0,
+        description="Сколько ждать распознавание одной записи. Двухминутный "
+        "разговор на модели small считается около полутора минут.",
+    )
+    records_dir: str = Field(
+        default="data/records",
+        description="Куда складывать скачанные записи разговоров.",
+    )
+    record_ssh_host: str | None = Field(
+        default="root@91.220.109.49",
+        description="Сервер, которому ВАТС отдаёт записи. Из Амстердама они "
+        "недоступны: МегаФон пускает только российские адреса, поэтому запись "
+        "скачивается там и приезжает сюда.",
+    )
+    record_ssh_key: str | None = Field(
+        default="/home/agent/.ssh/ru-proxy_ed25519",
+        description="Ключ к этому серверу. Читается только пользователем agent, "
+        "поэтому скачивание записей запускается под ним, а разбор — под claude.",
+    )
+    openai_api_key: str | None = Field(
+        default=None, description="Ключ OpenAI. Пусто — разбор расшифровок выключен."
+    )
+    analysis_model: str = Field(
+        default="gpt-4o",
+        description="Модель для разбора расшифровки. На сравнении gpt-4o-mini "
+        "не вытаскивала из разговора ничего: возвращала «потребность не "
+        "прозвучала» там, где клиент называл и технику, и объект.",
+    )
+    own_company: str = Field(
+        default="Техно-Ресурс",
+        description="Как называется наша компания. Нужно разбору: без этого "
+        "модель принимает наше же название в речи клиента за конкурента.",
+    )
 
     # --- Прочее ---
     db_path: str = Field(default="data/dashboard.db")
@@ -117,7 +151,8 @@ class Settings(BaseSettings):
 
     # Пустая строка в .env означает «не задано», иначе /health врёт о настройках.
     @field_validator(
-        "vats_api_token", "synergy_api_token",
+        "vats_api_token", "synergy_api_token", "openai_api_key",
+        "record_ssh_host", "record_ssh_key",
         "field_need", "field_objects", "field_objects_extra", "field_inn",
         mode="before",
     )
@@ -134,6 +169,10 @@ class Settings(BaseSettings):
     @property
     def synergy_configured(self) -> bool:
         return bool(self.synergy_api_token)
+
+    @property
+    def analysis_configured(self) -> bool:
+        return bool(self.openai_api_key)
 
     @property
     def card_fields_configured(self) -> bool:

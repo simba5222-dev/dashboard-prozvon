@@ -20,7 +20,8 @@ from datetime import date, timedelta
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 
 from app.collector import (  # noqa: E402
-    SynergyClient, check_cards, check_pending_cards, collect_calls, collect_range, sync_managers,
+    SynergyClient, check_cards, check_pending_cards, collect_calls, collect_range,
+    refresh_tasks, sync_managers,
 )
 from app.config import get_settings  # noqa: E402
 from app.db import connect, init_schema  # noqa: E402
@@ -35,6 +36,9 @@ def main() -> int:
     ap.add_argument("--cards-limit", type=int, default=0, help="ограничить число проверок")
     ap.add_argument("--catch-up", type=int, default=0,
                     help="догнать столько непроверенных карточек за прошлые дни")
+    ap.add_argument("--tasks-only", action="store_true",
+                    help="только пересобрать задачи по уже проверенным звонкам "
+                         "за период (дёшево: один список задач вместо обхода карточек)")
     ap.add_argument("--refresh", action="store_true",
                     help="перепроверить и те карточки, что проверялись без "
                          "данных для развёрнутого отчёта (имя, компания, заявки)")
@@ -56,6 +60,13 @@ def main() -> int:
     sync_managers(conn, client, settings.synergy_group)
 
     last = date.fromisoformat(args.day) if args.day else local_now(settings.timezone_offset_hours).date()
+
+    if args.tasks_only:
+        since = (last - timedelta(days=max(args.days - 1, 0))).isoformat()
+        found = refresh_tasks(conn, client, settings, since, last.isoformat())
+        print(f"{since}…{last}: задач привязано к звонкам {found}")
+        conn.close()
+        return 0
 
     if args.days > 2:
         # За несколько дней выгоднее один проход: Synergy отдаёт звонки

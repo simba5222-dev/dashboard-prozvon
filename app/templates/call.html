@@ -1,17 +1,40 @@
 {% extends "base.html" %}
 {% block title %}Звонок — дашборд прозвона{% endblock %}
 
+{% block extra_style %}
+<style>
+/* Разбор — это чтение, а не таблица чисел: колонка нормальной ширины. */
+.reco{margin:0;padding-left:18px;line-height:1.6}
+.miss-row{padding:9px 0;border-bottom:1px solid var(--line)}
+.miss-row:last-child{border-bottom:none}
+.miss-row .f{font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+  font-family:ui-monospace,Menlo,monospace;color:var(--stop);
+  background:var(--stop-soft);padding:1px 6px;border-radius:2px}
+.miss-row .v{display:block;margin-top:4px}
+.miss-row .q{display:block;margin-top:3px;color:var(--ink-3);font-size:12.5px;font-style:italic}
+.dl{display:grid;grid-template-columns:170px 1fr;gap:7px 14px;margin:0}
+.dl dt{color:var(--ink-3)}
+.dl dd{margin:0}
+.turn{display:grid;grid-template-columns:78px 1fr;gap:10px;padding:5px 0;line-height:1.55}
+.turn .r{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);
+  font-family:ui-monospace,Menlo,monospace;padding-top:3px}
+.turn.operator .r{color:var(--accent)}
+</style>
+{% endblock %}
+
 {% block content %}
 {% if not call %}
 <div class="top"><h1>Звонок не найден</h1></div>
 <p class="crumbs"><a href="/">← на дашборд</a></p>
 {% else %}
 <div class="top">
-  <h1>Звонок {{ call.client_phone }}</h1>
-  <span class="date">{{ call.started_at[:16]|replace("T", " ") }} UTC</span>
+  <h1>{{ call.contact_name or call.client_phone }}</h1>
+  <span class="date">{{ call.started_at[:16]|replace("T", " ") }}</span>
 </div>
 <p class="crumbs">
-  <a href="/manager/{{ call.vats_login }}?day={{ call.local_date }}">← {{ call.display_name or call.vats_login }}</a>
+  <a href="/report?manager={{ call.vats_login }}&day={{ call.local_date }}">← отчёт за {{ call.local_date }}</a>
+  · {{ call.display_name or call.vats_login }}
+  · <span class="mono">{{ call.client_phone }}</span>
   · длительность {{ call.duration_sec }} с · ожидание {{ call.wait_sec }} с
 </p>
 
@@ -48,16 +71,69 @@
   </div>
 </div>
 
-{% if call.analysis %}
+{% if call.tasks or call.orders %}
 <div class="card">
-  <div class="card-head"><h2>Разбор разговора</h2><span class="sub">по расшифровке</span></div>
-  <div class="card-body scroll">
-    <table>
-      {% for k, v in call.analysis.items() %}
-      <tr><td style="width:150px">{{ k }}</td>
-          <td>{% if v is iterable and v is not string %}{{ v|join(", ") }}{% else %}{{ v }}{% endif %}</td></tr>
+  <div class="card-head"><h2>Что заведено после звонка</h2>
+    <span class="sub">задачи и заявки</span></div>
+  <div class="card-body">
+    <dl class="dl">
+      {% for t in call.tasks %}
+      <dt>задача{% if t.due_date %}, срок {{ t.due_date[:10] }}{% endif %}</dt>
+      <dd>{{ t.name or "без названия" }}
+        <span class="dim">— {{ t.status or "без статуса" }}{% if t.responsible %}, {{ t.responsible }}{% endif %}</span></dd>
       {% endfor %}
-    </table>
+      {% for o in call.orders %}
+      <dt>заявка</dt>
+      <dd>{{ o.name }} <span class="dim">— {{ o.responsible or "без ответственного" }},
+        {{ o.stage_name or "без стадии" }}</span></dd>
+      {% endfor %}
+    </dl>
+  </div>
+</div>
+{% endif %}
+
+{% if call.analysis %}
+{% set a = call.analysis %}
+{% if call.missed %}
+<div class="card">
+  <div class="card-head"><h2>Прозвучало в разговоре, но не попало в CRM</h2>
+    <span class="sub">каждый пункт с цитатой из записи</span></div>
+  <div class="card-body">
+    {% for m in call.missed %}
+    <div class="miss-row">
+      <span class="f">{{ m.field }}</span>
+      <span class="v">{{ m.value }}</span>
+      <span class="q">«{{ m.quote }}»</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>Разбор разговора</h2>
+    <span class="sub">по расшифровке записи</span></div>
+  <div class="card-body">
+    <dl class="dl">
+      {% if a.summary %}<dt>о чём говорили</dt><dd>{{ a.summary }}</dd>{% endif %}
+      <dt>потребность клиента</dt>
+      <dd>{% if a.client_need %}{{ a.client_need }}
+          {% elif a.need_stated %}<span class="dim">прозвучала, но неразборчиво</span>
+          {% else %}<span class="dim">в разговоре не прозвучала</span>{% endif %}</dd>
+      {% if a.next_step %}<dt>о чём договорились</dt><dd>{{ a.next_step }}</dd>{% endif %}
+      {% if a.call_quality %}
+      <dt>оценка разговора</dt>
+      <dd>{{ a.call_quality }} из 5{% if a.quality_notes %} <span class="dim">— {{ a.quality_notes }}</span>{% endif %}</dd>
+      {% endif %}
+    </dl>
+    {% if a.recommendations %}
+    <h3 style="margin:16px 0 6px;font-size:13px">Что сделать</h3>
+    <ul class="reco">{% for r in a.recommendations %}<li>{{ r }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if a.unusable %}
+    <p class="dim" style="margin:10px 0 0">Разговора по сути не было: не дозвонился,
+      попал не туда или запись не разобрать.</p>
+    {% endif %}
   </div>
 </div>
 {% endif %}
@@ -65,14 +141,24 @@
 {% if call.transcript_text %}
 <div class="card">
   <div class="card-head"><h2>Расшифровка</h2>
-    <span class="sub">оператор и клиент распознаны раздельно</span></div>
+    <span class="sub">менеджер и клиент распознаны раздельно; телефонный звук, возможны искажения</span></div>
   <div class="card-body">
-    <pre class="mono" style="white-space:pre-wrap;margin:0;line-height:1.7">{{ call.transcript_text }}</pre>
+    {% for line in call.transcript_text.split("\n") %}
+      {% if line.strip() %}
+      {% set parts = line.split(": ", 1) %}
+      <div class="turn {{ parts[0] }}">
+        <span class="r">{{ "менеджер" if parts[0] == "operator" else "клиент" }}</span>
+        <span>{{ parts[1] if parts|length > 1 else line }}</span>
+      </div>
+      {% endif %}
+    {% endfor %}
   </div>
 </div>
 {% else %}
 <div class="card"><div class="card-body dim">
-  Расшифровки нет. Разбор разговоров {% if settings.transcribe_enabled %}включён, но этот звонок ещё не обработан{% else %}выключен: на четырёх ядрах он не помещается в сутки при плане 120 звонков{% endif %}.
+  Записи этого разговора ещё нет. Расшифровка появляется после того, как запись
+  скачана с российского сервера и распознана: <span class="mono">scripts/fetch_records.py</span>,
+  затем <span class="mono">scripts/analyze_calls.py</span>.
 </div></div>
 {% endif %}
 {% endif %}

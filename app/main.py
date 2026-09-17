@@ -140,15 +140,27 @@ async def manager_day(request: Request, vats_login: str, day: str | None = None)
 @app.get("/report", response_class=HTMLResponse)
 async def report(
     request: Request, day: str | None = None, days: int = 1, manager: str | None = None,
+    need: str = "", objects: str = "", inn: str = "", task: str = "",
+    contact: str = "", company: str = "", orders: str = "",
+    transcript: str = "", missed: str = "", q: str = "", min_sec: int = 0,
 ) -> Any:
-    """Развёрнутая таблица: что произошло по каждому разговору."""
+    """Развёрнутая таблица: что произошло по каждому разговору.
+
+    Каждая колонка фильтруется отдельно: «покажи разговоры без записанной
+    потребности», «где поставлена задача», «где разбор нашёл упущенное».
+    """
     settings: Settings = request.app.state.settings
     conn = request.app.state.db
     until = day or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
     days = max(1, min(days, 60))
     since = (date.fromisoformat(until) - timedelta(days=days - 1)).isoformat()
 
-    rows = report_rows(conn, since, until, manager, settings.talk_threshold_sec)
+    filters = {
+        "need": need, "objects": objects, "inn": inn, "task": task,
+        "contact": contact, "company": company, "orders": orders,
+        "transcript": transcript, "missed": missed, "q": q, "min_sec": min_sec,
+    }
+    rows = report_rows(conn, since, until, manager, settings.talk_threshold_sec, filters)
     ctx = _base_context(request)
     ctx.update({
         "day": until,
@@ -159,6 +171,9 @@ async def report(
         "all_managers": managers(conn),
         "rows": rows,
         "totals": report_totals(rows),
+        "filters": filters,
+        "filters_on": any(v not in ("", 0, None) for k, v in filters.items()),
+        "card_window_min": settings.card_window_min,
         "order_window_hours": settings.order_window_hours,
         "threshold": settings.talk_threshold_sec,
     })

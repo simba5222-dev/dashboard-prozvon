@@ -83,6 +83,23 @@ CREATE TABLE IF NOT EXISTS call_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_call_orders_call ON call_orders (call_uid);
 
+-- Задачи, поставленные после звонка. Отдельной строкой, а не галочкой:
+-- «задача есть» и «задача — перезвонить 17-го с готовым расчётом» — разные
+-- сведения, и руководителю нужно второе.
+CREATE TABLE IF NOT EXISTS call_tasks (
+    task_id       TEXT NOT NULL,
+    call_uid      TEXT NOT NULL REFERENCES calls (uid),
+    name          TEXT,
+    created_at    TEXT,
+    due_date      TEXT,
+    status        TEXT,          -- opened / completed / ...
+    responsible   TEXT,
+    completed_at  TEXT,
+    is_demo       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (task_id, call_uid)
+);
+CREATE INDEX IF NOT EXISTS idx_call_tasks_call ON call_tasks (call_uid);
+
 -- Расшифровка и разбор. Заполняется отдельно и может отставать.
 CREATE TABLE IF NOT EXISTS transcripts (
     call_uid      TEXT PRIMARY KEY REFERENCES calls (uid),
@@ -244,6 +261,24 @@ def save_call_order(conn: sqlite3.Connection, **row: Any) -> None:
             stage_name  = excluded.stage_name,
             stage_kind  = excluded.stage_kind,
             amount      = excluded.amount
+        """,
+        row,
+    )
+
+
+def save_call_task(conn: sqlite3.Connection, **row: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO call_tasks (task_id, call_uid, name, created_at, due_date,
+                                status, responsible, completed_at, is_demo)
+        VALUES (:task_id, :call_uid, :name, :created_at, :due_date,
+                :status, :responsible, :completed_at, :is_demo)
+        ON CONFLICT (task_id, call_uid) DO UPDATE SET
+            name         = excluded.name,
+            due_date     = excluded.due_date,
+            status       = excluded.status,
+            responsible  = excluded.responsible,
+            completed_at = excluded.completed_at
         """,
         row,
     )

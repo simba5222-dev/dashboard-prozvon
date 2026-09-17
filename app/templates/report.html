@@ -3,17 +3,20 @@
 
 {% block extra_style %}
 <style>
-/* Таблица широкая по существу: восемь вопросов владельца — восемь колонок.
-   Расширяем именно эту страницу, остальные экраны остаются читаемой шириной. */
-.wrap{max-width:1560px}
+/* Таблица широкая по существу: у владельца к каждому разговору десяток
+   вопросов — столько же колонок. Расширяем именно эту страницу, остальные
+   экраны остаются читаемой шириной. */
+.wrap{max-width:1760px}
 .rep{font-size:13px;table-layout:auto}
 .rep th{padding-right:14px}
 .rep td{padding-right:14px;vertical-align:top}
 .rep tr:hover td{background:var(--surface-2)}
 .rep .who{min-width:150px}
-.rep .need{min-width:190px;color:var(--ink-2)}
-.rep .firm{min-width:160px}
-.rep .deal{min-width:230px}
+.rep .need{min-width:170px;color:var(--ink-2)}
+.rep .firm{min-width:150px}
+.rep .deal{min-width:210px}
+.rep .task{min-width:190px}
+.rep .talk{min-width:260px}
 .marks{display:flex;gap:4px;font-family:ui-monospace,Menlo,monospace;font-size:11px}
 .marks i{font-style:normal;width:19px;text-align:center;border-radius:2px;padding:1px 0;
   background:var(--sunken);color:var(--ink-3)}
@@ -28,13 +31,34 @@
 .ord .st.won{background:var(--ok-soft);color:var(--ok)}
 .ord .st.lost{background:var(--stop-soft);color:var(--stop)}
 .ord .st.opened{background:var(--accent-soft);color:var(--accent)}
-.filters{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;font-size:13px}
-.filters select,.filters input{font:inherit;padding:5px 8px;border:1px solid var(--line-2);
-  border-radius:2px;background:var(--surface);color:var(--ink)}
-.filters button{font:inherit;padding:5px 14px;border:1px solid var(--accent);
+.ord .st.completed{background:var(--ok-soft);color:var(--ok)}
+/* Упущенное в CRM — главное, ради чего смотрят разбор: выделяем цветом тревоги,
+   но текстом, а не значком: важно, что именно прозвучало. */
+.miss{display:block;line-height:1.35;color:var(--stop);margin-bottom:4px}
+.miss b{font-weight:600}
+.sum{display:block;color:var(--ink-2);line-height:1.4}
+.filters{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:flex-end;font-size:13px}
+.filters label{display:flex;flex-direction:column;gap:3px;color:var(--ink-3);font-size:11.5px;
+  letter-spacing:.04em;text-transform:uppercase}
+.filters select,.filters input{font:inherit;font-size:13px;text-transform:none;letter-spacing:0;
+  padding:5px 8px;border:1px solid var(--line-2);border-radius:2px;
+  background:var(--surface);color:var(--ink)}
+.filters .on select{border-color:var(--accent);color:var(--accent)}
+.filters button{font:inherit;padding:6px 14px;border:1px solid var(--accent);
   background:var(--accent);color:#fff;border-radius:2px;cursor:pointer}
+.filters a.clear{padding:6px 2px;color:var(--ink-3)}
 </style>
 {% endblock %}
+
+{% macro flag(name, title) %}
+<label class="{% if filters[name] %}on{% endif %}">{{ title }}
+  <select name="{{ name }}">
+    <option value="">всё</option>
+    <option value="1" {% if filters[name] == "1" %}selected{% endif %}>есть</option>
+    <option value="0" {% if filters[name] == "0" %}selected{% endif %}>нет</option>
+  </select>
+</label>
+{% endmacro %}
 
 {% block content %}
 <div class="top">
@@ -44,7 +68,8 @@
 <p class="crumbs">
   <a href="/?day={{ day }}">← дашборд</a> ·
   строка на каждый разговор длиннее {{ threshold }} с ·
-  заявка считается заведённой по звонку, если создана в течение {{ order_window_hours }} ч после него
+  задача считается поставленной по звонку, если создана в течение {{ card_window_min }} мин после него,
+  заявка — в течение {{ order_window_hours }} ч
 </p>
 
 <div class="card">
@@ -60,7 +85,21 @@
       </label>
       <label>По дату <input type="date" name="day" value="{{ day }}"></label>
       <label>Дней назад <input type="number" name="days" min="1" max="60" value="{{ days }}" style="width:70px"></label>
+      {{ flag("need", "Потребность") }}
+      {{ flag("objects", "Объекты") }}
+      {{ flag("inn", "ИНН") }}
+      {{ flag("task", "Задача") }}
+      {{ flag("company", "Компания") }}
+      {{ flag("orders", "Заявка") }}
+      {{ flag("contact", "Есть в CRM") }}
+      {{ flag("transcript", "Разбор") }}
+      {{ flag("missed", "Упущено") }}
+      <label>Дольше, с <input type="number" name="min_sec" min="0" max="3600" value="{{ filters.min_sec or '' }}" style="width:75px"></label>
+      <label>Поиск <input type="search" name="q" value="{{ filters.q }}" placeholder="имя, компания, телефон" style="width:190px"></label>
       <button type="submit">Показать</button>
+      {% if filters_on %}
+      <a class="clear" href="/report?day={{ day }}&days={{ days }}{% if manager_login %}&manager={{ manager_login }}{% endif %}">сбросить</a>
+      {% endif %}
     </form>
   </div>
 </div>
@@ -72,11 +111,15 @@
       <div class="n">{{ totals.needs }}</div><div class="l">с записанной потребностью</div></div>
     <div class="tile"><div class="n">{{ totals.companies }}</div><div class="l">клиентов с компанией</div></div>
     <div class="tile {% if totals.tasks == 0 %}bad{% endif %}">
-      <div class="n">{{ totals.tasks }}</div><div class="l">поставлено задач</div></div>
+      <div class="n">{{ totals.tasks }}</div><div class="l">со звонка поставлена задача</div></div>
     <div class="tile {% if totals.orders %}good{% endif %}">
       <div class="n">{{ totals.orders }}</div><div class="l">заявок заведено</div></div>
     <div class="tile"><div class="n">{{ totals.won }}<span class="dim" style="font-size:16px">/{{ totals.lost }}</span></div>
       <div class="l">сделка / провалена</div></div>
+    <div class="tile {% if totals.with_missed %}bad{% endif %}">
+      <div class="n">{{ totals.with_missed }}</div>
+      <div class="l">разговоров с упущенным в CRM</div></div>
+    <div class="tile"><div class="n">{{ totals.analyzed }}</div><div class="l">разобрано по записи</div></div>
   </div>
 </div>
 
@@ -92,7 +135,9 @@
   </div>
   <div class="card-body scroll">
     {% if not rows %}
-    <p class="dim" style="margin:0">За этот период разговоров нет.</p>
+    <p class="dim" style="margin:0">
+      {% if filters_on %}Под фильтры ничего не подошло.{% else %}За этот период разговоров нет.{% endif %}
+    </p>
     {% else %}
     <table class="rep">
       <tr>
@@ -103,8 +148,10 @@
         <th title="Потребность · Объекты · ИНН · Задача">Что добавил</th>
         <th class="need">Потребность клиента</th>
         <th class="firm">Компания</th>
+        <th class="task">Задачи по звонку</th>
         <th class="num">Заявок</th>
         <th class="deal">Заявки: кто ответственный и чем кончилось</th>
+        <th class="talk">Разбор разговора</th>
       </tr>
       {% for r in rows %}
       <tr>
@@ -144,6 +191,18 @@
           {% elif r.detailed and r.contact_found %}<span class="no">нет</span>
           {% else %}<span class="dim">…</span>{% endif %}
         </td>
+        <td class="task">
+          {% for t in r.tasks %}
+          <span class="ord">
+            <b>{{ t.name or "без названия" }}</b>
+            {% if t.due_date %}<br><span class="dim">срок {{ t.due_date[:10] }}</span>{% endif %}
+            <span class="st {{ t.status }}">{{ t.status or "без статуса" }}</span>
+          </span>
+          {% else %}
+            {% if not r.detailed %}<span class="dim">…</span>
+            {% else %}<span class="no">нет</span>{% endif %}
+          {% endfor %}
+        </td>
         <td class="num">
           {% if not r.detailed %}<span class="dim">…</span>{% else %}{{ r.orders_made }}{% endif %}{% if r.orders_count %}<span class="dim" title="всего заявок у клиента за всё время">/{{ r.orders_count }}</span>{% endif %}
         </td>
@@ -156,6 +215,17 @@
           </span>
           {% else %}<span class="dim">—</span>{% endfor %}
         </td>
+        <td class="talk">
+          {% if r.analysis %}
+            {% for m in r.missed %}
+            <span class="miss"><b>{{ m.field }}:</b> {{ m.value }}</span>
+            {% endfor %}
+            {% if r.analysis.summary %}<span class="sum">{{ r.analysis.summary }}</span>{% endif %}
+            <a href="/call/{{ r.uid }}">разбор целиком →</a>
+          {% elif r.transcript_text %}
+            <a href="/call/{{ r.uid }}">расшифровка есть, разбора нет →</a>
+          {% else %}<span class="dim">запись не разобрана</span>{% endif %}
+        </td>
       </tr>
       {% endfor %}
     </table>
@@ -167,6 +237,7 @@
   Колонка «Заявок» — сколько заведено после этого разговора, через дробь — сколько всего
   заявок у клиента за всё время. Клиент без компании и без записанной потребности — это
   не сбой сбора, а то, чего менеджер не сделал. Многоточие — наоборот: строка
-  ещё не дошла до сверки с CRM, и судить по ней рано.
+  ещё не дошла до сверки с CRM, и судить по ней рано. Красным в разборе — то, что
+  клиент сказал в разговоре, а в карточке этого нет.
 </p>
 {% endblock %}
