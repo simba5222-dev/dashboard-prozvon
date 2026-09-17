@@ -1,0 +1,51 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && ([ -f .claude/current-task.md ] && echo '=== НЕЗАКРЫТАЯ ЗАДАЧА ===' && cat .claude/current-task.md && echo '' || true) && ([ -f NEXT_SESSION.md ] && echo '=== НА ЧЁМ ОСТАНОВИЛИСЬ ===' && sed -n '1,40p' NEXT_SESSION.md || true) && ([ -f data/selfcheck.json ] && echo '' && echo '=== УТРЕННЯЯ ДИАГНОСТИКА ===' && .venv/bin/python -c \"import json;d=json.load(open('data/selfcheck.json'));print(d['checked_at'],'—',d['status']);[print('  !',p) for p in d['problems']]\" || true)",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/deny-catastrophic.py\"",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-stop-check.sh\"",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/memory-sync.sh\"",
+            "timeout": 15000
+          }
+        ]
+      }
+    ]
+  }
+}
