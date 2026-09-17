@@ -446,11 +446,20 @@ def collect_calls(
 
     now = datetime.now(timezone.utc).isoformat()
     new = seen = 0
+    # Коммитим по ходу, а не одной транзакцией в конце. Листание истории за день
+    # идёт постранично и с паузами на сеть: при полутора тысячах звонков это
+    # минуты, и всё это время открытая запись держит базу. Разбор разговоров
+    # пишет в неё же и после тридцати секунд ожидания падает с «database is
+    # locked» — так 17.09.2026 потерялся разбор за день, дойдя до 20 звонков
+    # из 350. Разрыв транзакции на пачки безопасен: сохранение звонка
+    # идемпотентно, повторный проход просто не найдёт новых.
     for item in iter_calls_for_day(client, day):
         is_new, in_group = store_call(conn, item, settings, known, now)
         if in_group:
             seen += 1
             new += int(is_new)
+        if (seen + new) % 100 == 0:
+            conn.commit()
     conn.commit()
     logger.info("звонки за %s: найдено %s, новых %s", day, seen, new)
     return new, seen
