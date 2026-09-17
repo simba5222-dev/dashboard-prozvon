@@ -80,6 +80,29 @@ def main() -> int:
     print(f"разговоров с упущенным в CRM: "
           f"{len({r['uid'] for r, _ in missed_all})}, пунктов {len(missed_all)}")
 
+    equipment = Counter(
+        r["analysis"].get("equipment", "").strip().lower()
+        for r in live if r["analysis"].get("equipment")
+    )
+    if equipment:
+        print("\nО какой технике говорили:")
+        for name, count in equipment.most_common(10):
+            print(f"  {count:>3}  {name}")
+
+    questions = Counter(
+        q for r in live for q in r["analysis"].get("questions_missed") or []
+    )
+    if questions:
+        print("\nОбязательные вопросы, которые чаще всего не задают:")
+        for question, count in questions.most_common(10):
+            print(f"  {count:>3}  {question}")
+
+    upsell = Counter(u for r in live for u in r["analysis"].get("upsell_missed") or [])
+    if upsell:
+        print("\nЧто стоило предложить в дополнение и не предложили:")
+        for item, count in upsell.most_common(8):
+            print(f"  {count:>3}  {item}")
+
     by_field = Counter(m["field"] for _, m in missed_all)
     if by_field:
         print("\nЧего не хватает в карточках:")

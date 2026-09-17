@@ -120,12 +120,21 @@
       <dd>{% if a.client_need %}{{ a.client_need }}
           {% elif a.need_stated %}<span class="dim">прозвучала, но неразборчиво</span>
           {% else %}<span class="dim">в разговоре не прозвучала</span>{% endif %}</dd>
+      {% if a.equipment %}<dt>техника в разговоре</dt><dd>{{ a.equipment }}</dd>{% endif %}
       {% if a.next_step %}<dt>о чём договорились</dt><dd>{{ a.next_step }}</dd>{% endif %}
       {% if a.call_quality %}
       <dt>оценка разговора</dt>
       <dd>{{ a.call_quality }} из 5{% if a.quality_notes %} <span class="dim">— {{ a.quality_notes }}</span>{% endif %}</dd>
       {% endif %}
     </dl>
+    {% if a.questions_missed %}
+    <h3 style="margin:16px 0 6px;font-size:13px">Не спросил, хотя по учебнику должен</h3>
+    <ul class="reco">{% for q in a.questions_missed %}<li>{{ q }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if a.upsell_missed %}
+    <h3 style="margin:16px 0 6px;font-size:13px">Не предложил в дополнение</h3>
+    <ul class="reco">{% for u in a.upsell_missed %}<li>{{ u }}</li>{% endfor %}</ul>
+    {% endif %}
     {% if a.recommendations %}
     <h3 style="margin:16px 0 6px;font-size:13px">Что сделать</h3>
     <ul class="reco">{% for r in a.recommendations %}<li>{{ r }}</li>{% endfor %}</ul>

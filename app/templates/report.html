@@ -244,7 +244,11 @@
             {% for m in r.missed %}
             <span class="miss"><b>{{ m.field }}:</b> {{ m.value }}</span>
             {% endfor %}
+            {% if r.analysis.equipment %}<span class="sum"><b>{{ r.analysis.equipment }}</b></span>{% endif %}
             {% if r.analysis.summary %}<span class="sum">{{ r.analysis.summary }}</span>{% endif %}
+            {% if r.analysis.questions_missed %}
+            <span class="sum dim">не спросил: {{ r.analysis.questions_missed|join("; ") }}</span>
+            {% endif %}
             <a href="{{ base }}/call/{{ r.uid }}">разбор целиком →</a>
           {% elif r.transcript_text %}
             <a href="{{ base }}/call/{{ r.uid }}">расшифровка есть, разбора нет →</a>

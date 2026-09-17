@@ -21,6 +21,8 @@ import json
 import logging
 from typing import Any
 
+from app import knowledge
+
 logger = logging.getLogger(__name__)
 
 # Поля карточки, на языке которых говорим и с моделью, и с руководителем.
@@ -45,13 +47,22 @@ EMPTY_ANALYSIS: dict[str, Any] = {
     "call_quality": None,
     "quality_notes": "",
     "unusable": False,
+    # Из учебника: какая техника обсуждалась, каких обязательных вопросов
+    # менеджер не задал и какую сопутствующую технику не предложил.
+    "equipment": "",
+    "questions_missed": [],
+    "upsell_missed": [],
 }
 
 PROMPT = """Ты разбираешь запись исходящего звонка менеджера «тёплого прозвона».
-Наша компания — «{own_company}», сдаёт в аренду строительную и грузоподъёмную
-технику: экскаваторы, автокраны, автовышки, манипуляторы, самосвалы. Менеджер
-обзванивает клиентов, которые обращались раньше, выясняет потребность и заводит
-заявку. Упоминание нашего названия в разговоре — это про нас, а не про конкурента.
+Наша компания — «{own_company}». Менеджер обзванивает клиентов, которые
+обращались раньше, выясняет потребность и заводит заявку. Упоминание нашего
+названия в разговоре — это про нас, а не про конкурента.
+
+{domain}
+
+ЧЕК-ЛИСТ ПО ЭТОМУ РАЗГОВОРУ (если техника угадана по словам клиента):
+{checklist}
 
 Расшифровка автоматическая, с телефонной линии: слова бывают искажены, реплики
 местами накладываются. Додумывать нельзя. Если разговор не разобрать или он
@@ -77,7 +88,10 @@ PROMPT = """Ты разбираешь запись исходящего звон
   ],
   "recommendations": ["что сделать менеджеру по этому клиенту и что исправить в ведении разговора"],
   "call_quality": 1-5 — насколько разговор доведён до результата,
-  "quality_notes": "коротко, за что такая оценка"
+  "quality_notes": "коротко, за что такая оценка",
+  "equipment": "какая техника обсуждалась, нашими словами: автовышка, гусеничный экскаватор, пухто; пусто, если речи о технике не было",
+  "questions_missed": ["обязательные вопросы из чек-листа, которые менеджер не задал, хотя техника уже была названа"],
+  "upsell_missed": ["какую сопутствующую технику стоило предложить и не предложил"]
 }}
 
 Что такое "missed". Это сведения, которые **прозвучали в разговоре** и которых
@@ -100,6 +114,8 @@ PROMPT = """Ты разбираешь запись исходящего звон
   приглаживать нельзя: цитату проверяют по тексту, и непохожий пункт выкинут;
 - "recommendations" — не больше трёх, каждая по делу и выполнима: «перезвонить
   22-го, клиент просил», «спросить ИНН», а не «улучшить качество работы»;
+- "questions_missed" и "upsell_missed" заполняй, только когда техника в разговоре
+  названа. Клиент сказал «ничего не нужно» — списки пустые, придираться не за что;
 - пиши по-русски, коротко, без вводных слов.
 """
 
@@ -118,6 +134,8 @@ ORDER_PROMPT = """Ты разбираешь, почему заявка на ар
 Наша компания — «{own_company}». Заявку завёл менеджер тёплого прозвона, дальше
 её ведёт ответственный: он созванивается с клиентом, считает стоимость,
 согласовывает технику и сроки.
+
+{domain}
 
 ЗАЯВКА:
 {order}
@@ -190,6 +208,7 @@ def analyze_order(
     client = OpenAI(api_key=api_key, timeout=timeout_sec)
     prompt = ORDER_PROMPT.format(
         own_company=own_company,
+        domain=knowledge.DOMAIN,
         order=order_summary(order),
         calls=calls_summary(calls),
     )
@@ -259,11 +278,23 @@ def analyze(
     from openai import OpenAI
 
     client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    # Чек-лист подбираем по словам самого разговора и по потребности из
+    # карточки: весь учебник в запрос не влезет, да и не нужен — вопросы к
+    # автовышке ничего не говорят о разборе заявки на самосвал.
+    hints = f"{transcript}\n{call.get('need_value') or ''}"
+    questions = knowledge.questions_for(hints)
+    upsell = knowledge.upsell_for(hints)
+    checklist = "\n".join(f"- {q}" for q in questions) or "- техника в разговоре не названа"
+    if upsell:
+        checklist += "\n\nЧто к этой технике обычно предлагают:\n" + "\n".join(
+            f"- {item}" for item in upsell)
     prompt = PROMPT.format(
         transcript=transcript,
         card=card_summary(call),
         fields=", ".join(MISSED_FIELDS),
         own_company=own_company,
+        domain=knowledge.DOMAIN,
+        checklist=checklist,
     )
     response = client.chat.completions.create(
         model=model,
@@ -347,12 +378,11 @@ def normalize(
         missed.append({"field": field, "value": value, "quote": quote})
     out["missed"] = missed
 
-    recommendations = out["recommendations"]
-    if isinstance(recommendations, str):
-        recommendations = [recommendations]
-    out["recommendations"] = [
-        str(r).strip() for r in (recommendations or []) if str(r).strip()
-    ][:3]
+    for key in ("recommendations", "questions_missed", "upsell_missed"):
+        value = out[key]
+        if isinstance(value, str):
+            value = [value]
+        out[key] = [str(item).strip() for item in (value or []) if str(item).strip()][:3]
 
     quality = out["call_quality"]
     try:
@@ -362,6 +392,6 @@ def normalize(
 
     out["need_stated"] = bool(out["need_stated"])
     out["unusable"] = bool(out["unusable"])
-    for key in ("summary", "client_need", "next_step", "quality_notes"):
+    for key in ("summary", "client_need", "next_step", "quality_notes", "equipment"):
         out[key] = str(out[key] or "").strip()
     return out
