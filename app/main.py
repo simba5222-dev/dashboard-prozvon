@@ -69,6 +69,28 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Дашборд прозвона", version=__version__, lifespan=lifespan)
 
 
+def as_int(value: Any, default: int = 0) -> int:
+    """Число из параметра адреса.
+
+    Форма отчёта отправляет все свои поля, даже пустые: «дольше, с» без
+    значения приезжает как `min_sec=`. Строгий разбор отвечал на это 422, и
+    отбор по датам «не работал» — на самом деле падала вся страница.
+    """
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def as_date(value: Any) -> str:
+    """Дата из параметра адреса или пустая строка, если её нет или она кривая."""
+    text = str(value or "").strip()
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        return ""
+
+
 def _base_context(request: Request) -> dict[str, Any]:
     settings: Settings = request.app.state.settings
     return {
@@ -147,10 +169,10 @@ async def manager_day(request: Request, vats_login: str, day: str | None = None)
 @app.get("/report", response_class=HTMLResponse)
 async def report(
     request: Request, since: str = "", until: str = "",
-    day: str | None = None, days: int = 0, manager: str | None = None,
+    day: str | None = None, days: str = "", manager: str | None = None,
     need: str = "", objects: str = "", inn: str = "", task: str = "",
     contact: str = "", company: str = "", orders: str = "",
-    transcript: str = "", missed: str = "", q: str = "", min_sec: int = 0,
+    transcript: str = "", missed: str = "", q: str = "", min_sec: str = "",
 ) -> Any:
     """Развёрнутая таблица: что произошло по каждому разговору.
 
@@ -163,16 +185,18 @@ async def report(
     settings: Settings = request.app.state.settings
     conn = request.app.state.db
     today = local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
-    until = until or day or today
-    if not since:
-        since = (date.fromisoformat(until) - timedelta(days=max(days, 1) - 1)).isoformat()
+    until = as_date(until) or as_date(day) or today
+    since = as_date(since) or (
+        date.fromisoformat(until) - timedelta(days=max(as_int(days), 1) - 1)
+    ).isoformat()
     if since > until:
         since, until = until, since
 
     filters = {
         "need": need, "objects": objects, "inn": inn, "task": task,
         "contact": contact, "company": company, "orders": orders,
-        "transcript": transcript, "missed": missed, "q": q, "min_sec": min_sec,
+        "transcript": transcript, "missed": missed, "q": q,
+        "min_sec": as_int(min_sec),
     }
     rows = report_rows(conn, since, until, manager, settings.talk_threshold_sec, filters)
     ctx = _base_context(request)
@@ -219,8 +243,10 @@ async def orders_page(
     """Заявки за период и чем они кончились."""
     settings: Settings = request.app.state.settings
     conn = request.app.state.db
-    until = until or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
-    since = since or (date.fromisoformat(until) - timedelta(days=13)).isoformat()
+    until = as_date(until) or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    since = as_date(since) or (date.fromisoformat(until) - timedelta(days=13)).isoformat()
+    if since > until:
+        since, until = until, since
 
     rows = orders_of_period(conn, since, until, kind or None)
     ctx = _base_context(request)

@@ -167,6 +167,20 @@ def test_фильтр_по_упущенному_в_crm(conn):
     assert report_totals(rows)["with_missed"] == 1
 
 
+def test_пустое_число_в_фильтре_не_ломает_страницу():
+    # Форма отчёта отправляет все поля, даже пустые: «дольше, с» без значения
+    # приезжает как min_sec=. Строгий разбор отвечал на это 422, и владелец
+    # видел «не работает фильтр по датам», хотя падала вся страница.
+    from app.main import as_date, as_int
+
+    assert as_int("") == 0
+    assert as_int("абв", default=15) == 15
+    assert as_int("40") == 40
+    assert as_date("") == ""
+    assert as_date("кривая") == ""
+    assert as_date("2026-09-01") == "2026-09-01"
+
+
 def test_фильтр_по_поиску_смотрит_в_компанию(conn):
     assert len(report_rows(conn, DAY, DAY, filters=_filters(q="Трест"))) == 1
     assert report_rows(conn, DAY, DAY, filters=_filters(q="Рога и копыта")) == []
