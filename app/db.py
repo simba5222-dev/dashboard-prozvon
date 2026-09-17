@@ -140,6 +140,11 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Писателей больше одного: сборщик по таймеру, разбор записей и разбор
+    # заявок работают одновременно. Без ожидания второй писатель получает
+    # «database is locked» и падает посреди работы — так уже терялся час
+    # распознавания. Тридцати секунд хватает: длинных транзакций здесь нет.
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 

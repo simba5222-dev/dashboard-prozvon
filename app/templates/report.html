@@ -37,6 +37,11 @@
 .miss{display:block;line-height:1.35;color:var(--stop);margin-bottom:4px}
 .miss b{font-weight:600}
 .sum{display:block;color:var(--ink-2);line-height:1.4}
+/* Почему заявка не дошла до сделки — прямо в строке: владелец смотрит таблицу
+   целиком, и ради одной фразы проваливаться в заявку он не должен. */
+.ord .why{display:block;margin-top:2px;color:var(--stop);line-height:1.35;
+  max-width:340px}
+.ord .why.dim{color:var(--ink-3)}
 .rep tr.filt td{padding:4px 14px 10px 0;border-bottom:1px solid var(--line-2);vertical-align:middle}
 .rep tr.filt:hover td{background:none}
 .rep tr.filt input,.rep tr.filt select{font:inherit;font-size:12px;padding:3px 5px;
@@ -236,6 +241,11 @@
             <b><a href="{{ base }}/order/{{ o.order_id }}">{{ o.name }}</a></b> —
             {{ o.responsible or "без ответственного" }}
             <span class="st {{ o.stage_kind }}">{{ o.stage_name or "без стадии" }}</span>
+            {% if o.reason %}
+            <span class="why" title="{{ o.reason }}">{{ o.reason }}</span>
+            {% elif o.stage_kind == "lost" %}
+            <span class="why dim">почему — не разобрано</span>
+            {% endif %}
           </span>
           {% else %}<span class="dim">—</span>{% endfor %}
         </td>

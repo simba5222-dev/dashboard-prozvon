@@ -229,10 +229,21 @@ def report_rows(
     marks = ",".join("?" * len(uids))
     orders: dict[str, list[dict[str, Any]]] = {}
     for row in conn.execute(
-        f"SELECT * FROM call_orders WHERE call_uid IN ({marks}) ORDER BY created_at",
+        f"""
+        SELECT o.*, r.verdict_json FROM call_orders o
+        LEFT JOIN order_reports r ON r.order_id = o.order_id
+        WHERE o.call_uid IN ({marks}) ORDER BY o.created_at
+        """,
         uids,
     ):
-        orders.setdefault(row["call_uid"], []).append(dict(row))
+        order = dict(row)
+        # Короткая причина проигрыша нужна прямо в строке отчёта: владелец
+        # смотрит таблицу целиком и не должен проваливаться в каждую заявку,
+        # чтобы понять, почему она не дошла до сделки.
+        verdict = _parsed_analysis(row["verdict_json"])
+        order["verdict"] = verdict
+        order["reason"] = (verdict or {}).get("outcome", "")
+        orders.setdefault(row["call_uid"], []).append(order)
     tasks: dict[str, list[dict[str, Any]]] = {}
     for row in conn.execute(
         f"SELECT * FROM call_tasks WHERE call_uid IN ({marks}) ORDER BY created_at",

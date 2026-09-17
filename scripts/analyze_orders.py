@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import analyzer  # noqa: E402
-from app.collector import SynergyClient, collect_contact_calls, contact_phones  # noqa: E402
+from app.collector import SynergyClient, collect_calls_for_phones, contact_phones  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db import connect, init_schema, save_order_report  # noqa: E402
 
@@ -123,7 +123,11 @@ def main() -> int:
     print(f"заявок к разбору: {len(orders)}")
 
     today = date.today().isoformat()
-    done = 0
+
+    # Сначала телефоны всех разбираемых заявок, потом один проход по периоду.
+    # Компания делает около 1300 звонков в день: листать их заново под каждую
+    # заявку — час работы и лишняя нагрузка на CRM.
+    plan: list[tuple[dict, str, set[str]]] = []
     for order in orders:
         order_id = order["order_id"]
         if not args.redo and conn.execute(
@@ -131,7 +135,6 @@ def main() -> int:
             (order_id,),
         ).fetchone():
             continue
-
         check = conn.execute(
             "SELECT contact_id FROM card_checks WHERE call_uid = ?", (order["call_uid"],)
         ).fetchone()
@@ -139,12 +142,37 @@ def main() -> int:
         if not contact_id:
             logger.warning("заявка %s: контакт неизвестен", order_id)
             continue
+        plan.append((order, contact_id, contact_phones(client, contact_id)))
 
-        phones = contact_phones(client, contact_id)
+    if not plan:
+        print("всё разобрано, новых заявок нет")
+        conn.close()
+        return 0
+
+    all_phones = {phone for _, _, phones in plan for phone in phones}
+    oldest = min((order["created_at"] or today)[:10] for order, _, _ in plan)
+    _saved, reached = collect_calls_for_phones(
+        conn, client, settings, all_phones, since=oldest, until=today)
+
+    done = skipped = 0
+    for order, contact_id, phones in plan:
+        order_id = order["order_id"]
         created = (order["created_at"] or "")[:10] or today
-        collect_contact_calls(conn, client, settings, phones, since=created, until=today)
-
         calls = calls_with_client(conn, phones, order["created_at"])
+
+        # Если листание не дошло до даты заявки, «звонков нет» означает «мы не
+        # смотрели». Вердикт по такой заявке был бы обвинением на пустом месте.
+        if not calls and reached > created:
+            logger.warning("заявка %s (%s): звонки за период не просмотрены (дошли до %s)",
+                           order_id, created, reached)
+            save_order_report(
+                conn, order_id=order_id, contact_id=contact_id, calls_count=0,
+                verdict_json=None,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            conn.commit()
+            skipped += 1
+            continue
 
         verdict = None
         if not args.collect_only and settings.analysis_configured:
@@ -164,7 +192,8 @@ def main() -> int:
         print(f"  {order_id} «{order['name']}»: звонков {len(calls)} — {mark}")
 
     conn.close()
-    print(f"разобрано заявок: {done}")
+    print(f"разобрано заявок: {done}"
+          + (f", пропущено из-за неполного просмотра звонков: {skipped}" if skipped else ""))
     return 0
 
 

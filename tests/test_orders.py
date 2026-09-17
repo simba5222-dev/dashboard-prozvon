@@ -83,6 +83,21 @@ def test_вердикт_читается_со_страницы_заявки(conn
     assert order_detail(conn, "900")["verdict"]["outcome"] == "клиент нашёл технику сам"
 
 
+def test_причина_проигрыша_видна_в_строке_отчёта(conn):
+    # Владелец смотрит таблицу целиком: ради одной фразы проваливаться
+    # в каждую заявку он не должен.
+    save_order_report(conn, order_id="900", contact_id="55", calls_count=1,
+                      verdict_json=json.dumps({"outcome": "клиент нашёл технику сам"},
+                                              ensure_ascii=False),
+                      created_at=datetime.now(timezone.utc).isoformat())
+    row = report_rows(conn, DAY, DAY)[0]
+    assert row["orders"][0]["reason"] == "клиент нашёл технику сам"
+
+
+def test_без_разбора_причины_в_строке_нет(conn):
+    assert report_rows(conn, DAY, DAY)[0]["orders"][0]["reason"] == ""
+
+
 def test_отбор_заявок_по_исходу(conn):
     assert len(orders_of_period(conn, DAY, DAY, "lost")) == 1
     assert orders_of_period(conn, DAY, DAY, "won") == []

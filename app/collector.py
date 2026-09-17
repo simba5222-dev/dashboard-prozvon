@@ -324,27 +324,34 @@ def collect_range(
                 continue
             if created > until:
                 continue
-            if attrs.get("direction") != "outgoing":
-                continue
             author, _ = parse_author((attrs.get("customs") or {}).get(CALL_AUTHOR_FIELD))
             surname = surname_of(author)
-            if surname not in known:
-                continue
-            seen += 1
+            in_group = surname in known
+            if in_group and attrs.get("direction") == "outgoing":
+                seen += 1
+            outgoing = attrs.get("direction") == "outgoing"
             started = attrs.get("started-at") or attrs.get("created-at") or ""
             local_date, local_hour = local_parts(started, settings.timezone_offset_hours)
+            # Чужие звонки сохраняем заодно: страницы всё равно пролистаны, а
+            # без них разбор заявки потом упирается в пятнадцатиминутное
+            # листание истории. В отчёт по прозвону они не попадают — там
+            # стоит условие in_group = 1.
             if save_call(
-                conn, uid=str(item["id"]), vats_login=surname,
-                client_phone=str(attrs.get("dst-phone-number") or ""),
-                direction="out", status=str(attrs.get("status") or ""),
+                conn, uid=str(item["id"]), vats_login=surname or "неизвестно",
+                client_phone=str(
+                    (attrs.get("dst-phone-number") if outgoing
+                     else attrs.get("src-phone-number")) or ""),
+                direction="out" if outgoing else "in",
+                status=str(attrs.get("status") or ""),
                 started_at=started, local_date=local_date, local_hour=local_hour,
                 wait_sec=int(float(attrs.get("wait") or 0)),
                 duration_sec=int(float(attrs.get("duration") or 0)),
-                record_url=attrs.get("recording") or None, is_demo=0, fetched_at=now,
-            ):
+                record_url=attrs.get("recording") or None,
+                in_group=int(in_group and outgoing), is_demo=0, fetched_at=now,
+            ) and in_group and outgoing:
                 new += 1
+        conn.commit()
         if page % 20 == 0:
-            conn.commit()
             logger.info("просмотрено страниц %s, звонков менеджеров %s", page, seen)
         if too_old:
             break
@@ -430,24 +437,35 @@ def contact_phones(client: SynergyClient, contact_id: str) -> set[str]:
     return out
 
 
-def collect_contact_calls(
+def collect_calls_for_phones(
     conn: sqlite3.Connection, client: SynergyClient, settings: Settings,
-    phones: set[str], since: str, until: str, max_pages: int = 60,
-) -> int:
-    """Сохранить звонки с этим клиентом за период — чьи угодно, в обе стороны.
+    phones: set[str], since: str, until: str, max_pages: int = 400,
+) -> tuple[int, str]:
+    """Сохранить звонки с этими клиентами за период — чьи угодно, в обе стороны.
 
     Нужно для разбора заявки: её ведёт не тот, кто звонил в прозвоне, а тот,
     кому её передали, и его звонки в дашборде не собираются. Отбирать звонки
-    по контакту Synergy не умеет (`filter[contact-id]` отвечает 400), поэтому
-    листаем период и сверяем телефоны на своей стороне.
+    по контакту Synergy не умеет (`filter[contact-id]` отвечает 400, а
+    `filter[dst-phone-number]` — 500), поэтому листаем период и сверяем
+    телефоны на своей стороне.
+
+    Телефоны принимаем **все сразу**, одним проходом: компания делает около
+    1300 звонков в день, до заявки недельной давности это тысяч десять записей.
+    Листать их заново под каждую заявку — час работы и лишняя нагрузка на CRM.
+
+    Возвращает (сколько сохранено, самая старая просмотренная дата). Вторая
+    величина важнее первой: если листание не дошло до даты заявки, «звонков
+    нет» означает «мы не смотрели», а не «менеджер не звонил». Перепутать эти
+    два состояния нельзя — по ним судят о работе людей.
 
     Такие звонки помечаются `in_group = 0` и в счётчики прозвона не попадают.
     """
     if not phones:
-        return 0
+        return 0, until
     now = datetime.now(timezone.utc).isoformat()
     known = {row["vats_login"] for row in conn.execute("SELECT vats_login FROM managers")}
     saved = 0
+    reached = until
     for page in range(1, max_pages + 1):
         try:
             rows = client.get("telephony-calls", per_page=100, page=page,
@@ -456,11 +474,15 @@ def collect_contact_calls(
             logger.warning("звонки клиента: страница %s не прочиталась: %s", page, exc)
             break
         if not rows:
+            # Страницы кончились — значит, просмотрели всё, что есть в CRM.
+            reached = since
             break
         too_old = False
         for item in rows:
             attrs = item["attributes"]
             created = (attrs.get("created-at") or "")[:10]
+            if created:
+                reached = min(reached, created)
             if created and created < since:
                 too_old = True
                 continue
@@ -491,9 +513,15 @@ def collect_contact_calls(
                 saved += 1
         if too_old:
             break
+        # Фиксируем каждую страницу: пока транзакция открыта, другие процессы
+        # (разбор записей, сборщик по таймеру) не могут писать в базу.
+        conn.commit()
+        if page % 25 == 0:
+            logger.info("просмотрено страниц %s, дошли до %s", page, reached)
     conn.commit()
-    logger.info("звонки клиента за %s…%s: новых %s", since, until, saved)
-    return saved
+    logger.info("звонки клиентов за %s…%s: новых %s, просмотрено до %s",
+                since, until, saved, reached)
+    return saved, reached
 
 
 def manager_user_ids(conn: sqlite3.Connection) -> list[str]:
