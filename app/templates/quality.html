@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Качество просева — дашборд{% endblock %}
+{% block content %}
+
+<div class="top"><h1>Качество просева</h1>
+  <div class="date">{% if run %}прогон {{ run.at[:16]|replace("T", " ") }}{% endif %}</div></div>
+<p class="crumbs"><a href="{{ base }}/">сегодня</a> · <a href="{{ base }}/leads">возможные заявки</a></p>
+
+<div class="card">
+  <div class="card-head"><h2>На живом потоке</h2>
+    <span class="sub">по вашим отметкам на странице
+      <a href="{{ base }}/leads">возможные заявки</a></span></div>
+  <div class="tiles">
+    <div class="tile {% if live_precision and live_precision >= 90 %}good{% elif live_precision %}mid{% endif %}">
+      <div class="n">{% if live_precision is not none %}{{ live_precision }}%{% else %}—{% endif %}</div>
+      <div class="l">точность заведённых заявок</div>
+    </div>
+    <div class="tile"><div class="n">{{ live_ok }}</div><div class="l">отмечено «верная»</div></div>
+    <div class="tile"><div class="n dim">{{ live_wrong }}</div><div class="l">отмечено «лишняя»</div></div>
+    <div class="tile"><div class="n dim">{{ live_waiting }}</div><div class="l">ждут вашей проверки</div></div>
+  </div>
+  <div class="card-body">
+    <p style="margin:0;color:var(--ink-2);font-size:13.5px">
+      Заявка заводится сразу после разговора, проверка идёт постфактум. Эта цифра
+      честнее замера на наборе: здесь звонки, которых машина раньше не видела.
+      Пока отметок мало, смотрите на замер ниже.
+    </p>
+  </div>
+</div>
+
+{% if not run %}
+<div class="banner"><b>Замеров ещё не было</b>
+  Запустите: <code>sudo -u claude .venv/bin/python scripts/score_screening.py</code></div>
+{% else %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>Последний замер</h2>
+    <span class="sub">{{ run.n }} разговоров с известным ответом · модель {{ run.model }} ·
+      запрос <code>{{ run.prompt }}</code>{% if run.tag %} · {{ run.tag }}{% endif %}</span>
+  </div>
+  <div class="tiles">
+    <div class="tile {% if run.precision >= 90 %}good{% elif run.precision >= 75 %}mid{% else %}bad{% endif %}">
+      <div class="n">{{ run.precision }}%</div>
+      <div class="l">точность: из {{ run.tp + run.fp }} находок верны {{ run.tp }}</div>
+    </div>
+    <div class="tile {% if run.recall >= 90 %}good{% elif run.recall >= 75 %}mid{% else %}bad{% endif %}">
+      <div class="n">{{ run.recall }}%</div>
+      <div class="l">полнота: из {{ run.tp + run.fn }} запросов поймано {{ run.tp }}</div>
+    </div>
+    <div class="tile">
+      <div class="n dim">{{ run.fp }}</div>
+      <div class="l">лишних находок</div>
+    </div>
+    <div class="tile">
+      <div class="n dim">{{ run.fn }}</div>
+      <div class="l">пропущенных запросов</div>
+    </div>
+  </div>
+  <div class="card-body">
+    <p style="margin:0;color:var(--ink-2);font-size:13.5px">
+      Цель — <b>90% точности</b> при полноте не ниже 90%: тогда просев можно показывать
+      отделу продаж. Точность важна, чтобы в CRM не сыпался мусор; полнота — чтобы не
+      терять заказы, ради чего всё и делается. Пока точность ниже цели, каждую находку
+      подтверждает человек на странице <a href="{{ base }}/leads">возможные заявки</a>.
+    </p>
+  </div>
+</div>
+
+{% if errors %}
+<div class="card">
+  <div class="card-head"><h2>Где ошибся</h2>
+    <span class="sub">{{ errors|length }} расхождений с известным ответом</span></div>
+  <table>
+    <thead><tr><th>разговор</th><th>должно быть</th><th>ответил просев</th><th>что это на самом деле</th></tr></thead>
+    <tbody>
+    {% for e in errors %}
+      <tr>
+        <td class="mono"><a href="{{ base }}/call/{{ e.uid }}">{{ e.uid }}</a></td>
+        <td>{% if e.label == 'request' %}запрос{% else %}не запрос{% endif %}</td>
+        <td>{% if e.predicted == 'request' %}<b style="color:var(--stop)">завёл заявку</b>
+            {% else %}<b style="color:var(--warn)">пропустил</b>{% endif %}
+            {% if e.equipment %}<span class="dim"> — {{ e.equipment }}</span>{% endif %}</td>
+        <td>{{ e.note }}{% if e.kind %} <span class="dim">[{{ e.kind }}]</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if kinds %}
+<div class="card">
+  <div class="card-head"><h2>Виды ошибок</h2>
+    <span class="sub">по ним видно, какую правку запроса делать следующей</span></div>
+  <table>
+    <thead><tr><th>вид</th><th>сколько</th><th>что значит</th></tr></thead>
+    <tbody>
+    {% for kind, n, what in kinds %}
+      <tr><td>{{ kind }}</td><td class="mono">{{ n }}</td><td>{{ what }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>История замеров</h2>
+    <span class="sub">каждая правка запроса — строка; видно, помогла она или нет</span></div>
+  <table>
+    <thead><tr><th>когда</th><th>что меняли</th><th>точность</th><th>полнота</th>
+      <th>лишних</th><th>пропущено</th></tr></thead>
+    <tbody>
+    {% for r in history %}
+      <tr>
+        <td class="mono">{{ r.at[5:16]|replace("T", " ") }}</td>
+        <td>{{ r.tag or "—" }}</td>
+        <td class="mono">{{ r.precision }}%</td>
+        <td class="mono">{{ r.recall }}%</td>
+        <td class="mono">{{ r.fp }}</td>
+        <td class="mono">{{ r.fn }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <div class="card-body">
+    <p style="margin:0;color:var(--ink-3);font-size:13px">
+      Набор — <code>checkset/inbound-screening.json</code>, {{ checkset_n }} разговоров,
+      размечены по полным расшифровкам {{ checkset_date }}. Просев при замере видит только
+      начало разговора — ровно то же, что и в работе. Прогон:
+      <code>scripts/score_screening.py --tag "что меняли"</code>.
+    </p>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
