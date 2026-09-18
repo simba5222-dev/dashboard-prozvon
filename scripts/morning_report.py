@@ -144,6 +144,54 @@ def machines_section() -> Section:
     return s
 
 
+def spend_section(day: str) -> Section:
+    """Сколько стоила вчерашняя работа модели и на что ушли деньги.
+
+    OpenAI отдаёт расход только по админскому ключу, поэтому считаем сами —
+    по ответам модели, которые пишет `app.analyzer.log_usage`. Строка в отчёте
+    нужна, чтобы «кончился бюджет» не оказывалось новостью: один раз это уже
+    пришлось выяснять раскопками по логам.
+
+    Файл читаем напрямую, без импорта приложения: отчёт живёт своей жизнью и
+    поднимать ради одной строки настройки с токенами незачем.
+    """
+    s = Section("Расход на модель")
+    path = Path(__file__).resolve().parents[1] / "data" / "openai_usage.jsonl"
+    if not path.exists():
+        s.add("за вчера", "учёт ещё не начинался", "vnimanie")
+        return s
+
+    total = 0.0
+    calls = 0
+    by_kind: dict[str, list] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not str(row.get("at", "")).startswith(day):
+            continue
+        usd = float(row.get("usd") or 0.0)
+        kind = row.get("kind") or "прочее"
+        slot = by_kind.setdefault(kind, [0, 0.0])
+        slot[0] += 1
+        slot[1] += usd
+        calls += 1
+        total += usd
+
+    if not calls:
+        s.add("за вчера", "обращений к модели не было", "vnimanie")
+        return s
+
+    s.add("за вчера", f"${total:.2f}, обращений {calls}", "ok")
+    for kind, (n, usd) in sorted(by_kind.items(), key=lambda x: -x[1][1]):
+        s.add(f"  {kind}", f"${usd:.2f} за {n}", "ok")
+    month = total * 30
+    s.add("если так пойдёт месяц", f"около ${month:.0f}",
+          "vnimanie" if month > 150 else "ok")
+    return s
+
+
 def safety_section() -> Section:
     s = Section("Уязвимые места")
 
@@ -292,8 +340,8 @@ def main() -> int:
     args = ap.parse_args()
 
     day = args.day or (date.today() - timedelta(days=1)).isoformat()
-    sections = [calls_section(day), selfcheck_section(), machines_section(),
-                safety_section()]
+    sections = [calls_section(day), selfcheck_section(), spend_section(day),
+                machines_section(), safety_section()]
 
     text = render_text(sections, day)
     (DASH / "data/morning.md").write_text(text, encoding="utf-8")
