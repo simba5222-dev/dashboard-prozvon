@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -15,14 +16,15 @@ from urllib.parse import urlencode
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi import BackgroundTasks, FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from app import __version__
 from app.config import Settings, get_settings
 from app.db import (
     CARD_FIELDS, approve_screen, connect, dismiss_inbound, has_any_data, init_schema,
+    judge_screen,
 )
 from fastapi.responses import FileResponse, RedirectResponse
 
@@ -110,6 +112,60 @@ def _base_context(request: Request) -> dict[str, Any]:
         "demo": settings.demo_mode,
         "sources_ready": settings.vats_configured and settings.synergy_configured,
     }
+
+
+@app.post("/api/inbound-call")
+async def inbound_call(
+    background: BackgroundTasks,
+    call: str = Form(...),
+    record: UploadFile = File(...),
+    request: Request = None,  # type: ignore[assignment]
+) -> Any:
+    """Звонок из ВАТС: метаданные и запись, присланные российским сервером.
+
+    ВАТС не пускает зарубежные адреса, поэтому вебхук и запись достаются
+    российскому серверу, а он пересылает их сюда — в секунду окончания
+    разговора. До этого звонки приходили опросом CRM раз в десять минут,
+    и у части из них CRM отдавала нулевую длительность: разговор на три
+    минуты выглядел сброшенным и в просев не попадал.
+
+    Отвечаем сразу, работу делаем в фоне: распознавание занимает минуту,
+    столько держать чужой запрос нельзя.
+    """
+    settings: Settings = request.app.state.settings
+    expected = settings.inbound_hook_token
+    if not expected:
+        return JSONResponse({"error": "приёмник выключен"}, status_code=503)
+    if request.headers.get("X-Vats-Token", "") != expected:
+        logger.warning("приёмник звонков: неверный ключ")
+        return JSONResponse({"error": "неверный ключ"}, status_code=403)
+
+    try:
+        meta = json.loads(call)
+    except ValueError:
+        return JSONResponse({"error": "метаданные не разобрались"}, status_code=400)
+    audio = await record.read()
+    if not audio:
+        return JSONResponse({"error": "пустая запись"}, status_code=400)
+
+    background.add_task(_handle_inbound, request.app, meta, audio)
+    return {"accepted": meta.get("uid")}
+
+
+def _handle_inbound(app_ref: FastAPI, meta: dict[str, Any], audio: bytes) -> None:
+    """Фоновая обработка звонка: своё соединение с базой, свои ошибки."""
+    from app import inbound
+
+    settings: Settings = app_ref.state.settings
+    conn = connect(settings.db_path)
+    try:
+        result = inbound.process(conn, settings, meta, audio)
+        logger.info("звонок %s: %s", meta.get("uid"), result)
+    except Exception:  # noqa: BLE001 — фоновая задача обязана дожить до лога
+        logger.exception("звонок %s: обработка упала", meta.get("uid"))
+    finally:
+        conn.close()
+
 
 
 @app.get("/health")
@@ -290,6 +346,25 @@ async def leads_dismiss(request: Request, uid: str, back: int = 0) -> Any:
     return RedirectResponse(f"{base}/leads", status_code=303)
 
 
+@app.get("/leads/judge/{uid}")
+async def leads_judge(request: Request, uid: str, verdict: str = "") -> Any:
+    """Вердикт человека по уже заведённой заявке: «верная» или «лишняя».
+
+    С 18.09.2026 заявка заводится сразу после разговора, а смотрят её потом:
+    за три часа ожидания заказчик успевает найти технику в другом месте.
+    Отметка нужна не для отчётности — по ней считается точность на живом
+    потоке, и видно, когда запрос к модели пора править.
+
+    Заявку в CRM отметка не трогает: лишнюю закрывает человек там, где виден
+    весь контекст.
+    """
+    conn = request.app.state.db
+    judge_screen(conn, uid, verdict, datetime.now(timezone.utc).isoformat())
+    conn.commit()
+    base = request.headers.get("x-forwarded-prefix", "").rstrip("/")
+    return RedirectResponse(f"{base}/leads", status_code=303)
+
+
 @app.get("/leads/approve/{uid}")
 async def leads_approve(request: Request, uid: str, back: int = 0) -> Any:
     """Подтвердить находку: по ней будет заведена заявка в CRM.
@@ -302,6 +377,75 @@ async def leads_approve(request: Request, uid: str, back: int = 0) -> Any:
     conn.commit()
     base = request.headers.get("x-forwarded-prefix", "").rstrip("/")
     return RedirectResponse(f"{base}/leads", status_code=303)
+
+
+@app.get("/quality", response_class=HTMLResponse)
+async def quality_page(request: Request) -> Any:
+    """Точность просева на проверочном наборе — цифрой, а не на ощупь.
+
+    Отметки «заявка верная» и «запроса не было» на странице находок копятся,
+    но по ним нельзя судить о правках запроса: набор звонков каждый день
+    разный. Поэтому качество меряется на постоянном наборе с известными
+    ответами, а сюда выводится последний замер и вся история — видно, какая
+    правка что дала.
+    """
+    settings: Settings = request.app.state.settings
+    data_dir = Path(settings.db_path).parent
+    ctx = _base_context(request)
+    ctx.update({"run": None, "errors": [], "kinds": [], "history": [],
+                "checkset_n": 0, "checkset_date": ""})
+
+    checkset_path = Path(__file__).resolve().parents[1] / "checkset" / "inbound-screening.json"
+    kind_names: dict[str, str] = {}
+    if checkset_path.exists():
+        doc = json.loads(checkset_path.read_text(encoding="utf-8"))
+        kind_names = doc.get("виды ошибок") or {}
+        ctx["checkset_n"] = doc.get("разговоров") or len(doc.get("items") or [])
+        ctx["checkset_date"] = doc.get("размечено") or ""
+
+    last_path = data_dir / "screening_last.json"
+    if last_path.exists():
+        last = json.loads(last_path.read_text(encoding="utf-8"))
+        ctx["run"] = last
+        errors = [i for i in last.get("items", [])
+                  if i.get("predicted") and i["predicted"] != i["label"]]
+        ctx["errors"] = errors
+        counts: dict[str, int] = {}
+        for item in errors:
+            if item["predicted"] == "request":
+                counts[item.get("kind") or "прочее"] = counts.get(item.get("kind") or "прочее", 0) + 1
+        ctx["kinds"] = [(k, n, kind_names.get(k, "разбирается"))
+                        for k, n in sorted(counts.items(), key=lambda x: -x[1])]
+
+    # Точность на живом потоке: отметки «верная»/«лишняя» по заведённым заявкам.
+    # Проверочный набор показывает, что даёт правка запроса; эта цифра — что
+    # получается на самом деле, на звонках, которых в наборе не было.
+    conn = request.app.state.db
+    live = dict(conn.execute(
+        "SELECT verdict, COUNT(*) FROM screens "
+        "WHERE created_order_id IS NOT NULL AND verdict <> '' GROUP BY verdict"
+    ).fetchall())
+    live_ok, live_wrong = live.get("ok", 0), live.get("wrong", 0)
+    waiting = conn.execute(
+        "SELECT COUNT(*) FROM screens WHERE created_order_id IS NOT NULL AND verdict = ''"
+    ).fetchone()[0]
+    ctx.update({
+        "live_ok": live_ok, "live_wrong": live_wrong, "live_waiting": waiting,
+        "live_precision": round(live_ok / (live_ok + live_wrong) * 100, 1)
+        if (live_ok + live_wrong) else None,
+    })
+
+    runs_path = data_dir / "screening_runs.jsonl"
+    if runs_path.exists():
+        rows = []
+        for line in runs_path.read_text(encoding="utf-8").splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+        ctx["history"] = list(reversed(rows))[:20]
+
+    return TEMPLATES.TemplateResponse("quality.html", ctx)
 
 
 @app.get("/record/{uid}.mp3")

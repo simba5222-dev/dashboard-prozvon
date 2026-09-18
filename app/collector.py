@@ -317,6 +317,13 @@ def sync_managers(
             dept=dept,
             is_demo=0,
         )
+        # Номер менеджера: по нему отбираются входящие звонки. В CRM он записан
+        # по-разному — «+79213146028», «931 224-85-35», — поэтому храним только
+        # десять значащих цифр.
+        phone = re.sub(r"\D", "", str(attrs.get("phone") or ""))[-10:]
+        if phone:
+            conn.execute("UPDATE managers SET phone = ? WHERE vats_login = ?",
+                         (phone, surname_of(name)))
         if not attrs.get("disabled"):
             surnames.append(surname_of(name))
     conn.commit()
@@ -585,15 +592,27 @@ def collect_calls_for_phones(
     return saved, reached
 
 
+# Правило владельца: заявка считается заведённой, если она появилась у этого
+# контакта ПОСЛЕ принятого звонка. Прошлое не ворошим — старые заявки клиента
+# не мешают завести новую, в этом и смысл: мы упрощаем работу менеджеру.
+#
+# Допуск в четверть часа нужен по одной причине: менеджер заводит карточку,
+# пока телефон звонит, и её метка времени оказывается на минуту-две раньше,
+# чем начало разговора у нас. Без допуска не ловится ни один дубль из
+# двенадцати, помеченных владельцем; с ним — семь.
+ORDER_LOOKBACK_MINUTES = 15
+
+
 def contact_orders_around(
     client: SynergyClient, contact_id: str, call_iso: str, stages: dict[str, tuple[str, str]],
+    lookback_minutes: int = ORDER_LOOKBACK_MINUTES,
 ) -> tuple[list[str], list[str]]:
-    """Заявки контакта: заведённые после звонка и открытые на момент звонка.
+    """Заявки контакта: заведённые вокруг звонка и открытые на момент звонка.
 
     Заявка в Synergy привязана к контакту, поэтому проверять надо именно по
-    нему, а не по времени: «после этого звонка по клиенту появилась заявка» —
-    вот признак того, что менеджер её оформил. Верхнего окна нет: он мог
-    завести её и через два дня.
+    нему. Верхнего окна нет: менеджер мог оформить её и через два дня. Назад
+    смотрим только на `lookback_minutes` — ровно настолько, чтобы поймать
+    карточку, заведённую во время самого звонка.
 
     Открытые заявки возвращаем отдельно — это контекст. Клиент часто звонит
     по уже заведённой заявке, и такой разговор запросом не считается.
@@ -620,7 +639,7 @@ def contact_orders_around(
             made = datetime.fromisoformat(created.replace("Z", "+00:00"))
         except ValueError:
             continue
-        if made >= call_time:
+        if made >= call_time - timedelta(minutes=lookback_minutes):
             after.append(name)
         elif kind not in INACTIVE_STAGE_KINDS:
             active.append(name)

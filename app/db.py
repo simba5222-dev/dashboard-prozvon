@@ -210,6 +210,20 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("screens", "created_order_id", "TEXT"),
     ("screens", "approved", "INTEGER NOT NULL DEFAULT 0"),
     ("screens", "approved_at", "TEXT"),
+    # С 18.09.2026 заявка заводится сразу, а человек смотрит её потом. Здесь
+    # его вердикт: ok — заявка верная, wrong — лишняя. По этим отметкам
+    # считается точность на живом потоке, а не только на проверочном наборе.
+    # Логин в ВАТС — латиницей и не всегда по фамилии владельца: учётки
+    # переиспользуют. Поэтому соответствие строится по имени, а не по логину,
+    # и хранится здесь: без него звонок из ВАТС не привязать к менеджеру.
+    # Номер менеджера из CRM. Привязка звонка идёт по нему, а не по имени:
+    # менеджеры приходят и уходят, номера остаются в компании. Один номер
+    # бывает у нескольких человек — это нормально, он всё равно «номер отдела
+    # продаж», а кто именно ответил, ВАТС говорит отдельно.
+    ("managers", "phone", "TEXT"),
+    ("managers", "vats_user", "TEXT"),
+    ("screens", "verdict", "TEXT NOT NULL DEFAULT ''"),
+    ("screens", "verdict_at", "TEXT"),
 )
 
 
@@ -394,6 +408,19 @@ def approve_screen(conn: sqlite3.Connection, call_uid: str, when: str, back: boo
     conn.execute(
         "UPDATE screens SET approved = ?, approved_at = ? WHERE call_uid = ?",
         (0 if back else 1, None if back else when, call_uid),
+    )
+
+
+def judge_screen(conn: sqlite3.Connection, call_uid: str, verdict: str, when: str) -> None:
+    """Вердикт человека по заведённой заявке: «верная» или «лишняя».
+
+    Заявку в CRM это не трогает: закрывать её должен человек в самой CRM, где
+    видно контекст. Здесь копится счёт — по нему на странице качества видно
+    точность на живом потоке, а не только на проверочном наборе.
+    """
+    conn.execute(
+        "UPDATE screens SET verdict = ?, verdict_at = ? WHERE call_uid = ?",
+        (verdict if verdict in {"ok", "wrong"} else "", when if verdict else None, call_uid),
     )
 
 
