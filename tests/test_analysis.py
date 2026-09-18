@@ -193,3 +193,76 @@ def test_задачи_попадают_в_строку_отчёта(conn):
     rows = report_rows(conn, DAY, DAY)
     assert rows[0]["tasks"][0]["name"] == "Перезвонить 22-го"
     assert report_totals(rows)["tasks_made"] == 1
+
+
+# --------------------------------------------------------------- просев входящих
+SCREEN_TALK = (
+    "сторона A: Аренда спецтехники, здравствуйте. "
+    "сторона B: Добрый день, нужен экскаватор погрузчик в Шушарах на завтра, "
+    "сколько будет стоить смена?"
+)
+
+
+def _screen_with(monkeypatch, answer: dict):
+    """Прогнать просев с заранее заданным ответом модели.
+
+    Проверяем не модель, а то, что делает с её ответом наш код: какие вердикты
+    он снимает. Именно эти правила и держат точность — модель на телефонном
+    разговоре ошибается устойчиво, а правило работает всегда.
+    """
+    import openai
+
+    from app import analyzer
+
+    class _Fake:
+        def __init__(self, *a, **kw):
+            self.chat = self
+
+        @property
+        def completions(self):
+            return self
+
+        def create(self, **kw):
+            payload = json.dumps(answer, ensure_ascii=False)
+            return type("R", (), {"choices": [type("C", (), {
+                "message": type("M", (), {"content": payload})()})()]})()
+
+    monkeypatch.setattr(openai, "OpenAI", _Fake)
+    return analyzer.screen_call(SCREEN_TALK, "", api_key="x", model="gpt-4o")
+
+
+BASE_ANSWER = {
+    "is_request": True, "equipment": "экскаватор погрузчик",
+    "request": "экскаватор погрузчик в Шушарах на завтра",
+    "quote": "нужен экскаватор погрузчик в Шушарах на завтра",
+    "about_existing": False, "manager_side": "A", "asked_by": "caller",
+    "other_side": "client", "price_from": "us", "confidence": 90,
+}
+
+
+def test_запрос_заказчика_остаётся(monkeypatch):
+    assert _screen_with(monkeypatch, BASE_ANSWER)["is_request"] is True
+
+
+def test_подрядчик_снимает_запрос(monkeypatch):
+    # Подрядчик предлагает свою машину под наш заказ. Просьба про технику
+    # звучит один в один как заказ, но платить будем мы, а не нам.
+    out = _screen_with(monkeypatch, {**BASE_ANSWER, "other_side": "contractor"})
+    assert out["is_request"] is False
+
+
+def test_поиск_нашим_менеджером_снимает_запрос(monkeypatch):
+    out = _screen_with(monkeypatch, {**BASE_ANSWER, "asked_by": "our_manager"})
+    assert out["is_request"] is False
+
+
+def test_без_понятой_стороны_запрос_снимается(monkeypatch):
+    # Если не разобрать, кто из сторон наш менеджер, заводить заявку нельзя:
+    # роли по номеру канала у входящих определить невозможно.
+    out = _screen_with(monkeypatch, {**BASE_ANSWER, "manager_side": ""})
+    assert out["is_request"] is False
+
+
+def test_выдуманная_цитата_снимает_запрос(monkeypatch):
+    out = _screen_with(monkeypatch, {**BASE_ANSWER, "quote": "клиенту нужен кран на мост"})
+    assert out["is_request"] is False
