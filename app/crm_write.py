@@ -143,6 +143,24 @@ class CrmWriter:
             logger.warning("выжимка у заявки %s не записана: %s", order_id, exc)
             return False
 
+    def set_contact_hint(self, contact_id: str, field: str, text: str) -> bool:
+        """Положить подсказку в карточку контакта.
+
+        Её видит менеджер во всплывающей карточке в момент звонка — и это
+        единственное место, куда он смотрит, пока здоровается.
+        """
+        if self.dry_run or not text.strip() or not field:
+            return False
+        try:
+            self._client.patch(f"contacts/{contact_id}", {"data": {
+                "type": "contacts", "id": str(contact_id),
+                "attributes": {"customs": {field: text}},
+            }})
+            return True
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("подсказка контакту %s не записана: %s", contact_id, exc)
+            return False
+
     def post_comment(self, commentable_id: str, text: str, *, kind: str = "Order") -> bool:
         """Комментарий к заявке или контакту. Переводы строк — в <br>."""
         if self.dry_run:

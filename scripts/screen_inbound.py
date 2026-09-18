@@ -57,6 +57,8 @@ def main() -> int:
     ap.add_argument("--seconds", type=int, default=75,
                     help="сколько секунд начала разговора распознавать")
     ap.add_argument("--redo", action="store_true")
+    ap.add_argument("--uid", action="append", default=[],
+                    help="пересеять конкретные звонки (можно повторять)")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -68,20 +70,37 @@ def main() -> int:
     init_schema(conn)
     records = Path(settings.records_dir)
 
-    condition = "" if args.redo else "AND s.call_uid IS NULL"
-    rows = conn.execute(
-        f"""
-        SELECT k.uid, k.duration_sec, k.started_at, k.vats_login,
-               c.contact_name, c.active_names
-        FROM calls k
-        JOIN inbound_checks c ON c.call_uid = k.uid
-        LEFT JOIN screens s ON s.call_uid = k.uid
-        WHERE k.local_date BETWEEN ? AND ? AND k.direction = 'in'
-          AND c.orders_after = 0 AND c.dismissed = 0 {condition}
-        ORDER BY k.started_at DESC
-        """,
-        (since, until),
-    ).fetchall()
+    if args.uid:
+        # Точечный пересев: после правки запроса пересчитать конкретные находки
+        # дешевле, чем весь день. Дата и «заявки ещё нет» здесь не проверяются —
+        # раз звонок назван явно, значит его и надо пересеять.
+        placeholders = ",".join("?" * len(args.uid))
+        rows = conn.execute(
+            f"""
+            SELECT k.uid, k.duration_sec, k.started_at, k.vats_login,
+                   c.contact_name, c.active_names
+            FROM calls k
+            LEFT JOIN inbound_checks c ON c.call_uid = k.uid
+            WHERE k.uid IN ({placeholders})
+            ORDER BY k.started_at DESC
+            """,
+            args.uid,
+        ).fetchall()
+    else:
+        condition = "" if args.redo else "AND s.call_uid IS NULL"
+        rows = conn.execute(
+            f"""
+            SELECT k.uid, k.duration_sec, k.started_at, k.vats_login,
+                   c.contact_name, c.active_names
+            FROM calls k
+            JOIN inbound_checks c ON c.call_uid = k.uid
+            LEFT JOIN screens s ON s.call_uid = k.uid
+            WHERE k.local_date BETWEEN ? AND ? AND k.direction = 'in'
+              AND c.orders_after = 0 AND c.dismissed = 0 {condition}
+            ORDER BY k.started_at DESC
+            """,
+            (since, until),
+        ).fetchall()
     todo = [r for r in rows if (records / f"{r['uid']}.mp3").exists()]
     if args.limit:
         todo = todo[: args.limit]

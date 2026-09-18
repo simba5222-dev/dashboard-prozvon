@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+
+import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -366,7 +368,8 @@ def inbound_rows(
                c.contact_id, c.contact_found, c.contact_name, c.company_name,
                c.orders_after, c.order_names, c.active_names, c.checked_at, c.dismissed,
                t.text IS NOT NULL AS has_transcript, t.analysis_json,
-               s.verdict_json, s.is_request, s.approved, s.created_order_id
+               s.verdict_json, s.is_request, s.approved, s.created_order_id,
+               s.verdict AS human_verdict
         FROM calls k
         LEFT JOIN managers m ON m.vats_login = k.vats_login
         LEFT JOIN inbound_checks c ON c.call_uid = k.uid
@@ -525,4 +528,40 @@ def period_summary(
             "talked": row["talked"] or 0,
             "plan": default_plan * n_managers,
         })
+    return out
+
+
+def openai_spend(data_dir: str, day: str | None = None) -> dict[str, Any]:
+    """Расход на модель за день: сколько и на что.
+
+    Считаем сами, потому что OpenAI отдаёт расход только по админскому ключу,
+    а рабочий его не видит. Один раз вопрос «почему кончился бюджет» пришлось
+    выяснять раскопками по логам — больше не придётся.
+    """
+    from pathlib import Path
+
+    path = Path(data_dir) / "openai_usage.jsonl"
+    out: dict[str, Any] = {"day": day, "usd": 0.0, "calls": 0, "by_kind": {}}
+    if not path.exists():
+        return out
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if day and not str(row.get("at", "")).startswith(day):
+            continue
+        kind = row.get("kind") or "прочее"
+        slot = out["by_kind"].setdefault(kind, {"calls": 0, "usd": 0.0})
+        slot["calls"] += 1
+        slot["usd"] += float(row.get("usd") or 0.0)
+        out["calls"] += 1
+        out["usd"] += float(row.get("usd") or 0.0)
+    out["usd"] = round(out["usd"], 2)
+    for slot in out["by_kind"].values():
+        slot["usd"] = round(slot["usd"], 3)
     return out
