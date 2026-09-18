@@ -35,18 +35,10 @@ from app.db import connect, init_schema, save_screen  # noqa: E402
 logger = logging.getLogger("screen")
 
 
-def head_of_record(path: Path, seconds: int, duration_sec: int) -> bytes:
-    """Начало записи — первые `seconds` секунд.
-
-    Режем по длине файла, а не перекодированием: ВАТС отдаёт mp3 с постоянным
-    битрейтом, поэтому байты и секунды пропорциональны, а длительность звонка
-    мы и так знаем из CRM. Декодер спокойно переживает обрезанный последний
-    кадр, зато не нужен ни ffmpeg (его на сервере нет), ни лишняя зависимость.
-    """
-    data = path.read_bytes()
-    if duration_sec <= seconds or duration_sec <= 0:
-        return data
-    return data[: max(int(len(data) * seconds / duration_sec), 16384)]
+# Начало записи вырезает сам сервис распознавания: ему передаётся файл целиком
+# и число секунд. Раньше резали здесь, по длине в байтах, — и на части записей
+# такой кусок не декодировался: «Invalid data found when processing input»,
+# звонок молча оставался непросеянным. Так потерялись 8229011, 8231782 и другие.
 
 
 def main() -> int:
@@ -112,15 +104,16 @@ def main() -> int:
     for row in todo:
         uid = row["uid"]
         try:
-            audio = head_of_record(records / f"{uid}.mp3", args.seconds, row["duration_sec"])
+            audio = (records / f"{uid}.mp3").read_bytes()
             if not audio:
-                raise ValueError("не удалось нарезать начало записи")
+                raise ValueError("запись пустая")
             response = httpx.post(
                 f"{settings.asr_url.rstrip('/')}/transcribe",
                 files={"file": (f"{uid}.mp3", audio, "audio/mpeg")},
                 # Делим стерео на дорожки: без ролей не отличить «клиент
                 # просит технику» от «наш менеджер ищет её у подрядчика».
-                data={"mode": "split"}, timeout=settings.asr_timeout_sec,
+                data={"mode": "split", "seconds": str(args.seconds)},
+                timeout=settings.asr_timeout_sec,
             )
             response.raise_for_status()
             text = analyzer.dialog_text(response.json().get("dialog") or [])

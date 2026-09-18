@@ -111,17 +111,6 @@ def answered_by(conn: sqlite3.Connection, call: dict[str, Any]) -> sqlite3.Row |
     return None
 
 
-def head_bytes(data: bytes, seconds: int, duration_sec: int) -> bytes:
-    """Начало записи — тем же способом, что и в пакетном просеве.
-
-    Режем по длине файла: ВАТС отдаёт mp3 с постоянным битрейтом, поэтому
-    байты и секунды пропорциональны. Декодер переживает обрезанный кадр.
-    """
-    if duration_sec <= seconds or duration_sec <= 0:
-        return data
-    return data[: max(int(len(data) * seconds / duration_sec), 16384)]
-
-
 # Менеджер ищет технику: обзванивает подрядчиков, те не берут трубку, потом
 # перезванивают. Такой перезвон звучит как заказ — «экскаватор-погрузчик нужен
 # на завтра» — и отличить его по одной расшифровке невозможно: 45 секунд, ни
@@ -180,7 +169,7 @@ def callback_to_our_search(conn: sqlite3.Connection, phone: str, started_at: str
     return tries
 
 
-def transcribe(settings: Settings, name: str, audio: bytes) -> str:
+def transcribe(settings: Settings, name: str, audio: bytes, seconds: float = 0.0) -> str:
     """Распознать с делением на стороны и обезличить их.
 
     Роль по номеру канала у входящих ненадёжна: в одной записи «оператор» —
@@ -189,7 +178,10 @@ def transcribe(settings: Settings, name: str, audio: bytes) -> str:
     response = httpx.post(
         f"{settings.asr_url.rstrip('/')}/transcribe",
         files={"file": (name, audio, "audio/mpeg")},
-        data={"mode": "split"}, timeout=settings.asr_timeout_sec,
+        # Нужный отрезок вырезает сам сервис: резать файл по байтам нельзя,
+        # на части записей такой кусок не декодируется.
+        data={"mode": "split", "seconds": str(seconds)},
+        timeout=settings.asr_timeout_sec,
     )
     response.raise_for_status()
     text = analyzer.dialog_text(response.json().get("dialog") or [])
@@ -269,7 +261,7 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
         conn.commit()
         return {"uid": uid, "skipped": f"перезвон на наш поиск ({tries} недозвона)"}
 
-    head = transcribe(settings, f"{uid}.mp3", head_bytes(audio, 75, duration))
+    head = transcribe(settings, f"{uid}.mp3", audio, seconds=75)
     verdict = analyzer.screen_call(
         head, "", api_key=settings.openai_api_key,
         model=settings.analysis_model, own_company=settings.own_company,
