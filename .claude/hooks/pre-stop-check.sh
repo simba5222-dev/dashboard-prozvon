@@ -20,9 +20,9 @@ ERRORS=""
 #    берём ещё и untracked, иначе новый файл проверку минует).
 PY_FILES=$(
     {
-        git diff --name-only HEAD -- '*.py' 2>/dev/null
-        git diff --cached --name-only -- '*.py' 2>/dev/null
-        git ls-files --others --exclude-standard -- '*.py' 2>/dev/null
+        git -c core.quotepath=false diff --name-only HEAD -- '*.py' 2>/dev/null
+        git -c core.quotepath=false diff --cached --name-only -- '*.py' 2>/dev/null
+        git -c core.quotepath=false ls-files --others --exclude-standard -- '*.py' 2>/dev/null
     } | sort -u
 )
 
