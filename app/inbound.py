@@ -23,7 +23,7 @@ import json
 import logging
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +122,64 @@ def head_bytes(data: bytes, seconds: int, duration_sec: int) -> bytes:
     return data[: max(int(len(data) * seconds / duration_sec), 16384)]
 
 
+# Менеджер ищет технику: обзванивает подрядчиков, те не берут трубку, потом
+# перезванивают. Такой перезвон звучит как заказ — «экскаватор-погрузчик нужен
+# на завтра» — и отличить его по одной расшифровке невозможно: 45 секунд, ни
+# цены, ни объекта. Зато он виден в истории звонков.
+#
+# Порог выверен на размеченном наборе: два и более коротких недозвона за
+# полчаса до входящего не встретились ни у одной из 25 настоящих заявок и
+# поймали три чужих звонка. Более широкие условия («мы вообще звонили этому
+# номеру») не годятся: менеджеры перезванивают и заказчикам — так отсеклась бы
+# каждая четвёртая настоящая заявка.
+CALLBACK_WINDOW_MIN = 30
+CALLBACK_MIN_TRIES = 2
+CALLBACK_MAX_SEC = 15
+
+
+def parse_time(raw: str) -> datetime | None:
+    """Разобрать время звонка из любого нашего источника.
+
+    ВАТС отдаёт UTC без пометки часового пояса, CRM — с московским смещением.
+    Без приведения к одному виду сравнение времён врёт, и правила, завязанные
+    на «незадолго до звонка», молча перестают работать.
+    """
+    try:
+        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def callback_to_our_search(conn: sqlite3.Connection, phone: str, started_at: str) -> int:
+    """Сколько раз мы безуспешно звонили на этот номер перед входящим."""
+    number = digits(phone)
+    if not number:
+        return 0
+    call_time = parse_time(started_at)
+    if call_time is None:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT started_at FROM calls
+        WHERE direction = 'out' AND duration_sec <= ?
+          AND REPLACE(REPLACE(REPLACE(client_phone, '+', ''), ' ', ''), '-', '') LIKE ?
+        """,
+        (CALLBACK_MAX_SEC, f"%{number}"),
+    ).fetchall()
+    # Время сравниваем разобранным, а не строками: из ВАТС оно приходит в UTC,
+    # из CRM — с московским смещением, и лексикографическое сравнение врёт.
+    window = timedelta(minutes=CALLBACK_WINDOW_MIN)
+    tries = 0
+    for row in rows:
+        when = parse_time(row["started_at"])
+        if when is None:
+            continue
+        if timedelta(0) <= call_time - when <= window:
+            tries += 1
+    return tries
+
+
 def transcribe(settings: Settings, name: str, audio: bytes) -> str:
     """Распознать с делением на стороны и обезличить их.
 
@@ -165,6 +223,9 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
         return {"uid": uid, "skipped": f"разговор {duration} с короче порога"}
 
     started = str(call.get("start") or "")
+    started_dt = parse_time(started)
+    if started_dt is not None:
+        started = started_dt.isoformat()
     local_date, local_hour = local_parts(started, settings.timezone_offset_hours)
     save_call(
         conn, uid=uid, vats_login=manager["vats_login"] if manager else "неизвестно",
@@ -183,6 +244,20 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
     records.mkdir(parents=True, exist_ok=True)
     path = records / f"{uid}.mp3"
     path.write_bytes(audio)
+
+    tries = callback_to_our_search(conn, str(call.get("client") or ""), started)
+    if tries >= CALLBACK_MIN_TRIES:
+        # Это перезвон на наш собственный поиск техники. Распознавать незачем:
+        # заявки тут нет по определению, кто бы что ни говорил в трубку.
+        logger.info("звонок %s: перезвон на наш поиск (%s недозвона до этого)", uid, tries)
+        save_screen(conn, call_uid=uid, head_text="",
+                    verdict_json=json.dumps({"is_request": False,
+                                             "verify_role": "our_search",
+                                             "request": f"перезвон после {tries} наших недозвонов"},
+                                            ensure_ascii=False),
+                    is_request=0, created_at=datetime.now(timezone.utc).isoformat())
+        conn.commit()
+        return {"uid": uid, "skipped": f"перезвон на наш поиск ({tries} недозвона)"}
 
     head = transcribe(settings, f"{uid}.mp3", head_bytes(audio, 75, duration))
     verdict = analyzer.screen_call(
