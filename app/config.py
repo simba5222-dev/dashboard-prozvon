@@ -101,6 +101,18 @@ class Settings(BaseSettings):
         default="продажи",
         description="Как этот отдел помечен в таблице сотрудников.",
     )
+    openai_topup_usd: float = Field(
+        default=0.0,
+        description="Сколько денег положено на счёт OpenAI в последний раз, "
+        "долларов. Баланс через API не узнать: его отдают только админскому "
+        "ключу, а рабочий не видит. Поэтому остаток считаем сами — по своему "
+        "учёту расхода. Ноль — счётчик остатка не показывается.",
+    )
+    openai_topup_at: str | None = Field(
+        default=None,
+        description="Дата последнего пополнения, ГГГГ-ММ-ДД. С неё считается "
+        "потраченное.",
+    )
     field_contact_hint: str | None = Field(
         default=None,
         description="Поле «Подсказка» в карточке контакта, например custom-30700. "

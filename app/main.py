@@ -435,6 +435,15 @@ async def quality_page(request: Request) -> Any:
         if (live_ok + live_wrong) else None,
     })
 
+    # Остаток на счёте модели: конвейер уже вставал молча, когда деньги
+    # кончились посреди дня.
+    from app.stats import openai_balance, openai_spend
+
+    today = local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    ctx["spend_today"] = openai_spend(str(data_dir), today)
+    ctx["balance"] = openai_balance(str(data_dir), settings.openai_topup_usd,
+                                    settings.openai_topup_at)
+
     runs_path = data_dir / "screening_runs.jsonl"
     if runs_path.exists():
         rows = []

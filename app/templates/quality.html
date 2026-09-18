@@ -7,6 +7,31 @@
 <p class="crumbs"><a href="{{ base }}/">сегодня</a> · <a href="{{ base }}/leads">возможные заявки</a></p>
 
 <div class="card">
+  <div class="card-head"><h2>Деньги на модель</h2>
+    <span class="sub">баланс OpenAI через API не отдаёт — считаем по своему учёту</span></div>
+  <div class="tiles">
+    <div class="tile {% if balance.left and balance.days_left and balance.days_left < 7 %}bad{% elif balance.left %}good{% endif %}">
+      <div class="n">{% if balance.topup %}${{ balance.left }}{% else %}—{% endif %}</div>
+      <div class="l">осталось{% if balance.topup %} из ${{ balance.topup }} с {{ balance.since }}{% endif %}</div>
+    </div>
+    <div class="tile"><div class="n">${{ spend_today.usd }}</div>
+      <div class="l">потрачено сегодня, обращений {{ spend_today.calls }}</div></div>
+    <div class="tile"><div class="n dim">${{ balance.per_day }}</div>
+      <div class="l">в среднем за день</div></div>
+    <div class="tile {% if balance.days_left and balance.days_left < 7 %}bad{% endif %}">
+      <div class="n">{% if balance.days_left is not none %}{{ balance.days_left }}{% else %}—{% endif %}</div>
+      <div class="l">дней хватит при таком расходе</div></div>
+  </div>
+  {% if not balance.topup %}
+  <div class="card-body"><p style="margin:0;color:var(--ink-2);font-size:13.5px">
+    Чтобы счётчик заработал, скажите сумму последнего пополнения — она пишется в
+    настройки <code>DASH_OPENAI_TOPUP_USD</code> и <code>DASH_OPENAI_TOPUP_AT</code>.
+    Точнее было бы брать расход у самого OpenAI, но для этого нужен админский ключ
+    организации: рабочий ключ баланс не видит.</p></div>
+  {% endif %}
+</div>
+
+<div class="card">
   <div class="card-head"><h2>На живом потоке</h2>
     <span class="sub">по вашим отметкам на странице
       <a href="{{ base }}/leads">возможные заявки</a></span></div>

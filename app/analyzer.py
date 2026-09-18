@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,27 @@ from typing import Any
 from app import knowledge
 
 logger = logging.getLogger(__name__)
+
+# У аккаунта 30 000 токенов в минуту на gpt-4o, а один разговор занимает около
+# трёх тысяч. Значит больше десятка запросов в минуту не пройдёт. Две ступени
+# просева удваивают счёт, и без общей выдержки замер упирается в 429, а в
+# работе звонки теряются в час пик. Ограничитель общий на все обращения к
+# модели, потому что считать темп в каждом вызывающем месте — значит рано или
+# поздно где-то забыть.
+_RATE_LOCK = threading.Lock()
+_LAST_CALL = 0.0
+MIN_CALL_INTERVAL_SEC = 6.0
+
+
+def pace_calls() -> None:
+    """Не выпускать запросы к модели чаще, чем раз в MIN_CALL_INTERVAL_SEC."""
+    global _LAST_CALL
+    with _RATE_LOCK:
+        wait = _LAST_CALL + MIN_CALL_INTERVAL_SEC - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_CALL = time.monotonic()
+
 
 # Цены OpenAI за миллион токенов, доллары. Держать в курсе руками: тарифы
 # меняются, а считать по памяти — как раз тот случай, когда «почему кончился
@@ -270,6 +293,7 @@ def analyze_order(
         order=order_summary(order),
         calls=calls_summary(calls),
     )
+    pace_calls()
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
@@ -462,6 +486,7 @@ def screen_call(
     if not transcript.strip():
         return {**EMPTY_SCREEN}
     client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    pace_calls()
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": SCREEN_PROMPT.format(
@@ -587,6 +612,7 @@ def verify_request(
     if not transcript.strip():
         return {"role": "other", "quote": "", "sure": 0}
     client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    pace_calls()
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": VERIFY_PROMPT.format(
@@ -635,6 +661,7 @@ def pick_transport_type(
     if not transcript.strip() or not allowed:
         return ""
     client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    pace_calls()
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": TRANSPORT_PROMPT.format(
@@ -711,6 +738,7 @@ def analyze(
         domain=knowledge.DOMAIN,
         checklist=checklist,
     )
+    pace_calls()
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],

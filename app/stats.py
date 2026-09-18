@@ -565,3 +565,49 @@ def openai_spend(data_dir: str, day: str | None = None) -> dict[str, Any]:
     for slot in out["by_kind"].values():
         slot["usd"] = round(slot["usd"], 3)
     return out
+
+
+def openai_balance(data_dir: str, topup_usd: float, topup_at: str | None) -> dict[str, Any]:
+    """Остаток на счёте модели: сколько положили минус наш расход.
+
+    Баланс OpenAI отдаёт только админскому ключу, рабочий его не видит —
+    один раз деньги кончились посреди рабочего дня, и конвейер встал молча.
+    Поэтому считаем сами: владелец говорит сумму пополнения, мы вычитаем то,
+    что записал наш учёт.
+
+    Цифра приблизительная по одной причине: если кто-то тратит тот же ключ
+    мимо нас, мы этого не увидим. Зато она есть и обновляется сама.
+    """
+    from pathlib import Path
+
+    out: dict[str, Any] = {"topup": topup_usd, "since": topup_at, "spent": 0.0,
+                           "left": topup_usd, "per_day": 0.0, "days_left": None}
+    if not topup_usd or not topup_at:
+        return out
+    path = Path(data_dir) / "openai_usage.jsonl"
+    if not path.exists():
+        return out
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return out
+
+    days: set[str] = set()
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        day = str(row.get("at", ""))[:10]
+        if not day or day < topup_at:
+            continue
+        days.add(day)
+        out["spent"] += float(row.get("usd") or 0.0)
+
+    out["spent"] = round(out["spent"], 2)
+    out["left"] = round(topup_usd - out["spent"], 2)
+    if days:
+        out["per_day"] = round(out["spent"] / len(days), 2)
+        if out["per_day"] > 0:
+            out["days_left"] = int(out["left"] / out["per_day"])
+    return out

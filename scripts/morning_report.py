@@ -189,6 +189,40 @@ def spend_section(day: str) -> Section:
     month = total * 30
     s.add("если так пойдёт месяц", f"около ${month:.0f}",
           "vnimanie" if month > 150 else "ok")
+
+    # Остаток на счёте. Баланс OpenAI отдаёт только админскому ключу, поэтому
+    # считаем от суммы пополнения, которую назвал владелец: один раз деньги
+    # кончились посреди рабочего дня и конвейер встал молча.
+    env = Path(__file__).resolve().parents[1] / ".env"
+    topup, since = 0.0, ""
+    if env.exists():
+        for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("DASH_OPENAI_TOPUP_USD="):
+                try:
+                    topup = float(line.split("=", 1)[1].strip())
+                except ValueError:
+                    topup = 0.0
+            elif line.startswith("DASH_OPENAI_TOPUP_AT="):
+                since = line.split("=", 1)[1].strip()
+    if topup and since:
+        spent = 0.0
+        days = set()
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            when = str(row.get("at", ""))[:10]
+            if when and when >= since:
+                spent += float(row.get("usd") or 0.0)
+                days.add(when)
+        left = topup - spent
+        per_day = spent / len(days) if days else 0.0
+        note = f"${left:.2f} из ${topup:.0f} с {since}"
+        if per_day > 0:
+            note += f", хватит на {int(left / per_day)} дней"
+        s.add("осталось на счёте модели", note,
+              "beda" if per_day > 0 and left / per_day < 7 else "ok")
     return s
 
 

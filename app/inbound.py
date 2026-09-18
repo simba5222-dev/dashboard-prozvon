@@ -33,7 +33,7 @@ from app import analyzer, hints
 from app.collector import SynergyClient, contact_orders_around, find_contact, load_stages
 from app.config import Settings
 from app.crm_write import CrmWriter, lead_comment, lead_summary, order_customs
-from app.db import save_call, save_screen, save_transcript
+from app.db import save_call, save_inbound_check, save_screen, save_transcript
 from app.stats import local_parts
 
 logger = logging.getLogger(__name__)
@@ -237,6 +237,16 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
         # in_group = 0: это личный звонок менеджеру, а не звонок группы
         # прозвона. В счётчиках прозвона ему не место.
         in_group=0, is_demo=0, fetched_at=datetime.now(timezone.utc).isoformat(),
+    )
+    conn.commit()
+
+    # Строка проверки по CRM нужна, даже если дальше всё упадёт: пакетный
+    # просев берёт звонки именно по ней. Без неё звонок, на котором сломалось
+    # распознавание или кончились деньги у модели, не подхватит уже никто.
+    save_inbound_check(
+        conn, call_uid=uid, contact_id=None, contact_found=0, contact_name=None,
+        company_name=None, orders_after=0, order_names="",
+        checked_at=datetime.now(timezone.utc).isoformat(),
     )
     conn.commit()
 

@@ -35,6 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import analyzer  # noqa: E402
+from app.inbound import CALLBACK_MIN_TRIES, callback_to_our_search  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db import connect  # noqa: E402
 
@@ -64,8 +65,19 @@ def pace() -> None:
         _last_start = time.monotonic()
 
 
-def run_one(item: dict, head: str, active: str, settings) -> dict:
-    """Один разговор: что ответил просев и совпало ли с известным ответом."""
+def run_one(item: dict, head: str, active: str, settings, callbacks: dict[str, int]) -> dict:
+    """Один разговор: что ответил просев и совпало ли с известным ответом.
+
+    Порядок тот же, что в работе: сперва дешёвые проверки по истории звонков,
+    и только потом модель. Иначе замер показывал бы качество не того, что
+    действительно происходит с входящими.
+    """
+    tries = callbacks.get(item["uid"], 0)
+    if tries >= CALLBACK_MIN_TRIES:
+        return {**item, "predicted": "no_request", "asked_by": "", "equipment": "",
+                "confidence": 0, "quote": f"перезвон после {tries} наших недозвонов",
+                "rule": "перезвон на наш поиск"}
+
     last: Exception | None = None
     for attempt in range(ATTEMPTS):
         pace()
@@ -139,6 +151,17 @@ def main() -> int:
     if fresh:
         print(f"свежих расшифровок начала: {len(fresh)}")
 
+    # Недозвоны считаем заранее и один раз: в потоках лишнее соединение с базой.
+    callbacks: dict[str, int] = {}
+    conn = connect(settings.db_path)
+    for item in items:
+        row = conn.execute("SELECT client_phone, started_at FROM calls WHERE uid = ?",
+                           (item["uid"],)).fetchone()
+        if row:
+            callbacks[item["uid"]] = callback_to_our_search(
+                conn, row["client_phone"], row["started_at"])
+    conn.close()
+
     todo = [i for i in items if heads.get(i["uid"], (None, None))[0]]
     missing = len(items) - len(todo)
     print(f"набор: {len(items)} разговоров, считаю {len(todo)}"
@@ -146,7 +169,8 @@ def main() -> int:
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         results = list(pool.map(
-            lambda i: run_one(i, heads[i["uid"]][0], heads[i["uid"]][1] or "", settings), todo))
+            lambda i: run_one(i, heads[i["uid"]][0], heads[i["uid"]][1] or "", settings, callbacks),
+            todo))
 
     ok = [r for r in results if r.get("predicted")]
     tp = [r for r in ok if r["label"] == "request" and r["predicted"] == "request"]
@@ -162,6 +186,10 @@ def main() -> int:
     print(f"  точность  {precision:5.1f}%   из {len(tp) + len(fp)} заведённых заявок верны {len(tp)}")
     print(f"  полнота   {recall:5.1f}%   из {len(tp) + len(fn)} настоящих запросов поймано {len(tp)}")
     print(f"  верных отказов {len(tn)}, сбоев {len(failed)}")
+
+    by_rule = sum(1 for r in ok if r.get("rule"))
+    if by_rule:
+        print(f"  из них отсеяно по истории звонков, без модели: {by_rule}")
 
     if fp:
         by_kind: dict[str, int] = {}

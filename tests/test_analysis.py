@@ -228,7 +228,12 @@ def _screen_with(monkeypatch, answer: dict):
                 "message": type("M", (), {"content": payload})()})()]})()
 
     monkeypatch.setattr(openai, "OpenAI", _Fake)
-    return analyzer.screen_call(SCREEN_TALK, "", api_key="x", model="gpt-4o")
+    # Выдержка темпа нужна живым запросам, а тут их нет: без этого каждый тест
+    # честно спал бы по шесть секунд.
+    monkeypatch.setattr(analyzer, "MIN_CALL_INTERVAL_SEC", 0)
+    # Вторая ступень ходит в модель отдельно; в этих проверках она не нужна —
+    # проверяем правила первой.
+    return analyzer.screen_call(SCREEN_TALK, "", api_key="x", model="gpt-4o", verify=False)
 
 
 BASE_ANSWER = {
