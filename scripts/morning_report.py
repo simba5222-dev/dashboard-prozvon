@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -144,6 +145,42 @@ def machines_section() -> Section:
     return s
 
 
+def _topup_values() -> dict[str, str]:
+    """Сумма и дата пополнения счёта OpenAI из `.env` дашборда.
+
+    `.env` лежит с правами 600 на `claude`, а отчёт работает под `agent` —
+    ему нужен ssh-ключ к боевому серверу. Прямое чтение файла роняло отчёт
+    целиком, поэтому здесь три попытки по убыванию доступности. Ни одна не
+    обязана удаться: вызывающий покажет в отчёте, что счёт посчитать нечем.
+    """
+    keys = ("DASH_OPENAI_TOPUP_USD", "DASH_OPENAI_TOPUP_AT")
+    found = {k: os.environ[k].strip() for k in keys if os.environ.get(k)}
+    if len(found) == len(keys):
+        return found
+
+    env = Path(__file__).resolve().parents[1] / ".env"
+    texts: list[str] = []
+    try:
+        texts.append(env.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        # Под `agent` файл закрыт. Достаём ровно две строки, не весь файл.
+        try:
+            done = subprocess.run(
+                ["sudo", "-n", "-u", "claude", "grep", "-h",
+                 "^DASH_OPENAI_TOPUP_", str(env)],
+                capture_output=True, text=True, timeout=15, check=False)
+            texts.append(done.stdout)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    for text in texts:
+        for line in text.splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key.strip() in keys:
+                found.setdefault(key.strip(), value.strip())
+    return found
+
+
 def spend_section(day: str) -> Section:
     """Сколько стоила вчерашняя работа модели и на что ушли деньги.
 
@@ -193,17 +230,18 @@ def spend_section(day: str) -> Section:
     # Остаток на счёте. Баланс OpenAI отдаёт только админскому ключу, поэтому
     # считаем от суммы пополнения, которую назвал владелец: один раз деньги
     # кончились посреди рабочего дня и конвейер встал молча.
-    env = Path(__file__).resolve().parents[1] / ".env"
+    # Отчёт работает под `agent`, а `.env` читает только `claude`: прямое
+    # чтение здесь роняло весь отчёт с PermissionError. Поэтому три захода —
+    # окружение, прямое чтение (если запущено под `claude`) и выборка двух
+    # строк через `sudo -u claude`. Сумма пополнения и дата — не секреты,
+    # наружу уходят только они, остальной `.env` не читается.
     topup, since = 0.0, ""
-    if env.exists():
-        for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
-            if line.startswith("DASH_OPENAI_TOPUP_USD="):
-                try:
-                    topup = float(line.split("=", 1)[1].strip())
-                except ValueError:
-                    topup = 0.0
-            elif line.startswith("DASH_OPENAI_TOPUP_AT="):
-                since = line.split("=", 1)[1].strip()
+    values = _topup_values()
+    try:
+        topup = float(values.get("DASH_OPENAI_TOPUP_USD") or 0.0)
+    except ValueError:
+        topup = 0.0
+    since = values.get("DASH_OPENAI_TOPUP_AT") or ""
     if topup and since:
         spent = 0.0
         days = set()
@@ -223,6 +261,10 @@ def spend_section(day: str) -> Section:
             note += f", хватит на {int(left / per_day)} дней"
         s.add("осталось на счёте модели", note,
               "beda" if per_day > 0 and left / per_day < 7 else "ok")
+    else:
+        s.add("осталось на счёте модели",
+              "не посчитать: сумма пополнения не прочиталась из .env",
+              "vnimanie")
     return s
 
 
@@ -393,8 +435,13 @@ def main() -> int:
         Path(tmp).unlink(missing_ok=True)
         print(f"страница: https://72-56-25-105.nip.io/karta/morning.html")
 
+    # Код 2, а не 1: упавший Python тоже выходит с единицей, и пока находки
+    # означали то же самое, systemd красил юнит в красное всегда — поломка
+    # отчёта пролежала так двое суток. Теперь 0 — чисто, 2 — отчёт собран и
+    # в нём есть «беда», 1 — отчёт не собрался. В юните стоит
+    # SuccessExitStatus=2, поэтому красный снова значит поломку.
     worst = [s.worst for s in sections]
-    return 1 if "beda" in worst else 0
+    return 2 if "beda" in worst else 0
 
 
 if __name__ == "__main__":

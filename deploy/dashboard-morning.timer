@@ -1,0 +1,9 @@
+[Unit]
+Description=Дашборд: утренний отчёт к восьми утра
+
+[Timer]
+OnCalendar=*-*-* 07:00:00 Europe/Moscow
+Persistent=true
+
+[Install]
+WantedBy=timers.target

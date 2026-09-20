@@ -1,0 +1,16 @@
+[Unit]
+Description=Дашборд: утренний отчёт по всем процессам
+After=dashboard-selfcheck.service
+
+[Service]
+Type=oneshot
+User=agent
+Group=agent
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+# Под agent, а не под claude: нужен ssh-ключ к боевому серверу в России.
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/morning_report.py
+# Код 2 — «отчёт собран, в нём есть беда». Код 1 остаётся падением:
+# упавший Python выходит с единицей, и смешивать их нельзя.
+SuccessExitStatus=2
+TimeoutStartSec=10min
