@@ -30,12 +30,14 @@ def conn():
     return c
 
 
-def add_call(conn, uid, *, hour=10, duration=60, date="2026-09-16", login="andy"):
+def add_call(conn, uid, *, hour=10, duration=60, date="2026-09-16", login="andy",
+             in_group=1):
     return save_call(
         conn, uid=uid, vats_login=login, client_phone="79101234567",
         direction="out", status="success", started_at=f"{date}T{hour:02d}:00:00Z",
         local_date=date, local_hour=hour, wait_sec=3, duration_sec=duration,
-        record_url=None, is_demo=0, fetched_at="2026-09-16T10:00:00Z",
+        record_url=None, in_group=in_group, is_demo=0,
+        fetched_at="2026-09-16T10:00:00Z",
     )
 
 
@@ -171,3 +173,31 @@ def test_period_returns_requested_number_of_days(conn):
     assert rows[-1]["day"] == "2026-09-16"
     assert rows[-1]["total"] == 1
     assert rows[0]["total"] == 0  # пустые дни тоже должны быть в ряду
+
+
+# ------------------------------------------------- чужие отделы в ряду по дням
+
+def test_period_summary_counts_only_group_calls(conn):
+    """Ряд «Последние семь дней» — про прозвон, а не про всю компанию.
+
+    В базе с 18.09.2026 лежат и звонки отдела продаж: их собирают ради поиска
+    потерянных заявок во входящих. Пока ряд считал всех подряд, он показывал
+    полторы тысячи звонков против плана одного человека — 692% выполнения
+    там, где план провален вдвое.
+    """
+    upsert_manager(
+        conn, vats_login="sales", display_name="Продажник", synergy_user="s@crm",
+        plan_calls=None, active=1, dept="продажи", is_demo=0,
+    )
+    add_call(conn, "own-1", duration=60)
+    for i in range(20):
+        add_call(conn, f"alien-{i}", duration=60, login="sales", in_group=0)
+
+    rows = period_summary(
+        conn, 7, default_plan=PLAN, threshold_sec=THRESHOLD, today="2026-09-16"
+    )
+    today_row = rows[-1]
+    assert today_row["total"] == 1
+    assert today_row["talked"] == 1
+    # План — на менеджеров прозвона. Продажник в него не добавляется.
+    assert today_row["plan"] == PLAN

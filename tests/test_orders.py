@@ -23,6 +23,7 @@ from app.db import (
     save_order_report,
     upsert_manager,
 )
+from app.collector import group_logins
 from app.stats import order_detail, orders_of_period, report_rows
 
 DAY = "2026-09-16"
@@ -132,3 +133,29 @@ def test_вердикт_обрезает_длинные_списки():
     assert verdict["gaps"] == ["раз", "два", "три"]
     assert verdict["recommendations"] == ["перезвонить"]
     assert verdict["recoverable"] is True
+
+
+# ------------------------------------------------- кто считается «своим»
+
+def test_group_logins_excludes_other_departments(conn):
+    """Признак «звонок прозвона» ставится только по отделу прозвона.
+
+    18.09.2026 в ту же таблицу добавили отдел продаж — их входящие нужны, чтобы
+    ловить потерянные заявки. Сборщик брал оттуда всех подряд, и исходящие
+    продажников стали помечаться как звонки прозвона: 545 чужих звонков в
+    отчёте об одном человеке.
+    """
+    upsert_manager(conn, vats_login="sales", display_name="Продажник",
+                   synergy_user="8", plan_calls=None, active=1,
+                   dept="продажи", is_demo=0)
+    assert group_logins(conn, "прозвон") == {"andy"}
+
+
+def test_group_logins_keeps_dismissed_managers(conn):
+    """Уволенный менеджер остаётся «своим»: он звонил тогда, когда звонил.
+
+    Иначе пересчёт признака задним числом стёр бы его работу из истории.
+    """
+    upsert_manager(conn, vats_login="gone", display_name="Ушедший",
+                   synergy_user="9", plan_calls=None, active=0, is_demo=0)
+    assert group_logins(conn, "прозвон") == {"andy", "gone"}

@@ -364,9 +364,9 @@ def collect_range(
     отдаёт звонки только от свежих к старым. Здесь идём один раз до нижней
     границы и раскладываем встреченное по дням.
     """
-    known = {row["vats_login"] for row in conn.execute("SELECT vats_login FROM managers")}
+    known = group_logins(conn, settings.group_dept)
     if not known:
-        logger.warning("менеджеров в базе нет — сначала синхронизируйте группу")
+        logger.warning("менеджеров прозвона в базе нет — сначала синхронизируйте группу")
         return 0, 0
 
     now = datetime.now(timezone.utc).isoformat()
@@ -401,6 +401,27 @@ def collect_range(
     conn.commit()
     logger.info("период %s…%s: найдено %s, новых %s", since, until, seen, new)
     return new, seen
+
+
+def group_logins(conn: sqlite3.Connection, dept: str) -> set[str]:
+    """Фамилии тех, чьи звонки считаются звонками прозвона.
+
+    Раньше здесь была вся таблица `managers`, и это работало, пока в ней
+    никого, кроме прозвона, не было. 18.09.2026 туда добавили отдел продаж —
+    ради поиска потерянных заявок во входящих, — и с этого дня их исходящие
+    стали помечаться `in_group = 1`. В отчёте по прозвону оказалось 545 чужих
+    звонков: одному человеку приписали работу пятнадцати.
+
+    По `active` здесь не фильтруем намеренно. `in_group` описывает природу
+    звонка, а не сегодняшнюю занятость: уволенный менеджер звонил в прозвоне
+    тогда, когда звонил, и его прошлые звонки не должны менять смысл.
+    """
+    return {
+        row["vats_login"]
+        for row in conn.execute(
+            "SELECT vats_login FROM managers WHERE dept = ?", (dept,)
+        )
+    }
 
 
 def store_call(
@@ -446,9 +467,9 @@ def collect_calls(
     conn: sqlite3.Connection, client: SynergyClient, settings: Settings, day: str,
 ) -> tuple[int, int]:
     """Сохранить исходящие звонки менеджеров за день. Возвращает (новых, всего)."""
-    known = {row["vats_login"] for row in conn.execute("SELECT vats_login FROM managers")}
+    known = group_logins(conn, settings.group_dept)
     if not known:
-        logger.warning("менеджеров в базе нет — сначала синхронизируйте группу")
+        logger.warning("менеджеров прозвона в базе нет — сначала синхронизируйте группу")
         return 0, 0
 
     now = datetime.now(timezone.utc).isoformat()
@@ -460,12 +481,18 @@ def collect_calls(
     # locked» — так 17.09.2026 потерялся разбор за день, дойдя до 20 звонков
     # из 350. Разрыв транзакции на пачки безопасен: сохранение звонка
     # идемпотентно, повторный проход просто не найдёт новых.
+    # Коммитим по числу обработанных звонков, а не по числу своих. Своих в
+    # потоке меньшинство — сотня против полутора тысяч чужих за день, — и если
+    # считать шаг по ним, транзакция остаётся открытой почти всё листание.
+    # Именно этого комментарий выше и велит избегать.
+    processed = 0
     for item in iter_calls_for_day(client, day):
         is_new, in_group = store_call(conn, item, settings, known, now)
+        processed += 1
         if in_group:
             seen += 1
             new += int(is_new)
-        if (seen + new) % 100 == 0:
+        if processed % 100 == 0:
             conn.commit()
     conn.commit()
     logger.info("звонки за %s: найдено %s, новых %s", day, seen, new)
@@ -531,7 +558,7 @@ def collect_calls_for_phones(
     if not phones:
         return 0, until
     now = datetime.now(timezone.utc).isoformat()
-    known = {row["vats_login"] for row in conn.execute("SELECT vats_login FROM managers")}
+    known = group_logins(conn, settings.group_dept)
     saved = 0
     reached = until
     for page in range(1, max_pages + 1):
@@ -576,7 +603,10 @@ def collect_calls_for_phones(
                 wait_sec=int(float(attrs.get("wait") or 0)),
                 duration_sec=int(float(attrs.get("duration") or 0)),
                 record_url=attrs.get("recording") or None,
-                in_group=int(surname in known), is_demo=0, fetched_at=now,
+                # Как и в store_call: прозвон — это исходящие своих. Входящий
+                # звонок менеджеру прозвона счётчиком плана не является.
+                in_group=int(surname in known and not incoming),
+                is_demo=0, fetched_at=now,
             ):
                 saved += 1
         if too_old:

@@ -508,7 +508,18 @@ def period_summary(
     threshold_sec: int,
     today: str,
 ) -> list[dict[str, Any]]:
-    """Динамика по дням: сколько звонков и дозвонов в каждый из последних дней."""
+    """Динамика по дням: сколько звонков и дозвонов в каждый из последних дней.
+
+    Считаем только `in_group = 1` — звонки прозвона. Без этого условия в
+    строку попадала вся компания (полторы тысячи исходящих в день), а планом
+    оставались 120 звонков одного человека: экран показывал 692% выполнения
+    там, где план был провален вдвое.
+
+    Набор звонков и план сходятся не идеально: звонки берём по природе
+    (`in_group`), а план — по активным сотрудникам. Разойдутся они только
+    если человек уволится посреди недели, и это меньшее зло: считать историю
+    по сегодняшнему составу значит задним числом стирать чужую работу.
+    """
     end = date.fromisoformat(today)
     out: list[dict[str, Any]] = []
     for i in range(days - 1, -1, -1):
@@ -517,7 +528,8 @@ def period_summary(
             """
             SELECT COUNT(*) AS total,
                    SUM(CASE WHEN duration_sec >= ? THEN 1 ELSE 0 END) AS talked
-            FROM calls WHERE local_date = ? AND direction = 'out'
+            FROM calls
+            WHERE local_date = ? AND direction = 'out' AND in_group = 1
             """,
             (threshold_sec, day),
         ).fetchone()
