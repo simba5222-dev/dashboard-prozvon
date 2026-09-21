@@ -130,10 +130,27 @@ def machines_section() -> Section:
     free = sh("df", "-h", "--output=avail", "/").splitlines()
     s.add("свободно на диске (Амстердам)", free[-1].strip() if free else "?")
 
+    # `is-active` про боевой сервис почти ничего не говорит: в юните стоит
+    # Restart=always и RestartSec=5, поэтому после убийства по памяти он снова
+    # «active» через пять секунд. С 14 по 21 сентября его убивали 25 раз, и
+    # каждое утро отчёт писал «active» — честно и бесполезно. Поэтому спрашиваем
+    # то, что само не заживает: сколько раз упал за сутки и сколько памяти
+    # осталось.
     prod = ssh_prod(
         "systemctl is-active asr; df -h / | tail -1 | awk '{print $4}'; "
         "fail2ban-client status sshd 2>/dev/null | grep -c Banned; "
-        "journalctl -u ssh --since '24 hours ago' | grep -c 'Failed password'"
+        "journalctl -u ssh --since '24 hours ago' | grep -c 'Failed password'; "
+        # Считаем именно убийства (code=killed), а не любой выход: штатный
+        # `systemctl restart` тревогой быть не должен.
+        "journalctl -u asr --since '24 hours ago' --no-pager | "
+        "  grep -c 'code=killed'; "
+        # _TRANSPORT=kernel вместо `-k`: `-k` молча ограничивается текущей
+        # загрузкой, и после перезагрузки утренний отчёт показывал бы ноль
+        # убийств по памяти ровно в то утро, когда их было восемь.
+        "journalctl --since '24 hours ago' --no-pager _TRANSPORT=kernel | "
+        "  grep -ci 'out of memory'; "
+        "free -m | awk '/Mem:/{print $7}'; "
+        "free -m | awk '/Mem:/{print $2}'"
     ).splitlines()
     if len(prod) >= 4:
         s.add("asr (Россия, боевой)", prod[0], "ok" if prod[0] == "active" else "beda")
@@ -142,7 +159,29 @@ def machines_section() -> Section:
               "vnimanie" if int(prod[3] or 0) > 100 else "ok")
     else:
         s.add("боевой сервер", "не ответил на проверку", "beda")
+
+    if len(prod) >= 8:
+        falls = _as_int(prod[4])
+        ooms = _as_int(prod[5])
+        avail, total = _as_int(prod[6]), _as_int(prod[7])
+        # Падение сервиса — это потерянный звонок: процесс убивают посреди
+        # распознавания, и в журнале не остаётся ни «пропущен», ни ошибки.
+        s.add("падений asr за сутки (Россия)", str(falls),
+              "beda" if falls else "ok")
+        s.add("убийств по памяти за сутки (Россия)", str(ooms),
+              "beda" if ooms else "ok")
+        if total:
+            share = avail * 100 // total
+            s.add("свободно памяти (Россия)", f"{avail} МБ из {total} ({share}%)",
+                  "beda" if share < 10 else "vnimanie" if share < 20 else "ok")
     return s
+
+
+def _as_int(value: str) -> int:
+    try:
+        return int((value or "0").strip())
+    except ValueError:
+        return 0
 
 
 def _topup_values() -> dict[str, str]:
@@ -320,7 +359,91 @@ def safety_section() -> Section:
     prod_dirty = ssh_prod("cd /opt/asr && git status --short | wc -l")
     if prod_dirty and prod_dirty != "0":
         s.add("боевой ASR: не закоммичено", f"{prod_dirty} файлов", "vnimanie")
+
+    # 5. Расхождение кода двух серверов.
+    for what, value, level in code_divergence():
+        s.add(what, value, level)
     return s
+
+
+# Файл, в котором помнится вчерашнее расхождение. Сравниваем не с нулём:
+# два сервера расходятся законно и постоянно — на боевом есть приём вебхуков
+# ВАТС, здесь его нет и не будет. Тревога нужна на **рост** расхождения.
+DIVERGENCE_STATE = DASH / "data/code-divergence.json"
+AMS_ASR = Path("/home/claude/asr-vats-megafon")
+
+
+def code_divergence() -> list[tuple[str, str, str]]:
+    """Сверить `app/*.py` здесь и на боевом.
+
+    Зачем. 17.09 в 20:32 здесь сделали «дорожки считаются одновременно», а в
+    20:33 на боевом появился коммит «Слепок боевого кода» — фотография того,
+    что там уже лежало. Правку никто не перенёс, и это выяснилось только через
+    четыре дня, когда расширили железо и полезли мерить скорость. Истории двух
+    репозиториев не связаны, поэтому сравнивать коммиты бессмысленно —
+    сравниваем содержимое файлов.
+
+    Тихо расходиться коду можно: разные машины делают разную работу. Нельзя
+    расходиться **молча и всё сильнее** — это и ловится.
+    """
+    rows: list[tuple[str, str, str]] = []
+    local_dir = AMS_ASR / "app"
+    if not local_dir.is_dir():
+        return [("сверка кода двух серверов", "здешней копии ASR нет", "vnimanie")]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Забираем боевые файлы целиком: их дюжина, сотни килобайт, раз в сутки.
+        pulled = sh("bash", "-c",
+                    f"ssh -o ConnectTimeout=10 -o BatchMode=yes -i {PROD_KEY} {PROD_HOST}"
+                    f" 'cd /opt/asr && tar cf - app/*.py' | tar xf - -C {tmp}",
+                    timeout=60)
+        remote_dir = Path(tmp, "app")
+        if not remote_dir.is_dir():
+            return [("сверка кода двух серверов", "боевой не отдал файлы", "vnimanie")]
+
+        now: dict[str, int] = {}
+        for path in sorted(local_dir.glob("*.py")):
+            twin = remote_dir / path.name
+            if not twin.exists():
+                now[path.name] = -1  # файла на боевом нет вовсе
+                continue
+            diff = sh("diff", str(twin), str(path), timeout=20)
+            lines = sum(1 for line in diff.splitlines() if line[:1] in "<>")
+            if lines:
+                now[path.name] = lines
+        for path in sorted(remote_dir.glob("*.py")):
+            if not (local_dir / path.name).exists():
+                now[path.name] = -1
+
+    was: dict[str, int] = {}
+    if DIVERGENCE_STATE.exists():
+        try:
+            was = json.loads(DIVERGENCE_STATE.read_text()).get("files", {})
+        except (json.JSONDecodeError, OSError):
+            was = {}
+
+    grown = [name for name, n in now.items() if n > was.get(name, 0) or name not in was]
+    total = sum(n for n in now.values() if n > 0)
+    if not now:
+        rows.append(("код Амстердама и боевого", "совпадает", "ok"))
+    elif grown:
+        rows.append(("код разошёлся сильнее вчерашнего",
+                     ", ".join(sorted(grown)[:4]) + (" и др." if len(grown) > 4 else ""),
+                     "vnimanie"))
+        rows.append(("всего расхождения app/*.py",
+                     f"{total} строк в {len(now)} файлах", "ok"))
+    else:
+        rows.append(("расхождение кода двух серверов",
+                     f"{total} строк в {len(now)} файлах, не росло", "ok"))
+
+    try:
+        DIVERGENCE_STATE.write_text(
+            json.dumps({"checked_at": datetime.now(timezone.utc).isoformat(),
+                        "files": now}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except OSError as exc:
+        rows.append(("сверка кода", f"состояние не сохранено: {exc}", "vnimanie"))
+    return rows
 
 
 def selfcheck_section() -> Section:
