@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS calls (
     duration_sec  INTEGER NOT NULL DEFAULT 0,
     record_url    TEXT,
     in_group      INTEGER NOT NULL DEFAULT 1,  -- 0 — чужой звонок, взят ради разбора заявки
+    diversion     TEXT,              -- на какой НАШ номер звонили: рекламный или прямой
     is_demo       INTEGER NOT NULL DEFAULT 0,
     fetched_at    TEXT NOT NULL
 );
@@ -204,6 +205,12 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # Разбирая заявку, мы забираем и звонки чужих менеджеров — тех, кому её
     # передали. В счётчиках прозвона им не место, поэтому они помечены нулём.
     ("calls", "in_group", "INTEGER NOT NULL DEFAULT 1"),
+    # На какой НАШ номер звонили. ВАТС присылает это обязательным полем, и
+    # только по нему различимы сценарии: рекламный номер — звонок с рекламы,
+    # прямой номер менеджера — клиент позвонил ему сам. Раньше признак
+    # приходил и выбрасывался, из-за чего звонки с рекламы разбирались как
+    # личные и по ним заводились лишние заявки.
+    ("calls", "diversion", "TEXT"),
     ("managers", "dept", "TEXT NOT NULL DEFAULT 'прозвон'"),
     ("inbound_checks", "active_orders", "INTEGER NOT NULL DEFAULT 0"),
     ("inbound_checks", "active_names", "TEXT"),
@@ -278,14 +285,17 @@ def save_call(conn: sqlite3.Connection, **row: Any) -> bool:
     Повторный опрос ВАТС приносит те же звонки — на это и стоит primary key.
     """
     row.setdefault("in_group", 1)
+    row.setdefault("diversion", None)
     cur = conn.execute(
         """
         INSERT INTO calls (uid, vats_login, client_phone, direction, status,
                            started_at, local_date, local_hour, wait_sec,
-                           duration_sec, record_url, in_group, is_demo, fetched_at)
+                           duration_sec, record_url, in_group, diversion,
+                           is_demo, fetched_at)
         VALUES (:uid, :vats_login, :client_phone, :direction, :status,
                 :started_at, :local_date, :local_hour, :wait_sec,
-                :duration_sec, :record_url, :in_group, :is_demo, :fetched_at)
+                :duration_sec, :record_url, :in_group, :diversion,
+                :is_demo, :fetched_at)
         ON CONFLICT (uid) DO NOTHING
         """,
         row,

@@ -48,24 +48,33 @@ def digits(phone: str) -> str:
     return re.sub(r"\D", "", str(phone or ""))[-10:]
 
 
-def sales_number(conn: sqlite3.Connection, *numbers: str) -> bool:
-    """Звонили ли на номер отдела продаж.
+def sales_number(conn: sqlite3.Connection, number: str) -> bool:
+    """Позвонили ли **на прямой номер** менеджера отдела продаж.
 
     **Отбор идёт по номеру, а не по имени.** Менеджеры приходят и уходят,
     учётки в ВАТС переиспользуют — `stajer1` на деле Воронков, — а номер
     остаётся в компании и не меняется. Один номер бывает у нескольких
     человек: это всё равно номер отдела продаж.
+
+    Принимается **один** номер — `diversion`, тот, который набрал клиент.
+    Раньше сюда передавали ещё и `telnum` (прямой номер сотрудника, которому
+    ВАТС перевела звонок), и хватало совпадения любого из двух. На этом всё и
+    сломалось: клиент звонит на рекламный номер «Авито СПБ», ВАТС переводит
+    на Толстова, `diversion` говорит «рекламный» — а `telnum` говорит
+    «Толстов», и его «да» перевешивало. Звонок с рекламы разбирался как
+    личный, и по нему заводилась заявка «Пойманная с прослушки» — при том что
+    менеджер этот лид в ту же минуту брал в работу. Так вышло 8 заявок из 18.
+
+    `telnum` остался там, где он и уместен, — в `answered_by`: он отвечает на
+    вопрос «кто взял трубку», а не «наш ли это сценарий».
     """
-    for raw in numbers:
-        number = digits(raw)
-        if not number:
-            continue
-        row = conn.execute(
-            "SELECT 1 FROM managers WHERE dept = 'продажи' AND phone = ? LIMIT 1", (number,)
-        ).fetchone()
-        if row is not None:
-            return True
-    return False
+    digits_only = digits(number)
+    if not digits_only:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM managers WHERE dept = 'продажи' AND phone = ? LIMIT 1", (digits_only,)
+    ).fetchone()
+    return row is not None
 
 
 def answered_by(conn: sqlite3.Connection, call: dict[str, Any]) -> sqlite3.Row | None:
@@ -204,10 +213,14 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
             audio: bytes) -> dict[str, Any]:
     """Провести звонок по всему пути. Возвращает, чем дело кончилось."""
     uid = str(call["uid"])
-    if not sales_number(conn, str(call.get("diversion") or ""), str(call.get("telnum") or "")):
+    # Сценарий выбирается по тому, КУДА звонил клиент, и только по этому.
+    # Рекламный номер — это сценарий «звонки на общие номера», им занимается
+    # боевой сервер; искать там потерянную заявку бессмысленно и вредно.
+    dialed = str(call.get("diversion") or "")
+    if not sales_number(conn, dialed):
         return {"uid": uid,
-                "skipped": f"номер {call.get('diversion') or call.get('telnum')} "
-                           "не из отдела продаж"}
+                "skipped": f"звонили на {dialed or '—'}, это не прямой номер "
+                           "менеджера отдела продаж"}
     manager = answered_by(conn, call)
 
     duration = int(call.get("duration") or 0)
@@ -228,7 +241,8 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
         record_url=str(call.get("record") or ""),
         # in_group = 0: это личный звонок менеджеру, а не звонок группы
         # прозвона. В счётчиках прозвона ему не место.
-        in_group=0, is_demo=0, fetched_at=datetime.now(timezone.utc).isoformat(),
+        in_group=0, diversion=digits(dialed) or None,
+        is_demo=0, fetched_at=datetime.now(timezone.utc).isoformat(),
     )
     conn.commit()
 
