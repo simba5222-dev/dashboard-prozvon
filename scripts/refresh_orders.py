@@ -40,11 +40,43 @@ from app.config import get_settings  # noqa: E402
 from app.db import connect, save_call_order  # noqa: E402
 
 
+def recent_orders(client: SynergyClient, pages: int) -> dict[str, dict]:
+    """Заявки, изменённые последними, — одним запросом на страницу.
+
+    Спрашивать каждую заявку по отдельности дорого: их десятки, и с ростом
+    базы будет хуже. Synergy умеет сортировать по времени изменения, и этого
+    достаточно: страница из пятидесяти покрывает около сорока минут изменений
+    при нынешнем темпе (1,3 заявки в минуту по всей компании).
+
+    Фильтр по времени Synergy **игнорирует** — проверено: запрос «изменённые
+    с сегодняшнего полудня» и «изменённые с 2020 года» дают одно и то же.
+    Поэтому берём сортировкой и отсекаем у себя.
+    """
+    out: dict[str, dict] = {}
+    for page in range(1, max(1, pages) + 1):
+        try:
+            rows = client.get("orders", per_page=100, page=page,
+                              sort="-updated-at", include="stage").get("data") or []
+        except Exception:  # noqa: BLE001
+            break
+        if not rows:
+            break
+        for row in rows:
+            out[str(row["id"])] = row
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="записать изменения")
+    ap.add_argument("--pages", type=int, default=2,
+                    help="сколько страниц свежих изменений смотреть при --recent")
     ap.add_argument("--days", type=int, default=3,
                     help="за сколько последних дней искать новые заявки")
+    ap.add_argument("--recent", action="store_true",
+                    help="быстрый проход: одним запросом взять свежеизменённые "
+                         "заявки и обновить наши. Один запрос вместо запроса "
+                         "на каждую заявку — годится раз в минуту")
     args = ap.parse_args()
 
     settings = get_settings()
@@ -57,17 +89,23 @@ def main() -> int:
         "SELECT order_id, call_uid, name, created_at, responsible, stage_name, amount "
         "FROM call_orders"
     ).fetchall()
+    fresh = recent_orders(client, args.pages) if args.recent else None
     changed = 0
     for row in known:
-        try:
-            data = (client.get(f"orders/{row['order_id']}", include="stage").get("data") or {})
-        except Exception:  # noqa: BLE001 — заявку могли удалить, это не повод падать
-            print(f"  заявка {row['order_id']}: не прочиталась")
-            continue
+        if fresh is not None:
+            data = fresh.get(str(row["order_id"]))
+            if data is None:
+                continue  # за окно свежих изменений не попала — значит, не менялась
+        else:
+            try:
+                data = (client.get(f"orders/{row['order_id']}", include="stage").get("data") or {})
+            except Exception:  # noqa: BLE001 — заявку могли удалить, это не повод падать
+                print(f"  заявка {row['order_id']}: не прочиталась")
+                continue
         attrs = data.get("attributes") or {}
         ref = (((data.get("relationships") or {}).get("stage") or {}).get("data") or {})
         stage_name, stage_kind = stages.get(str(ref.get("id") or ""), ("", ""))
-        if stage_name == (row["stage_name"] or ""):
+        if not stage_name or stage_name == (row["stage_name"] or ""):
             continue
         changed += 1
         print(f"  заявка {row['order_id']}: «{row['stage_name']}» → «{stage_name}»", flush=True)
@@ -75,12 +113,18 @@ def main() -> int:
             save_call_order(
                 conn, order_id=str(row["order_id"]), call_uid=row["call_uid"],
                 name=row["name"], created_at=row["created_at"],
-                responsible=str(attrs.get("responsible") or row["responsible"] or ""),
+                # Ответственный в списке не приходит — своего не затираем.
+                responsible=row["responsible"] or "",
                 stage_name=stage_name, stage_kind=stage_kind,
-                amount=float(attrs.get("amount") or 0.0), is_demo=0,
+                amount=float(attrs.get("amount") or row["amount"] or 0.0), is_demo=0,
             )
     if args.apply:
         conn.commit()
+    if args.recent:
+        tail = "" if args.apply else " (сухой прогон)"
+        print(f"\nсвежих изменений просмотрено {len(fresh or {})}, "
+              f"наших изменилось {changed}{tail}")
+        return 0
 
     # --- 2. Найти заявки, заведённые позже проверки карточки.
     calls = conn.execute(

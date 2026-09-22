@@ -1,0 +1,24 @@
+[Unit]
+Description=Дашборд: обновить стадии заявок по свежим изменениям
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под claude: пишет в базу и читает .env с токеном Synergy.
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+# Один-два запроса к CRM, не больше. Synergy умеет сортировать заявки по
+# времени изменения, и страницы из ста хватает примерно на полтора часа
+# изменений при нынешнем темпе — 1,3 заявки в минуту по всей компании.
+# Фильтр по времени она игнорирует (проверено), поэтому берём сортировкой.
+#
+# Полный проход — со всеми заявками и поиском новых — остался в
+# dashboard-prozvon раз в час: он тяжелее и нужен на случай, если заявка
+# менялась давно и в окно свежих изменений не попала.
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/refresh_orders.py --recent --apply
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=multi-user.target

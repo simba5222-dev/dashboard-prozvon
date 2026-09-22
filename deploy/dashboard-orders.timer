@@ -1,0 +1,11 @@
+[Unit]
+Description=Дашборд: следить за стадиями заявок, раз в минуту
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+# Наверстать один раз, а не лавиной, если сервер был выключен.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
