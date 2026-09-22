@@ -65,6 +65,10 @@ def main() -> int:
                     help="только входящие отдела продаж: их разбирает поиск "
                          "потерянных заявок. Без этого качается всё подряд, а "
                          "в базе теперь лежат все звонки компании — это гигабайты")
+    ap.add_argument("--group", action="store_true",
+                    help="только исходящие прозвона: их разбирает отчёт по "
+                         "менеджеру. Их десятки в день, а всех звонков компании "
+                         "полтысячи — без отбора ждать записи прозвона придётся часами")
     args = ap.parse_args()
 
     settings = settings_without_secrets()
@@ -89,6 +93,11 @@ def main() -> int:
         where.append("vats_login IN (SELECT vats_login FROM managers "
                      "WHERE dept = ? AND active = 1)")
         params.append(settings.sales_dept)
+    if args.group:
+        # `in_group` уже означает «исходящий звонок менеджера прозвона» —
+        # признак ставится при сборе и живёт у самого звонка.
+        where.append("in_group = 1")
+        where.append("direction = 'out'")
     rows = conn.execute(
         f"""
         SELECT uid, record_url, duration_sec, local_date FROM calls

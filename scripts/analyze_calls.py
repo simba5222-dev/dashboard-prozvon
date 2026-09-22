@@ -79,6 +79,11 @@ def main() -> int:
                     help="не распознавать, только разобрать готовые расшифровки")
     ap.add_argument("--redo", action="store_true", help="переразобрать уже разобранные")
     ap.add_argument("--no-analysis", action="store_true", help="только расшифровка")
+    ap.add_argument("--group", action="store_true",
+                    help="только исходящие прозвона — те, из которых состоит "
+                         "отчёт по менеджеру. Без отбора берутся ВСЕ звонки "
+                         "компании подряд, а входящих отдела продаж в базе на "
+                         "два порядка больше: разбор уходит не туда")
     ap.add_argument("--uid", help="разобрать именно эти звонки, через запятую: "
                                   "нужно, когда разбираешь одну заявку, а не день")
     args = ap.parse_args()
@@ -105,15 +110,21 @@ def main() -> int:
             uids,
         ).fetchall()
     else:
+        where = ["k.local_date BETWEEN ? AND ?", "k.duration_sec >= ?"]
+        params: list = [since, until, args.min_sec or settings.talk_threshold_sec]
+        if args.group:
+            # `in_group` — признак звонка прозвона, поставленный при сборе.
+            where.append("k.in_group = 1")
+            where.append("k.direction = 'out'")
         rows = conn.execute(
-            """
+            f"""
             SELECT k.uid, k.duration_sec, k.local_date, k.started_at,
                    t.text AS transcript_text, t.analysis_json
             FROM calls k LEFT JOIN transcripts t ON t.call_uid = k.uid
-            WHERE k.local_date BETWEEN ? AND ? AND k.duration_sec >= ?
+            WHERE {' AND '.join(where)}
             ORDER BY k.started_at DESC
             """,
-            (since, until, args.min_sec or settings.talk_threshold_sec),
+            params,
         ).fetchall()
 
     todo = []

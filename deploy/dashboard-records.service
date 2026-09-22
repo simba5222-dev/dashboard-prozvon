@@ -1,0 +1,18 @@
+[Unit]
+Description=Дашборд: скачать записи входящих отдела продаж
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под agent: ключ к российскому серверу, откуда качаются записи, читает
+# только он. Разбор и запись в CRM идут отдельным юнитом под claude.
+User=agent
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/fetch_records.py --days 2 --min-sec 40 --leads
+# Записи прозвона — отдельной строкой и с --group. Без ключа скрипт качает
+# ВСЕ звонки компании: их полтысячи в день против трёх десятков прозвона,
+# и записи, ради которых всё затевалось, ждали бы часами в конце очереди.
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/fetch_records.py --days 2 --min-sec 40 --group
+TimeoutStartSec=50min

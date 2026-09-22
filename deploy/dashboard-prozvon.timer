@@ -1,0 +1,12 @@
+[Unit]
+Description=Дашборд: разбирать разговоры прозвона раз в час
+
+[Timer]
+OnBootSec=12min
+OnUnitActiveSec=1h
+# Если сервер был выключен, наверстать один раз, а не лавиной.
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

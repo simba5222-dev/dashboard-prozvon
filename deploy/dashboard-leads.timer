@@ -1,0 +1,12 @@
+[Unit]
+Description=Дашборд: ловля потерянных заявок, каждую минуту
+
+[Timer]
+# Было раз в час плюс три часа ожидания — заявка появлялась к вечеру.
+# Решение владельца 18.09.2026: заявка нужна в момент разговора.
+OnBootSec=90sec
+OnUnitActiveSec=1min
+RandomizedDelaySec=10s
+
+[Install]
+WantedBy=timers.target

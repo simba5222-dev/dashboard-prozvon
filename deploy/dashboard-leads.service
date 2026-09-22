@@ -1,0 +1,18 @@
+[Unit]
+Description=Дашборд: поиск потерянных заявок во входящих звонках
+After=dashboard-records.service
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+# Три шага по порядку: проверить в CRM, был ли заказ; просеять записи на
+# запрос техники; завести заявки по найденным. Порции ограничены, чтобы
+# один час работы не занял сервер целиком: при потоке около сотни звонков
+# в день на час приходится пять-десять.
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/collect.py --no-cards --inbound 40
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/screen_inbound.py --days 2 --limit 20
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/catch_leads.py --days 2 --limit 10 --apply
+TimeoutStartSec=55min

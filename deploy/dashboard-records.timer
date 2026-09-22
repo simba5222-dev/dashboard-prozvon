@@ -1,0 +1,13 @@
+[Unit]
+Description=Дашборд: записи входящих, каждую минуту
+
+[Timer]
+# Заказчик ищет технику дальше, пока мы думаем. Запись тянется по ssh с
+# российского сервера и занимает секунды; если предыдущий проход ещё идёт,
+# systemd просто пропустит запуск.
+OnBootSec=1min
+OnUnitActiveSec=1min
+RandomizedDelaySec=10s
+
+[Install]
+WantedBy=timers.target

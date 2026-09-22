@@ -1,0 +1,27 @@
+[Unit]
+Description=Дашборд: разбор разговоров прозвона
+After=network-online.target asr.service
+Wants=asr.service
+
+[Service]
+Type=oneshot
+# Под claude: скрипт пишет в базу и читает .env с ключом OpenAI.
+# Записи к этому моменту уже скачаны — их тянет dashboard-records под agent.
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+# --group обязателен. Без него разбираются ВСЕ звонки компании подряд, а
+# входящих отдела продаж в базе на два порядка больше: разбор уходит не туда,
+# и отчёт по менеджеру прозвона так и остаётся пустым. Именно это и случилось
+# 18–22.09.2026 — четыре дня отчёт стоял, пока никто не заметил.
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/analyze_calls.py --days 2 --min-sec 40 --group
+# Живые входящие важнее догоняющего разбора: они делят один сервис
+# распознавания, и просев должен успевать к разговору, а не после него.
+Nice=10
+CPUWeight=30
+IOWeight=30
+TimeoutStartSec=50min
+
+[Install]
+WantedBy=multi-user.target
