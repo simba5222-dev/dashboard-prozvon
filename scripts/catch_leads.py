@@ -158,7 +158,8 @@ def main() -> int:
         try:
             # Пока мы считали, менеджер мог завести заявку сам — проверяем заново.
             after, active = contact_orders_around(
-                client, row["contact_id"], row["started_at"], stages)
+                client, row["contact_id"], row["started_at"], stages,
+                fresh_days=settings.order_active_days)
             # Решение одно на оба пути — быстрый и пакетный. Держать его в
             # одном месте обязательно: разойдутся — и дубли вернутся через ту
             # дверь, которую забыли починить.

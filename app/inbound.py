@@ -373,7 +373,9 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
                 "note": "контакта с таким телефоном в CRM нет"}
 
     stages = load_stages(client)
-    after, active = contact_orders_around(client, contact["id"], str(call.get("start") or ""), stages)
+    after, active = contact_orders_around(
+        client, contact["id"], str(call.get("start") or ""), stages,
+        fresh_days=settings.order_active_days)
     reason = lead_block_reason(after, active)
     if reason:
         _remember_orders(conn, uid, after, active)

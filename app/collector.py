@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 # провалена. Всё остальное — работа в процессе.
 INACTIVE_STAGE_KINDS = ("won", "lost")
 
+# Сколько дней заявка считается живой, если её не закрыли стадией. Значение
+# по умолчанию; рабочее берётся из настроек (`order_active_days`).
+ORDER_ACTIVE_DAYS = 30
+
 # Поле звонка, где Synergy хранит «Фамилия Имя Отчество добавочный».
 CALL_AUTHOR_FIELD = "custom-28722"
 # Поля телефона у контакта — записаны по-разному, приходится перебирать.
@@ -636,6 +640,7 @@ ORDER_LOOKBACK_MINUTES = 15
 def contact_orders_around(
     client: SynergyClient, contact_id: str, call_iso: str, stages: dict[str, tuple[str, str]],
     lookback_minutes: int = ORDER_LOOKBACK_MINUTES,
+    fresh_days: int = ORDER_ACTIVE_DAYS,
 ) -> tuple[list[str], list[str]]:
     """Заявки контакта: заведённые вокруг звонка и открытые на момент звонка.
 
@@ -646,6 +651,13 @@ def contact_orders_around(
 
     Открытые заявки возвращаем отдельно — это контекст. Клиент часто звонит
     по уже заведённой заявке, и такой разговор запросом не считается.
+
+    Открытой считается не всякая незакрытая: только та, которую **трогали** за
+    последние `fresh_days`. Закрывают стадию лишь «Сделка» и «Сделка
+    провалена», поэтому брошенный «Новый» висит открытым годами — в базе
+    нашлись возрастом 139, 169 и 836 дней. Без срока такой мертвец молча
+    съедал бы новый запрос от старого клиента, а это ровно тот заказ, про
+    который менеджер забывает: проконсультировал и не оформил.
     """
     try:
         payload = client.get(f"contacts/{contact_id}/orders",
@@ -671,7 +683,17 @@ def contact_orders_around(
             continue
         if made >= call_time - timedelta(minutes=lookback_minutes):
             after.append(name)
-        elif kind not in INACTIVE_STAGE_KINDS:
+            continue
+        if kind in INACTIVE_STAGE_KINDS:
+            continue
+        # «Когда последний раз трогали». Если Synergy не сказала — считаем по
+        # дате создания: заявка, которую ни разу не правили, живой не была.
+        touched = str(attrs.get("updated-at") or created)
+        try:
+            last = datetime.fromisoformat(touched.replace("Z", "+00:00"))
+        except ValueError:
+            last = made
+        if last >= call_time - timedelta(days=fresh_days):
             active.append(name)
     return after, active
 

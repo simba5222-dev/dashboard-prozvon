@@ -23,7 +23,7 @@ from app.db import (
     save_order_report,
     upsert_manager,
 )
-from app.collector import group_logins
+from app.collector import contact_orders_around, group_logins
 from app.stats import order_detail, orders_of_period, report_rows
 
 DAY = "2026-09-16"
@@ -159,3 +159,59 @@ def test_group_logins_keeps_dismissed_managers(conn):
     upsert_manager(conn, vats_login="gone", display_name="Ушедший",
                    synergy_user="9", plan_calls=None, active=0, is_demo=0)
     assert group_logins(conn, "прозвон") == {"andy", "gone"}
+
+
+# ------------------------------------------- живая заявка против заброшенной
+
+class _FakeSynergy:
+    """Отдаёт заранее собранный список заявок контакта."""
+
+    def __init__(self, orders):
+        self._orders = orders
+
+    def get(self, _path, **_kw):
+        return {"data": self._orders}
+
+
+def _order(oid, stage_id, created, updated=None):
+    return {"id": oid,
+            "attributes": {"name": f"№{oid}", "created-at": created,
+                           "updated-at": updated or created},
+            "relationships": {"stage": {"data": {"id": stage_id}}}}
+
+
+STAGES = {"s-new": ("Новый", "opened"), "s-won": ("Сделка", "won")}
+CALL = "2026-09-22T10:00:00+00:00"
+
+
+def test_брошенная_заявка_не_считается_открытой():
+    """«Новый» двухлетней давности — не работа, а мертвец в базе.
+
+    Закрывают стадию только «Сделка» и «Сделка провалена», поэтому такие
+    висят открытыми годами: в базе нашлись возрастом 139, 169 и 836 дней.
+    Считать их живыми — значит терять новые запросы от старых клиентов,
+    а это ровно те заказы, про которые менеджер забывает.
+    """
+    client = _FakeSynergy([_order("1", "s-new", "2024-06-01T10:00:00+00:00")])
+    after, active = contact_orders_around(client, "c1", CALL, STAGES, fresh_days=30)
+    assert after == [] and active == []
+
+
+def test_заявку_трогали_на_днях_значит_она_живая():
+    client = _FakeSynergy([_order("1", "s-new", "2026-05-01T10:00:00+00:00",
+                                  updated="2026-09-20T10:00:00+00:00")])
+    after, active = contact_orders_around(client, "c1", CALL, STAGES, fresh_days=30)
+    assert active == ["№1"]
+
+
+def test_закрытая_сделка_живой_не_считается():
+    client = _FakeSynergy([_order("1", "s-won", "2026-09-20T10:00:00+00:00")])
+    after, active = contact_orders_around(client, "c1", CALL, STAGES, fresh_days=30)
+    assert after == [] and active == []
+
+
+def test_заявка_вокруг_звонка_попадает_в_after():
+    """Менеджер завёл её сам, пока мы считали, — это не «открытая», а «уже есть»."""
+    client = _FakeSynergy([_order("1", "s-new", "2026-09-22T09:55:00+00:00")])
+    after, active = contact_orders_around(client, "c1", CALL, STAGES, fresh_days=30)
+    assert after == ["№1"] and active == []
