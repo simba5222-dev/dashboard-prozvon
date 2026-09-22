@@ -108,6 +108,10 @@
           {% elif not r.checked %}<span class="dim">ещё не проверялся по CRM</span>
           {% else %}<span class="dim">запись ещё не просеяна</span>{% endif %}
           {% if r.orders_after %}<br><span class="ordered">заявка есть: {{ r.order_names }}</span>{% endif %}
+          {# Отказ должен быть виден: иначе «не завели, у клиента уже открыта»
+             не отличить от «ничего не нашли», и человек не поймёт, почему по
+             явному запросу заявки нет. #}
+          {% if r.active_names and not r.created_order_id %}<br><span class="ordered">не завели: у клиента открыта заявка {{ r.active_names }}</span>{% endif %}
           {% if r.created_order_id %}<br><span class="ordered">заведена заявка {{ r.created_order_id }}</span>{% endif %}
         </td>
         <td class="act">

@@ -294,6 +294,51 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
     return create_lead(conn, settings, call, manager, verdict, path, local_date)
 
 
+def lead_block_reason(after: list[str], active: list[str]) -> str:
+    """Почему заявку заводить не надо. Пустая строка — заводить можно.
+
+    Два случая, и оба заканчиваются отказом:
+
+    - **`after`** — заявка по этому звонку уже появилась. Обычно её завёл
+      менеджер, пока мы считали: наша встала бы рядом дублем.
+    - **`active`** — у клиента и до звонка была открытая заявка. Решение
+      владельца от 22.09.2026: новую не заводим вовсе.
+
+    Второй случай раньше не проверялся вообще: список открытых заявок
+    вычислялся и тут же выбрасывался (`after, _active = ...`). Поэтому
+    повторный звонок клиента давал дубль — 79958880139 дважды за один день,
+    79200007771 дважды за два.
+
+    Размен осознанный и его стоит помнить: клиент с открытой заявкой может
+    позвонить и с **новым** запросом на другую технику — такой мы теперь
+    потеряем. Владелец выбрал это сознательно: мусор в рабочей базе отдела
+    продаж дороже пропущенного повторного заказа. Если решение будут менять,
+    менять надо здесь — оба пути, быстрый и пакетный, спрашивают эту функцию.
+    """
+    if after:
+        return f"заявка уже есть: {'; '.join(after[:2])}"
+    if active:
+        return f"у клиента открыта заявка: {'; '.join(active[:2])}"
+    return ""
+
+
+def _remember_orders(conn: sqlite3.Connection, uid: str,
+                     after: list[str], active: list[str]) -> None:
+    """Запомнить, какие заявки нашлись у контакта, — чтобы отказ был виден.
+
+    Без этого «не завели, потому что у клиента уже есть заявка» нигде не
+    остаётся следом, и отличить его от «просто ничего не нашли» нельзя ни на
+    экране, ни потом при разборе.
+    """
+    conn.execute(
+        """UPDATE inbound_checks
+              SET orders_after = ?, order_names = ?, active_orders = ?, active_names = ?
+            WHERE call_uid = ?""",
+        (len(after), "; ".join(after), len(active), "; ".join(active), uid),
+    )
+    conn.commit()
+
+
 def refresh_hint(conn: sqlite3.Connection, settings: Settings, phone: str) -> None:
     """Обновить подсказку в карточке клиента после разговора.
 
@@ -328,10 +373,12 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
                 "note": "контакта с таким телефоном в CRM нет"}
 
     stages = load_stages(client)
-    after, _active = contact_orders_around(client, contact["id"], str(call.get("start") or ""), stages)
-    if after:
-        return {"uid": uid, "request": True, "order": None,
-                "note": f"заявка уже есть: {'; '.join(after[:2])}"}
+    after, active = contact_orders_around(client, contact["id"], str(call.get("start") or ""), stages)
+    reason = lead_block_reason(after, active)
+    if reason:
+        _remember_orders(conn, uid, after, active)
+        logger.info("звонок %s: %s — новую заявку не заводим", uid, reason)
+        return {"uid": uid, "request": True, "order": None, "note": reason}
 
     transcript = transcribe(settings, path.name, path.read_bytes())
     save_transcript(conn, call_uid=uid, text=transcript, analysis_json=None,

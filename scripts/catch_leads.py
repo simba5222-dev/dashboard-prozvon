@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import analyzer  # noqa: E402
 from app.collector import SynergyClient, contact_orders_around, load_stages  # noqa: E402
+from app.inbound import lead_block_reason  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.crm_write import CrmWriter, lead_comment, lead_summary, order_customs  # noqa: E402
 from app.db import connect, init_schema, save_transcript  # noqa: E402
@@ -156,13 +157,20 @@ def main() -> int:
 
         try:
             # Пока мы считали, менеджер мог завести заявку сам — проверяем заново.
-            after, _active = contact_orders_around(
+            after, active = contact_orders_around(
                 client, row["contact_id"], row["started_at"], stages)
-            if after:
-                logger.info("%s: заявка уже появилась (%s) — пропускаем", uid, "; ".join(after[:2]))
+            # Решение одно на оба пути — быстрый и пакетный. Держать его в
+            # одном месте обязательно: разойдутся — и дубли вернутся через ту
+            # дверь, которую забыли починить.
+            reason = lead_block_reason(after, active)
+            if reason:
+                logger.info("%s: %s — пропускаем", uid, reason)
                 conn.execute(
-                    "UPDATE inbound_checks SET orders_after = ?, order_names = ? WHERE call_uid = ?",
-                    (len(after), "; ".join(after), uid),
+                    """UPDATE inbound_checks
+                          SET orders_after = ?, order_names = ?,
+                              active_orders = ?, active_names = ?
+                        WHERE call_uid = ?""",
+                    (len(after), "; ".join(after), len(active), "; ".join(active), uid),
                 )
                 conn.commit()
                 skipped += 1
