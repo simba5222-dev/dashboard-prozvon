@@ -33,6 +33,7 @@ from app import analyzer, hints
 from app.collector import (SynergyClient, contact_orders_around, find_contact,
                            load_stages, order_names)
 from app.config import Settings
+from app import prozvon
 from app.crm_write import CrmWriter, lead_comment, lead_summary, order_customs
 from app.db import save_call, save_inbound_check, save_screen, save_transcript
 from app.stats import local_parts
@@ -74,6 +75,22 @@ def sales_number(conn: sqlite3.Connection, number: str) -> bool:
         return False
     row = conn.execute(
         "SELECT 1 FROM managers WHERE dept = 'продажи' AND phone = ? LIMIT 1", (digits_only,)
+    ).fetchone()
+    return row is not None
+
+
+def group_number(conn: sqlite3.Connection, number: str) -> bool:
+    """Это прямой номер менеджера прозвона?
+
+    Отбор такой же, как у отдела продаж, и по той же причине: учётки в ВАТС
+    переиспользуют, а номер за человеком закреплён.
+    """
+    digits_only = digits(number)
+    if not digits_only:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM managers WHERE dept = ? AND phone = ? LIMIT 1",
+        ("прозвон", digits_only),
     ).fetchone()
     return row is not None
 
@@ -214,6 +231,8 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
             audio: bytes) -> dict[str, Any]:
     """Провести звонок по всему пути. Возвращает, чем дело кончилось."""
     uid = str(call["uid"])
+    if str(call.get("type") or "in") == "out":
+        return prozvon_call(conn, settings, call, audio)
     # Сценарий выбирается по тому, КУДА звонил клиент, и только по этому.
     # Рекламный номер — это сценарий «звонки на общие номера», им занимается
     # боевой сервер; искать там потерянную заявку бессмысленно и вредно.
@@ -332,6 +351,57 @@ def _remember_orders(conn: sqlite3.Connection, uid: str,
         (len(after), order_names(after), len(active), order_names(active), uid),
     )
     conn.commit()
+
+
+def prozvon_call(conn: sqlite3.Connection, settings: Settings,
+                 call: dict[str, Any], audio: bytes) -> dict[str, Any]:
+    """Исходящий звонок менеджера прозвона — разбираем сразу после разговора.
+
+    До 22.09.2026 эти разговоры разбирались пачкой и только руками, поэтому
+    отчёт по менеджеру отставал на дни, а однажды простоял четыре. Теперь
+    путь тот же, что у входящих: запись приезжает с боевого сервера в секунду
+    окончания разговора, и разбор идёт сразу.
+
+    Чужие исходящие сюда не попадают: боевой шлёт только звонки с номеров
+    прозвона, а здесь это проверяется ещё раз — кто отдаёт запись, решать не
+    ему.
+    """
+    uid = str(call["uid"])
+    dialed = str(call.get("diversion") or "")
+    if not group_number(conn, dialed):
+        return {"uid": uid, "skipped": f"исходящий с {dialed or '—'}, "
+                                       "это не номер менеджера прозвона"}
+    duration = int(call.get("duration") or 0)
+    if duration < settings.transcribe_min_duration_sec:
+        return {"uid": uid, "skipped": f"разговор {duration} с короче порога"}
+
+    manager = conn.execute(
+        "SELECT * FROM managers WHERE dept = 'прозвон' AND phone = ?",
+        (digits(dialed),),
+    ).fetchone()
+    started = str(call.get("start") or "")
+    started_dt = parse_time(started)
+    if started_dt is not None:
+        started = started_dt.isoformat()
+    local_date, local_hour = local_parts(started, settings.timezone_offset_hours)
+    save_call(
+        conn, uid=uid, vats_login=manager["vats_login"] if manager else "неизвестно",
+        client_phone=str(call.get("client") or ""), direction="out",
+        status=str(call.get("status") or "success"), started_at=started,
+        local_date=local_date, local_hour=local_hour,
+        wait_sec=int(call.get("wait") or 0), duration_sec=duration,
+        record_url=str(call.get("record") or ""),
+        # in_group = 1: это и есть звонок прозвона, ради которого всё затевалось.
+        in_group=1, diversion=digits(dialed) or None,
+        is_demo=0, fetched_at=datetime.now(timezone.utc).isoformat(),
+    )
+    conn.commit()
+
+    records = Path(settings.records_dir)
+    records.mkdir(parents=True, exist_ok=True)
+    path = records / f"{uid}.mp3"
+    path.write_bytes(audio)
+    return prozvon.analyze_call(conn, settings, uid, path)
 
 
 def refresh_hint(conn: sqlite3.Connection, settings: Settings, phone: str) -> None:

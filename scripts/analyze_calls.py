@@ -17,55 +17,21 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import analyzer  # noqa: E402
+from app import prozvon  # noqa: E402
 from app.config import get_settings  # noqa: E402
-from app.db import connect, init_schema, save_transcript  # noqa: E402
+from app.db import connect, init_schema  # noqa: E402
 
 logger = logging.getLogger("analyze")
-
-
-def transcribe(path: Path, asr_url: str, timeout_sec: float) -> dict:
-    """Отдать запись сервису распознавания и получить диалог по ролям."""
-    with path.open("rb") as handle:
-        response = httpx.post(
-            f"{asr_url.rstrip('/')}/transcribe",
-            files={"file": (path.name, handle, "audio/mpeg")},
-            data={"mode": "split"},
-            timeout=timeout_sec,
-        )
-    response.raise_for_status()
-    return response.json()
-
-
-def card_of(conn, uid: str) -> dict:
-    """Карточка звонка: что менеджер внёс, какие задачи и заявки завёл."""
-    row = conn.execute(
-        """
-        SELECT k.uid, k.client_phone, k.duration_sec, k.local_date,
-               c.need_value, c.company_name, c.contact_name,
-               c.objects_filled, c.inn_filled, c.task_created
-        FROM calls k LEFT JOIN card_checks c ON c.call_uid = k.uid
-        WHERE k.uid = ?
-        """,
-        (uid,),
-    ).fetchone()
-    call = dict(row) if row else {"uid": uid}
-    call["tasks"] = [dict(r) for r in conn.execute(
-        "SELECT * FROM call_tasks WHERE call_uid = ?", (uid,))]
-    call["orders"] = [dict(r) for r in conn.execute(
-        "SELECT * FROM call_orders WHERE call_uid = ?", (uid,))]
-    return call
 
 
 def main() -> int:
@@ -152,33 +118,15 @@ def main() -> int:
         uid = row["uid"]
         text = row["transcript_text"]
         try:
-            if not text:
-                result = transcribe(records / f"{uid}.mp3", settings.asr_url,
-                                    settings.asr_timeout_sec)
-                text = analyzer.dialog_text(result.get("dialog") or [])
-                if not text.strip():
-                    logger.info("%s: в записи нет речи", uid)
-                save_transcript(conn, call_uid=uid, text=text, analysis_json=None,
-                                created_at=datetime.now(timezone.utc).isoformat(), is_demo=0)
-                conn.commit()
-                done += 1
-
-            if analysis_on and text.strip():
-                analysis = analyzer.analyze(
-                    text, card_of(conn, uid),
-                    api_key=settings.openai_api_key, model=settings.analysis_model,
-                    own_company=settings.own_company,
-                )
-                save_transcript(
-                    conn, call_uid=uid, text=text,
-                    analysis_json=json.dumps(analysis, ensure_ascii=False),
-                    created_at=datetime.now(timezone.utc).isoformat(), is_demo=0,
-                )
-                conn.commit()
-                analyzed += 1
-                if analysis["missed"]:
-                    fields = ", ".join(m["field"] for m in analysis["missed"])
-                    logger.info("%s: не попало в карточку — %s", uid, fields)
+            # Ровно та же функция, что зовёт приёмник звонков после разговора.
+            # Держать одну на оба пути обязательно: разойдутся — и хвост
+            # начнёт разбираться не так, как живые звонки.
+            outcome = prozvon.analyze_call(
+                conn, settings, uid, records / f"{uid}.mp3",
+                text=text if not args.no_analysis else text,
+            )
+            done += int(bool(outcome.get("transcribed")) and not text)
+            analyzed += int(bool(outcome.get("analyzed")))
         except (httpx.HTTPError, OSError, ValueError) as exc:
             logger.warning("%s: не обработан — %s: %s", uid, type(exc).__name__, exc)
             failed += 1
