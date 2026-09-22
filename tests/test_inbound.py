@@ -170,3 +170,40 @@ def test_метка_называет_звонок():
 
     mark = caught_mark("M38MAJFPJG00004B")
     assert mark.startswith("да") and "M38MAJFPJG00004B" in mark
+
+
+# ------------------------------------------- как РОП находит нужный звонок
+
+def test_метка_заявки_называет_звонок_по_человечески():
+    """РОП открывает заявку и должен сразу понять, какой звонок слушать.
+
+    В активности контакта звонков несколько; раньше метка называла только
+    идентификатор ВАТС, по которому человеку искать нечего.
+    """
+    from app.inbound import caught_mark
+
+    mark = caught_mark("M38MAJFPJG00004B",
+                       {"start": "2026-09-21T06:43:06+00:00", "duration": 57,
+                        "client": "79697110282"}, offset_hours=3)
+    assert "21.09.2026 09:43" in mark   # местное время, не UTC
+    assert "57 с" in mark
+    assert "+79697110282" in mark
+    assert "M38MAJFPJG00004B" in mark   # хвост для машины
+
+
+def test_метка_переживает_отсутствие_данных_о_звонке():
+    """Если про звонок ничего не известно, метка всё равно должна получиться."""
+    from app.inbound import caught_mark
+
+    assert caught_mark("UID-1", None).startswith("да")
+
+
+def test_числовой_идентификатор_звонка_не_ищется_в_synergy():
+    """Звонок, пришедший опросом CRM, уже назван её идентификатором."""
+    from app.crm_write import CrmWriter
+
+    class _NoCalls:
+        def get(self, *a, **k):
+            raise AssertionError("лишний запрос в Synergy")
+
+    assert CrmWriter(_NoCalls(), apply=True).find_call("8235108") == "8235108"

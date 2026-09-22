@@ -402,7 +402,9 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
     writer = CrmWriter(client, apply=True)
     summary = lead_summary(row, verdict, analysis)
     comment = lead_comment(row, verdict, analysis)
-    customs = order_customs(analysis, transcript, summary, caught=caught_mark(uid))
+    customs = order_customs(
+        analysis, transcript, summary,
+        caught=caught_mark(uid, call, settings.timezone_offset_hours))
 
     if after:
         # Заявку уже завели — её и дописываем. Ни стадию, ни ответственного,
@@ -412,6 +414,7 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
         writer.post_comment(target, comment)
         if manager is not None and manager["synergy_user"]:
             writer.add_performer(target, manager["synergy_user"])
+        writer.mark_call(uid, f"заявка {target} — «{after[0]['name']}»")
         _remember_orders(conn, uid, after, active)
         conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?", (target, uid))
         conn.commit()
@@ -428,6 +431,7 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
     if order_id and manager is not None and manager["synergy_user"]:
         writer.add_performer(order_id, manager["synergy_user"])
     if order_id:
+        writer.mark_call(uid, f"заявка {order_id} — «{settings.crm_lead_order_name}»")
         conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?", (order_id, uid))
         conn.commit()
     logger.info("звонок %s: заявка %s по контакту %s", uid, order_id, contact["id"])
@@ -435,11 +439,26 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
             "manager": manager["display_name"] if manager else "—"}
 
 
-def caught_mark(uid: str) -> str:
-    """Что пишем в поле «Пойманная с прослушки».
+def caught_mark(uid: str, call: dict[str, Any] | None = None,
+                offset_hours: int = 3) -> str:
+    """Что пишем в поле «Пойманная с прослушки» у заявки.
 
-    Не просто «да»: по метке должно быть видно, какой именно звонок её
-    породил, — иначе спорную заявку нечем проверить, кроме как на слух.
+    Не просто «да». РОП открывает заявку, видит в активности несколько звонков
+    и не понимает, из какого она выросла, — поэтому метка называет звонок
+    по-человечески: когда, сколько длился, с какого номера. Идентификатор ВАТС
+    оставляем в хвосте: людям он не нужен, а нам по нему искать.
     """
-    day = datetime.now(timezone.utc).strftime("%d.%m.%Y")
-    return f"да · {day} · звонок {uid}"
+    parts = []
+    started = str((call or {}).get("start") or "")
+    when = parse_time(started)
+    if when is not None:
+        local = when + timedelta(hours=offset_hours)
+        parts.append(local.strftime("%d.%m.%Y %H:%M"))
+    duration = int((call or {}).get("duration") or 0)
+    if duration:
+        parts.append(f"{duration} с")
+    phone = str((call or {}).get("client") or "").strip()
+    if phone:
+        parts.append(f"+{phone.lstrip('+')}")
+    parts.append(f"звонок {uid}")
+    return "да · " + " · ".join(parts)

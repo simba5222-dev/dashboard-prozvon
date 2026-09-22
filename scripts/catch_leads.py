@@ -193,7 +193,11 @@ def main() -> int:
             analysis = analyze_like_production(transcript, settings)
             comment = lead_comment(dict(row), screen, analysis)
             summary = lead_summary(dict(row), screen, analysis)
-            customs = order_customs(analysis, transcript, summary, caught=caught_mark(uid))
+            call_meta = {"start": row["started_at"], "duration": row["duration_sec"],
+                         "client": row["client_phone"]}
+            customs = order_customs(
+                analysis, transcript, summary,
+                caught=caught_mark(uid, call_meta, settings.timezone_offset_hours))
 
             if after:
                 # Заявку завели вокруг звонка — дописываем её, а не заводим
@@ -208,6 +212,7 @@ def main() -> int:
                 ).fetchone()
                 if performer and performer["synergy_user"]:
                     writer.add_performer(target, performer["synergy_user"])
+                writer.mark_call(uid, f"заявка {target} — «{after[0]['name']}»")
                 conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?",
                              (target, uid))
                 conn.commit()
@@ -236,6 +241,7 @@ def main() -> int:
                 # Ответственного ставим последним и с проверкой: правка полей
                 # умеет возвращать владельца контакта обратно.
                 writer.set_responsible(order_id, settings.crm_lead_responsible)
+                writer.mark_call(uid, f"заявка {order_id} — «{settings.crm_lead_order_name}»")
                 conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?",
                              (order_id, uid))
                 conn.commit()

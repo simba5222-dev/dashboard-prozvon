@@ -44,6 +44,12 @@ FIELD_SUMMARY = "custom-30609"
 # отличить от заведённой человеком: имя у неё чужое, стадию ставил не робот.
 FIELD_CAUGHT = "custom-30614"
 
+# «Заявка по этому звонку» — метка **на самом звонке**, в его карточке.
+# Заведена 22.09.2026 по просьбе РОПов: открывая заявку, они видят в активности
+# несколько звонков и не понимают, какой из них породил заявку. Теперь нужный
+# помечен, и слушать можно сразу его, а не все подряд.
+FIELD_CALL_ORDER = "custom-30615"
+
 
 class CrmWriter:
     """Тонкая надстройка над клиентом Synergy: только то, что пишет."""
@@ -148,6 +154,48 @@ class CrmWriter:
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("выжимка у заявки %s не записана: %s", order_id, exc)
             return False
+
+    def find_call(self, call_uid: str) -> str | None:
+        """Идентификатор звонка в Synergy по идентификатору ВАТС.
+
+        Звонки приезжают к нам двумя путями и с разными идентификаторами:
+        вебхуком ВАТС — её собственный (`M38MAJFPJG00004B`), опросом CRM —
+        уже синерджевский числовой. Во втором случае искать нечего.
+        """
+        uid = str(call_uid or "").strip()
+        if not uid:
+            return None
+        if uid.isdigit():
+            return uid
+        try:
+            rows = self._client.get("telephony-calls",
+                                    **{"filter[call-id]": uid}).get("data") or []
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("звонок %s в Synergy не нашёлся: %s", uid, exc)
+            return None
+        return str(rows[0]["id"]) if rows else None
+
+    def mark_call(self, call_uid: str, text: str) -> str | None:
+        """Пометить звонок, по которому заведена заявка. Возвращает её id в Synergy.
+
+        Без этой пометки РОП открывает заявку, видит в активности несколько
+        звонков и слушает их подряд, чтобы понять, из какого она выросла.
+        """
+        if self.dry_run or not text.strip():
+            return None
+        call_id = self.find_call(call_uid)
+        if not call_id:
+            return None
+        try:
+            self._client.patch(f"telephony-calls/{call_id}", {"data": {
+                "type": "telephony-calls", "id": call_id,
+                "attributes": {"customs": {FIELD_CALL_ORDER: text}},
+            }})
+            logger.info("звонок %s помечен: %s", call_id, text)
+            return call_id
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("звонок %s пометить не вышло: %s", call_id, exc)
+            return None
 
     def update_customs(self, order_id: str, customs: dict[str, Any]) -> bool:
         """Дописать поля существующей заявки, не трогая ничего остального.
