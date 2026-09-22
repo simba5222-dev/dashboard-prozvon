@@ -31,8 +31,9 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import analyzer  # noqa: E402
-from app.collector import SynergyClient, contact_orders_around, load_stages  # noqa: E402
-from app.inbound import lead_block_reason  # noqa: E402
+from app.collector import (SynergyClient, contact_orders_around,  # noqa: E402
+                           load_stages, order_names)
+from app.inbound import caught_mark, lead_block_reason  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.crm_write import CrmWriter, lead_comment, lead_summary, order_customs  # noqa: E402
 from app.db import connect, init_schema, save_transcript  # noqa: E402
@@ -163,17 +164,17 @@ def main() -> int:
             # Решение одно на оба пути — быстрый и пакетный. Держать его в
             # одном месте обязательно: разойдутся — и дубли вернутся через ту
             # дверь, которую забыли починить.
-            reason = lead_block_reason(after, active)
+            reason = lead_block_reason(active)
+            conn.execute(
+                """UPDATE inbound_checks
+                      SET orders_after = ?, order_names = ?,
+                          active_orders = ?, active_names = ?
+                    WHERE call_uid = ?""",
+                (len(after), order_names(after), len(active), order_names(active), uid),
+            )
+            conn.commit()
             if reason:
                 logger.info("%s: %s — пропускаем", uid, reason)
-                conn.execute(
-                    """UPDATE inbound_checks
-                          SET orders_after = ?, order_names = ?,
-                              active_orders = ?, active_names = ?
-                        WHERE call_uid = ?""",
-                    (len(after), "; ".join(after), len(active), "; ".join(active), uid),
-                )
-                conn.commit()
                 skipped += 1
                 continue
 
@@ -192,12 +193,34 @@ def main() -> int:
             analysis = analyze_like_production(transcript, settings)
             comment = lead_comment(dict(row), screen, analysis)
             summary = lead_summary(dict(row), screen, analysis)
+            customs = order_customs(analysis, transcript, summary, caught=caught_mark(uid))
+
+            if after:
+                # Заявку завели вокруг звонка — дописываем её, а не заводим
+                # вторую рядом. Стадию, название и ответственного не трогаем:
+                # заявка чужая.
+                target = after[0]["id"]
+                writer.update_customs(target, customs)
+                writer.post_comment(target, comment)
+                performer = conn.execute(
+                    "SELECT synergy_user FROM managers WHERE vats_login = ?",
+                    (row["vats_login"],),
+                ).fetchone()
+                if performer and performer["synergy_user"]:
+                    writer.add_performer(target, performer["synergy_user"])
+                conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?",
+                             (target, uid))
+                conn.commit()
+                print(f"  заявка {target}: дописана (заведена не нами — «{after[0]['name']}»)")
+                made += 1
+                continue
+
             order_id = writer.create_order(
                 contact_id=row["contact_id"],
                 name=settings.crm_lead_order_name,
                 stage_id=stage_id,
                 responsible_id=settings.crm_lead_responsible,
-                customs=order_customs(analysis, transcript, summary),
+                customs=customs,
                 comment=comment,
             )
             if order_id:

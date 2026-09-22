@@ -201,7 +201,8 @@ def test_заявку_трогали_на_днях_значит_она_жива�
     client = _FakeSynergy([_order("1", "s-new", "2026-05-01T10:00:00+00:00",
                                   updated="2026-09-20T10:00:00+00:00")])
     after, active = contact_orders_around(client, "c1", CALL, STAGES, fresh_days=30)
-    assert active == ["№1"]
+    assert [o["name"] for o in active] == ["№1"]
+    assert active[0]["id"] == "1"  # id нужен, чтобы дописать заявку
 
 
 def test_закрытая_сделка_живой_не_считается():
@@ -214,4 +215,4 @@ def test_заявка_вокруг_звонка_попадает_в_after():
     """Менеджер завёл её сам, пока мы считали, — это не «открытая», а «уже есть»."""
     client = _FakeSynergy([_order("1", "s-new", "2026-09-22T09:55:00+00:00")])
     after, active = contact_orders_around(client, "c1", CALL, STAGES, fresh_days=30)
-    assert after == ["№1"] and active == []
+    assert [o["name"] for o in after] == ["№1"] and active == []

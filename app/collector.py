@@ -637,11 +637,16 @@ def collect_calls_for_phones(
 ORDER_LOOKBACK_MINUTES = 15
 
 
+def order_names(orders: list[dict[str, str]]) -> str:
+    """Имена заявок через точку с запятой — для человека, не для кода."""
+    return "; ".join(o.get("name") or f"№{o.get('id')}" for o in orders)
+
+
 def contact_orders_around(
     client: SynergyClient, contact_id: str, call_iso: str, stages: dict[str, tuple[str, str]],
     lookback_minutes: int = ORDER_LOOKBACK_MINUTES,
     fresh_days: int = ORDER_ACTIVE_DAYS,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Заявки контакта: заведённые вокруг звонка и открытые на момент звонка.
 
     Заявка в Synergy привязана к контакту, поэтому проверять надо именно по
@@ -669,8 +674,8 @@ def contact_orders_around(
     except ValueError:
         return [], []
 
-    after: list[str] = []
-    active: list[str] = []
+    after: list[dict[str, str]] = []
+    active: list[dict[str, str]] = []
     for row in payload.get("data") or []:
         attrs = row.get("attributes") or {}
         name = str(attrs.get("name") or f"№{attrs.get('number') or row['id']}").strip()
@@ -681,8 +686,10 @@ def contact_orders_around(
             made = datetime.fromisoformat(created.replace("Z", "+00:00"))
         except ValueError:
             continue
+        # Возвращаем и id: чтобы дописать чужую заявку, одного имени мало.
+        item = {"id": str(row["id"]), "name": name}
         if made >= call_time - timedelta(minutes=lookback_minutes):
-            after.append(name)
+            after.append(item)
             continue
         if kind in INACTIVE_STAGE_KINDS:
             continue
@@ -694,7 +701,7 @@ def contact_orders_around(
         except ValueError:
             last = made
         if last >= call_time - timedelta(days=fresh_days):
-            active.append(name)
+            active.append(item)
     return after, active
 
 

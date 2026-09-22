@@ -108,26 +108,65 @@ class _ShortCallSettings:
 
 # --------------------------------------------- когда заявку заводить нельзя
 
-def test_открытая_заявка_клиента_останавливает_создание():
-    """Решение владельца от 22.09.2026: есть открытая — новую не заводим.
+def test_открытая_заявка_клиента_останавливает_работу():
+    """Решение владельца от 22.09.2026: есть открытая — звонок не трогаем.
 
     Раньше список открытых заявок вычислялся и выбрасывался, поэтому второй
     звонок того же клиента давал дубль. Оба боевых случая — 79958880139
     (два звонка за день) и 79200007771 (два за двое суток) — родились так.
     """
-    assert lead_block_reason([], ["№107601 экскаватор"]).startswith("у клиента открыта заявка")
+    reason = lead_block_reason([{"id": "1", "name": "№107601 экскаватор"}])
+    assert reason.startswith("у клиента открыта заявка")
+    assert "№107601" in reason
 
 
-def test_заявка_заведённая_вокруг_звонка_останавливает_создание():
-    """Менеджер успел оформить сам, пока мы считали."""
-    assert lead_block_reason(["№107602 автовышка"], []).startswith("заявка уже есть")
+def test_без_открытых_заявок_работаем():
+    assert lead_block_reason([]) == ""
 
 
-def test_без_заявок_создание_разрешено():
-    assert lead_block_reason([], []) == ""
+# ------------------------------------------- дописывание чужой заявки
+
+class _FakeCrm:
+    """Запоминает, что бы ушло в Synergy."""
+
+    def __init__(self):
+        self.patched = []
+
+    def patch(self, path, payload):
+        self.patched.append((path, payload))
+        return {}
 
 
-def test_свежая_заявка_важнее_открытой_в_объяснении():
-    """Когда есть и то и другое, человеку называем более близкую причину."""
-    reason = lead_block_reason(["№107603 кран"], ["№107600 старая"])
-    assert "№107603" in reason and "№107600" not in reason
+def test_дописывание_не_трогает_ничего_кроме_полей():
+    """Заявку завёл человек: стадия, название и ответственный — не наши.
+
+    Наша работа — добавить то, чего там нет: выжимку, расшифровку, тип
+    техники и метку. Всё остальное должно остаться как было.
+    """
+    from app.crm_write import CrmWriter
+
+    crm = _FakeCrm()
+    writer = CrmWriter(crm, apply=True)
+    assert writer.update_customs("733207", {"custom-30609": "нужен экскаватор"}) is True
+    path, payload = crm.patched[0]
+    assert path == "orders/733207"
+    assert set(payload["data"]["attributes"]) == {"customs"}
+    assert "stage" not in str(payload) and "responsible" not in str(payload)
+
+
+def test_дописывание_не_затирает_чужое_пустотой():
+    """Пустое значение — это «нечего сказать», а не «сотри, что было»."""
+    from app.crm_write import CrmWriter
+
+    crm = _FakeCrm()
+    writer = CrmWriter(crm, apply=True)
+    assert writer.update_customs("733207", {"custom-30609": "", "custom-30599": None}) is False
+    assert crm.patched == []
+
+
+def test_метка_называет_звонок():
+    """По метке спорную заявку должно быть чем проверить."""
+    from app.inbound import caught_mark
+
+    mark = caught_mark("M38MAJFPJG00004B")
+    assert mark.startswith("да") and "M38MAJFPJG00004B" in mark

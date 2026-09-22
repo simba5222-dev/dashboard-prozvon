@@ -38,6 +38,12 @@ FIELD_CALL_SCORE = "custom-30602"
 # по каждому звонку, который мы отработали.
 FIELD_SUMMARY = "custom-30609"
 
+# «Пойманная с прослушки» — метка нашей работы. Нужна с 22.09.2026, когда мы
+# перестали заводить свою заявку рядом с той, что Synergy создаёт на входящий
+# звонок сама, и начали дописывать существующую. Без метки такую заявку не
+# отличить от заведённой человеком: имя у неё чужое, стадию ставил не робот.
+FIELD_CAUGHT = "custom-30614"
+
 
 class CrmWriter:
     """Тонкая надстройка над клиентом Synergy: только то, что пишет."""
@@ -143,6 +149,28 @@ class CrmWriter:
             logger.warning("выжимка у заявки %s не записана: %s", order_id, exc)
             return False
 
+    def update_customs(self, order_id: str, customs: dict[str, Any]) -> bool:
+        """Дописать поля существующей заявки, не трогая ничего остального.
+
+        Заявку завёл не робот: её создала телефонная интеграция Synergy в
+        первую секунду звонка, а ведёт её менеджер. Поэтому здесь только
+        `customs` — ни стадию, ни ответственного, ни название не трогаем.
+        Пустые значения отбрасываем: затирать чужое пустотой нельзя.
+        """
+        payload = {k: v for k, v in (customs or {}).items() if v not in (None, "", [])}
+        if self.dry_run or not payload:
+            return False
+        try:
+            self._client.patch(f"orders/{order_id}", {"data": {
+                "type": "orders", "id": str(order_id),
+                "attributes": {"customs": payload},
+            }})
+            logger.info("заявка %s дописана: поля %s", order_id, ", ".join(sorted(payload)))
+            return True
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("заявку %s дописать не вышло: %s", order_id, exc)
+            return False
+
     def set_contact_hint(self, contact_id: str, field: str, text: str) -> bool:
         """Положить подсказку в карточку контакта.
 
@@ -179,9 +207,16 @@ class CrmWriter:
             return False
 
 
-def order_customs(analysis: dict[str, Any], transcript: str, summary: str = "") -> dict[str, Any]:
-    """Поля заявки из разбора — те же, что у звонков с общих номеров."""
+def order_customs(analysis: dict[str, Any], transcript: str, summary: str = "",
+                  caught: str = "") -> dict[str, Any]:
+    """Поля заявки из разбора — те же, что у звонков с общих номеров.
+
+    `caught` — метка «Пойманная с прослушки». Ставится и на свою заявку, и на
+    чужую, которую мы дописали: по ней владелец находит нашу работу в CRM.
+    """
     customs: dict[str, Any] = {}
+    if caught.strip():
+        customs[FIELD_CAUGHT] = caught
     if summary.strip():
         customs[FIELD_SUMMARY] = summary
     if analysis.get("transport_type"):

@@ -30,7 +30,8 @@ from typing import Any
 import httpx
 
 from app import analyzer, hints
-from app.collector import SynergyClient, contact_orders_around, find_contact, load_stages
+from app.collector import (SynergyClient, contact_orders_around, find_contact,
+                           load_stages, order_names)
 from app.config import Settings
 from app.crm_write import CrmWriter, lead_comment, lead_summary, order_customs
 from app.db import save_call, save_inbound_check, save_screen, save_transcript
@@ -294,36 +295,30 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
     return create_lead(conn, settings, call, manager, verdict, path, local_date)
 
 
-def lead_block_reason(after: list[str], active: list[str]) -> str:
-    """Почему заявку заводить не надо. Пустая строка — заводить можно.
+def lead_block_reason(active: list[dict[str, str]]) -> str:
+    """Почему звонок вообще не надо трогать. Пустая строка — работаем.
 
-    Два случая, и оба заканчиваются отказом:
+    Остался один случай: у клиента **открыта** заявка, заведённая до звонка.
+    Решение владельца от 22.09.2026 — ничего не делаем. Такой звонок почти
+    всегда «где моя техника», и менеджер про этого клиента не забудет: он с
+    ним прямо сейчас работает.
 
-    - **`after`** — заявка по этому звонку уже появилась. Обычно её завёл
-      менеджер, пока мы считали: наша встала бы рядом дублем.
-    - **`active`** — у клиента и до звонка была открытая заявка. Решение
-      владельца от 22.09.2026: новую не заводим вовсе.
+    Раньше сюда же попадал случай «заявку завели вокруг звонка» и тоже давал
+    отказ. Теперь он обрабатывается иначе: такую заявку мы **дописываем**, а
+    не обходим стороной, — см. `create_lead`.
 
-    Второй случай раньше не проверялся вообще: список открытых заявок
-    вычислялся и тут же выбрасывался (`after, _active = ...`). Поэтому
-    повторный звонок клиента давал дубль — 79958880139 дважды за один день,
-    79200007771 дважды за два.
-
-    Размен осознанный и его стоит помнить: клиент с открытой заявкой может
-    позвонить и с **новым** запросом на другую технику — такой мы теперь
-    потеряем. Владелец выбрал это сознательно: мусор в рабочей базе отдела
-    продаж дороже пропущенного повторного заказа. Если решение будут менять,
-    менять надо здесь — оба пути, быстрый и пакетный, спрашивают эту функцию.
+    Открытой считается не всякая незакрытая, а только та, которую трогали за
+    `order_active_days`. Иначе брошенный «Новый» двухлетней давности съедал бы
+    новый запрос от старого клиента, а это ровно тот заказ, про который
+    менеджер и забывает: проконсультировал и не оформил.
     """
-    if after:
-        return f"заявка уже есть: {'; '.join(after[:2])}"
     if active:
-        return f"у клиента открыта заявка: {'; '.join(active[:2])}"
+        return f"у клиента открыта заявка: {order_names(active[:2])}"
     return ""
 
 
 def _remember_orders(conn: sqlite3.Connection, uid: str,
-                     after: list[str], active: list[str]) -> None:
+                     after: list[dict[str, str]], active: list[dict[str, str]]) -> None:
     """Запомнить, какие заявки нашлись у контакта, — чтобы отказ был виден.
 
     Без этого «не завели, потому что у клиента уже есть заявка» нигде не
@@ -334,7 +329,7 @@ def _remember_orders(conn: sqlite3.Connection, uid: str,
         """UPDATE inbound_checks
               SET orders_after = ?, order_names = ?, active_orders = ?, active_names = ?
             WHERE call_uid = ?""",
-        (len(after), "; ".join(after), len(active), "; ".join(active), uid),
+        (len(after), order_names(after), len(active), order_names(active), uid),
     )
     conn.commit()
 
@@ -364,7 +359,17 @@ def refresh_hint(conn: sqlite3.Connection, settings: Settings, phone: str) -> No
 def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
                 manager: sqlite3.Row | None, verdict: dict[str, Any], path: Path,
                 local_date: str) -> dict[str, Any]:
-    """Полный разбор и заявка в CRM — если её ещё нет."""
+    """Полный разбор и заявка в CRM.
+
+    Свою заявку заводим **только если её нет**. Synergy на входящий звонок
+    часто создаёт карточку сама — телефонная интеграция делает это в первую
+    секунду разговора, с именем «-» или номером телефона. Из 55 наших заявок
+    у 15 рядом стояла такая: два лида на одно обращение, и менеджер видел два.
+
+    Поэтому: нашлась заявка вокруг звонка — **дописываем её**, а не создаём
+    рядом. Метка `custom-30614` ставится в обоих случаях: по ней владелец
+    находит нашу работу, что бы ни было написано в названии.
+    """
     uid = str(call["uid"])
     client = SynergyClient(base_url=settings.synergy_url, token=settings.synergy_api_token)
     contact = find_contact(client, str(call.get("client") or ""))
@@ -376,10 +381,10 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
     after, active = contact_orders_around(
         client, contact["id"], str(call.get("start") or ""), stages,
         fresh_days=settings.order_active_days)
-    reason = lead_block_reason(after, active)
+    reason = lead_block_reason(active)
     if reason:
         _remember_orders(conn, uid, after, active)
-        logger.info("звонок %s: %s — новую заявку не заводим", uid, reason)
+        logger.info("звонок %s: %s — не трогаем", uid, reason)
         return {"uid": uid, "request": True, "order": None, "note": reason}
 
     transcript = transcribe(settings, path.name, path.read_bytes())
@@ -395,11 +400,30 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
     stage_id = next((sid for sid, (name, _kind) in stages.items()
                      if name.strip().lower() == settings.crm_lead_stage.lower()), None)
     writer = CrmWriter(client, apply=True)
+    summary = lead_summary(row, verdict, analysis)
+    comment = lead_comment(row, verdict, analysis)
+    customs = order_customs(analysis, transcript, summary, caught=caught_mark(uid))
+
+    if after:
+        # Заявку уже завели — её и дописываем. Ни стадию, ни ответственного,
+        # ни название не трогаем: заявка чужая, ведёт её человек.
+        target = after[0]["id"]
+        writer.update_customs(target, customs)
+        writer.post_comment(target, comment)
+        if manager is not None and manager["synergy_user"]:
+            writer.add_performer(target, manager["synergy_user"])
+        _remember_orders(conn, uid, after, active)
+        conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?", (target, uid))
+        conn.commit()
+        logger.info("звонок %s: дописана существующая заявка %s (%s)",
+                    uid, target, after[0]["name"])
+        return {"uid": uid, "request": True, "order": target, "enriched": True,
+                "manager": manager["display_name"] if manager else "—"}
+
     order_id = writer.create_order(
         contact_id=contact["id"], name=settings.crm_lead_order_name, stage_id=stage_id,
         responsible_id=settings.crm_lead_responsible,
-        customs=order_customs(analysis, transcript, lead_summary(row, verdict, analysis)),
-        comment=lead_comment(row, verdict, analysis),
+        customs=customs, comment=comment,
     )
     if order_id and manager is not None and manager["synergy_user"]:
         writer.add_performer(order_id, manager["synergy_user"])
@@ -407,5 +431,15 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
         conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?", (order_id, uid))
         conn.commit()
     logger.info("звонок %s: заявка %s по контакту %s", uid, order_id, contact["id"])
-    return {"uid": uid, "request": True, "order": order_id,
+    return {"uid": uid, "request": True, "order": order_id, "enriched": False,
             "manager": manager["display_name"] if manager else "—"}
+
+
+def caught_mark(uid: str) -> str:
+    """Что пишем в поле «Пойманная с прослушки».
+
+    Не просто «да»: по метке должно быть видно, какой именно звонок её
+    породил, — иначе спорную заявку нечем проверить, кроме как на слух.
+    """
+    day = datetime.now(timezone.utc).strftime("%d.%m.%Y")
+    return f"да · {day} · звонок {uid}"
