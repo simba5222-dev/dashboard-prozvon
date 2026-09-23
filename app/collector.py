@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 import sqlite3
 import threading
@@ -25,6 +26,7 @@ import httpx
 from app.config import Settings
 from app.db import (
     save_call,
+    save_activity,
     save_call_order,
     save_call_task,
     save_card_check,
@@ -673,6 +675,97 @@ ORDER_LOOKBACK_MINUTES = 15
 def order_names(orders: list[dict[str, str]]) -> str:
     """Имена заявок через точку с запятой — для человека, не для кода."""
     return "; ".join(o.get("name") or f"№{o.get('id')}" for o in orders)
+
+
+def describe_changes(parameters: dict[str, Any]) -> str:
+    """Человеческое описание правки: «Статус: — → Не отвечает».
+
+    Synergy отдаёт изменения словарём вида
+    `{"Статус": {"old_name": "", "new_name": "Не отвечает", ...}}`.
+    Показываем имя поля, а не `custom_26967`: отчёт читают люди.
+    """
+    changes = (parameters or {}).get("changes") or {}
+    if not isinstance(changes, dict):
+        return ""
+    def plain(value: Any) -> str:
+        # В описаниях задач Synergy хранит разметку. Человеку она мешает, а
+        # места в строке занимает больше, чем сам смысл.
+        text = re.sub(r"<[^>]+>", " ", str(value or ""))
+        text = text.replace("&nbsp;", " ").replace("&amp;", "&")
+        return re.sub(r"\s+", " ", text).strip()
+
+    parts = []
+    for field, change in list(changes.items())[:6]:
+        if not isinstance(change, dict):
+            continue
+        was = plain(change.get("old_name")) or "—"
+        now = plain(change.get("new_name")) or "—"
+        if was == now:
+            continue
+        parts.append(f"{field}: {was[:80]} → {now[:80]}")
+    return "; ".join(parts)
+
+
+def collect_activities(
+    conn: sqlite3.Connection, client: SynergyClient, settings: Settings,
+    depts: tuple[str, ...] = ("прозвон", "поиск"), max_pages: int = 5,
+) -> tuple[int, int]:
+    """Забрать ленту действий по нашим сотрудникам. Возвращает (новых, всего).
+
+    Ходим по каждому человеку отдельно: `filter[user-id]` у Synergy работает
+    честно — проверено, — и это дешевле, чем тянуть общую ленту и отсеивать
+    у себя. Фильтра по дате у ленты нет (`filter[created-at][gte]` отвечает
+    400), поэтому просто листаем свежие страницы: повторы отсекает primary key.
+    """
+    people = conn.execute(
+        f"""SELECT vats_login, synergy_user FROM managers
+             WHERE dept IN ({",".join("?" * len(depts))})
+               AND synergy_user IS NOT NULL AND synergy_user <> ''""",
+        depts,
+    ).fetchall()
+    if not people:
+        logger.warning("сотрудников с учёткой Synergy нет — нечего собирать")
+        return 0, 0
+
+    new = seen = 0
+    for person in people:
+        for page in range(1, max_pages + 1):
+            try:
+                rows = client.get(
+                    "activities", per_page=100, page=page, sort="-created-at",
+                    include="user", **{"filter[user-id]": str(person["synergy_user"])},
+                ).get("data") or []
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.warning("лента %s: страница %s не прочиталась: %s",
+                               person["vats_login"], page, exc)
+                break
+            if not rows:
+                break
+            for row in rows:
+                attrs = row.get("attributes") or {}
+                created = str(attrs.get("created-at") or "")
+                local_date, _hour = local_parts(created, settings.timezone_offset_hours)
+                params = attrs.get("parameters") or {}
+                seen += 1
+                new += int(save_activity(
+                    conn,
+                    id=str(row["id"]),
+                    created_at=created,
+                    local_date=local_date,
+                    synergy_user=str(person["synergy_user"]),
+                    vats_login=person["vats_login"],
+                    entity_type=str(attrs.get("trackable-type") or ""),
+                    entity_id=str(attrs.get("trackable-id") or ""),
+                    entity_title=str(params.get("this") or "")[:200],
+                    action=str(attrs.get("key") or ""),
+                    summary=describe_changes(params)[:500],
+                    changes_json=json.dumps(params.get("changes") or {}, ensure_ascii=False),
+                    scenario=str(params.get("scenario_name") or ""),
+                    is_demo=0,
+                ))
+            conn.commit()
+    logger.info("лента действий: просмотрено %s, новых %s", seen, new)
+    return new, seen
 
 
 def contact_orders_around(

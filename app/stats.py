@@ -543,6 +543,68 @@ def period_summary(
     return out
 
 
+def search_day(conn: sqlite3.Connection, day: str, *, threshold_sec: int) -> list[dict[str, Any]]:
+    """День менеджера по поиску техники: звонки и правки в карточках.
+
+    Его работу не видно по заявкам — заявки заводят другие. Видно по двум
+    вещам: сколько он звонил поставщикам и что после этого поменялось в
+    карточках транспорта. Поэтому здесь и то, и другое.
+    """
+    out: list[dict[str, Any]] = []
+    for person in managers(conn, dept="поиск"):
+        calls = conn.execute(
+            """SELECT COUNT(*) total,
+                      SUM(CASE WHEN direction = 'out' THEN 1 ELSE 0 END) outgoing,
+                      SUM(CASE WHEN direction = 'in' THEN 1 ELSE 0 END) incoming,
+                      SUM(CASE WHEN duration_sec >= ? THEN 1 ELSE 0 END) talked
+                 FROM calls WHERE local_date = ? AND vats_login = ?""",
+            (threshold_sec, day, person["vats_login"]),
+        ).fetchone()
+        # Правки сценариев считаем отдельно: это работа робота, а не человека,
+        # и засчитывать её сотруднику нельзя.
+        acts = conn.execute(
+            """SELECT COUNT(*) total,
+                      SUM(CASE WHEN scenario = '' THEN 1 ELSE 0 END) by_hand,
+                      COUNT(DISTINCT CASE WHEN scenario = '' AND entity_type = 'Transport'
+                                          THEN entity_id END) cards
+                 FROM activities WHERE local_date = ? AND vats_login = ?""",
+            (day, person["vats_login"]),
+        ).fetchone()
+        out.append({
+            "vats_login": person["vats_login"],
+            "display_name": person["display_name"],
+            "ext": person["ext"],
+            "calls": dict(calls) if calls else {},
+            "acts": dict(acts) if acts else {},
+        })
+    return out
+
+
+def search_feed(conn: sqlite3.Connection, day: str, vats_login: str | None = None,
+                limit: int = 200, dept: str = "поиск") -> list[dict[str, Any]]:
+    """Лента правок за день: что именно менял человек, без правок сценариев.
+
+    По умолчанию — только отдел поиска техники. Без этого в ленту попадают
+    все, чью работу мы собираем, и экран отдела перестаёт быть про отдел.
+    """
+    where = ["local_date = ?", "scenario = ''", "summary <> ''"]
+    params: list[Any] = [day]
+    if vats_login:
+        where.append("vats_login = ?")
+        params.append(vats_login)
+    else:
+        where.append("vats_login IN (SELECT vats_login FROM managers WHERE dept = ?)")
+        params.append(dept)
+    rows = conn.execute(
+        f"""SELECT created_at, vats_login, entity_type, entity_id, entity_title,
+                   action, summary
+              FROM activities WHERE {' AND '.join(where)}
+             ORDER BY created_at DESC LIMIT ?""",
+        params + [limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def openai_spend(data_dir: str, day: str | None = None) -> dict[str, Any]:
     """Расход на модель за день: сколько и на что.
 

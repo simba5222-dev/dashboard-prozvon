@@ -89,6 +89,29 @@ CREATE TABLE IF NOT EXISTS call_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_call_orders_call ON call_orders (call_uid);
 
+-- Лента действий из Synergy: кто, что и когда изменил.
+-- Нужна, чтобы видеть работу менеджера по поиску техники: он не заявки
+-- заводит, а правит карточки транспорта — статус поставщика, комментарий,
+-- дату звонка. По заявкам его работу не увидеть вовсе.
+CREATE TABLE IF NOT EXISTS activities (
+    id            TEXT PRIMARY KEY,   -- идентификатор события в Synergy
+    created_at    TEXT NOT NULL,      -- ISO 8601, как отдала Synergy
+    local_date    TEXT NOT NULL,      -- YYYY-MM-DD по местному времени
+    synergy_user  TEXT,               -- кто сделал, идентификатор в Synergy
+    vats_login    TEXT,               -- он же у нас, если опознан
+    entity_type   TEXT,               -- Transport / Order / Contact / ...
+    entity_id     TEXT,
+    entity_title  TEXT,               -- «Экскаватор погрузчик - - -»
+    action        TEXT,               -- update / create / create_telephony_call
+    summary       TEXT,               -- «Статус: — → Не отвечает»
+    changes_json  TEXT,               -- то же машинно, на случай разбора
+    -- Имя сценария, если правку сделал робот, а не человек. Без этого
+    -- работа автоматизаций засчитывалась бы сотруднику.
+    scenario      TEXT,
+    is_demo       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_activities_day ON activities (local_date, vats_login);
+
 -- Задачи, поставленные после звонка. Отдельной строкой, а не галочкой:
 -- «задача есть» и «задача — перезвонить 17-го с готовым расчётом» — разные
 -- сведения, и руководителю нужно второе.
@@ -371,6 +394,27 @@ def save_call_order(conn: sqlite3.Connection, **row: Any) -> None:
         """,
         row,
     )
+
+
+def save_activity(conn: sqlite3.Connection, **row: Any) -> bool:
+    """Сохранить событие ленты. Возвращает, новое ли оно.
+
+    Лента перечитывается с перекрытием, поэтому одно и то же событие приходит
+    много раз — на это и стоит primary key.
+    """
+    cur = conn.execute(
+        """
+        INSERT INTO activities (id, created_at, local_date, synergy_user, vats_login,
+                                entity_type, entity_id, entity_title, action,
+                                summary, changes_json, scenario, is_demo)
+        VALUES (:id, :created_at, :local_date, :synergy_user, :vats_login,
+                :entity_type, :entity_id, :entity_title, :action,
+                :summary, :changes_json, :scenario, :is_demo)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        row,
+    )
+    return cur.rowcount > 0
 
 
 def save_call_task(conn: sqlite3.Connection, **row: Any) -> None:

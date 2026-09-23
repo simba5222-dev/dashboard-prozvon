@@ -28,7 +28,8 @@ from app.db import (
 )
 from fastapi.responses import FileResponse, RedirectResponse
 
-from app.stats import (
+from app.stats import (  # noqa: F401
+    search_day, search_feed,
     call_detail,
     calls_of_day,
     day_summary,
@@ -226,6 +227,28 @@ async def manager_day(request: Request, vats_login: str, day: str | None = None)
         "threshold": settings.talk_threshold_sec,
     })
     return TEMPLATES.TemplateResponse("manager.html", ctx)
+
+
+@app.get("/search", response_class=HTMLResponse)
+async def search_page(request: Request, day: str | None = None,
+                      who: str | None = None) -> Any:
+    """День отдела поиска техники: звонки поставщикам и правки в карточках.
+
+    Отдельный экран, а не строка в прозвоне: работа другая и меряется другим.
+    Прозвон меряется планом звонков и дисциплиной карточки клиента, поиск —
+    обзвоном поставщиков и тем, что после него поменялось в транспорте.
+    """
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    current = day or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    ctx = _base_context(request)
+    ctx.update({
+        "day": current,
+        "people": search_day(conn, current, threshold_sec=settings.talk_threshold_sec),
+        "feed": search_feed(conn, current, who),
+        "who": who,
+    })
+    return TEMPLATES.TemplateResponse("search.html", ctx)
 
 
 @app.get("/report", response_class=HTMLResponse)

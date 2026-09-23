@@ -20,7 +20,7 @@ from datetime import date, timedelta
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 
 from app.collector import (  # noqa: E402
-    SynergyClient, check_cards, check_inbound_calls, check_pending_cards,
+    SynergyClient, collect_activities, check_cards, check_inbound_calls, check_pending_cards,
     collect_calls, collect_range, refresh_tasks, sync_managers,
 )
 from app.config import get_settings  # noqa: E402
@@ -33,6 +33,9 @@ def main() -> int:
     ap.add_argument("--day", help="дата в виде ГГГГ-ММ-ДД, по умолчанию сегодня")
     ap.add_argument("--days", type=int, default=1, help="сколько дней назад захватить")
     ap.add_argument("--no-cards", action="store_true", help="не проверять карточки")
+    ap.add_argument("--activities", action="store_true",
+                    help="забрать ленту действий по нашим сотрудникам: что они "
+                         "меняли в карточках транспорта и заявок")
     ap.add_argument("--cards-limit", type=int, default=0, help="ограничить число проверок")
     ap.add_argument("--inbound", type=int, default=0,
                     help="проверить столько входящих звонков: есть ли по ним заявка")
@@ -67,6 +70,10 @@ def main() -> int:
     # и правки в карточках транспорта считаются отдельно от прозвона — это
     # другая работа и другие показатели.
     sync_managers(conn, client, settings.search_group, dept=settings.search_dept)
+
+    if args.activities:
+        new, seen = collect_activities(conn, client, settings)
+        print(f"лента действий: просмотрено {seen}, новых {new}")
 
     last = date.fromisoformat(args.day) if args.day else local_now(settings.timezone_offset_hours).date()
 

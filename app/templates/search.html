@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Поиск техники — {{ day }}{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-head">
+    <h2>Поиск техники</h2>
+    <span class="sub">{{ day }} · звонки поставщикам и правки в карточках транспорта</span>
+  </div>
+  <div class="card-body">
+    {% if not people %}
+      <p class="dim">В группе «Поиск техники» никого нет. Добавьте человека в
+      Synergy — он появится здесь сам, править код не нужно.</p>
+    {% endif %}
+    {% for p in people %}
+    <div class="mgr">
+      <h3>{{ p.display_name }}{% if p.ext %} <span class="dim">доб. {{ p.ext }}</span>{% endif %}</h3>
+      <div class="nums">
+        <div class="num"><b>{{ p.calls.outgoing or 0 }}</b><span>исходящих</span></div>
+        <div class="num"><b>{{ p.calls.incoming or 0 }}</b><span>входящих</span></div>
+        <div class="num"><b>{{ p.calls.talked or 0 }}</b><span>состоявшихся</span></div>
+        <div class="num"><b>{{ p.acts.cards or 0 }}</b><span>карточек тронул</span></div>
+        <div class="num"><b>{{ p.acts.by_hand or 0 }}</b><span>правок руками</span></div>
+      </div>
+      {# Правки сценариев показываем отдельной строкой: это работа робота, и
+         засчитывать её человеку нельзя. #}
+      {% if (p.acts.total or 0) > (p.acts.by_hand or 0) %}
+      <p class="dim">Ещё {{ (p.acts.total or 0) - (p.acts.by_hand or 0) }} правок
+      в его карточках сделали сценарии — это не его работа.</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Что менял</h2>
+    <span class="sub">только правки руками · {{ feed|length }} за день</span>
+  </div>
+  <div class="card-body scroll">
+    {% if not feed %}
+      <p class="dim">За этот день правок нет.</p>
+    {% else %}
+    <table>
+      <tr><th>Когда</th><th>Кто</th><th>Карточка</th><th>Что изменил</th></tr>
+      {% for r in feed %}
+      <tr>
+        <td class="num">{{ r.created_at[11:16] }}</td>
+        <td>{{ r.vats_login }}</td>
+        <td>{{ r.entity_type }} {{ r.entity_id }}<br>
+            <span class="dim">{{ (r.entity_title or '')[:40] }}</span></td>
+        <td>{{ r.summary }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
