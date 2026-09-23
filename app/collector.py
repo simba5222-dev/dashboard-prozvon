@@ -27,6 +27,7 @@ from app.config import Settings
 from app.db import (
     save_call,
     save_activity,
+    save_search_task,
     save_call_order,
     save_call_task,
     save_card_check,
@@ -47,6 +48,9 @@ ORDER_ACTIVE_DAYS = 30
 
 # Поле звонка, где Synergy хранит «Фамилия Имя Отчество добавочный».
 CALL_AUTHOR_FIELD = "custom-28722"
+
+# «Тип техники» в карточке заявки — по нему сопоставляем работу подборщика.
+FIELD_ORDER_TRANSPORT = "custom-18621"
 # Поля телефона у контакта — записаны по-разному, приходится перебирать.
 CONTACT_PHONE_FIELDS = ("general-phone", "mobile-phone", "work-phone", "other-phone")
 
@@ -727,22 +731,32 @@ def collect_activities(
         logger.warning("сотрудников с учёткой Synergy нет — нечего собирать")
         return 0, 0
 
+    by_user = {str(row["synergy_user"]): row["vats_login"] for row in people}
+    # Помимо наших людей берём ленту по заявкам целиком. Перевод заявки на
+    # «Нужен Подбор» делает менеджер отдела продаж — его действий в нашей
+    # выборке нет, а без этого момента непонятно, с какой секунды считать
+    # работу по подбору.
+    streams = [(r["vats_login"], {"filter[user-id]": str(r["synergy_user"])}) for r in people]
+    streams.append(("", {"filter[trackable-type]": "Order"}))
+
     new = seen = 0
-    for person in people:
+    for who, flt in streams:
         for page in range(1, max_pages + 1):
             try:
                 rows = client.get(
                     "activities", per_page=100, page=page, sort="-created-at",
-                    include="user", **{"filter[user-id]": str(person["synergy_user"])},
+                    include="user", **flt,
                 ).get("data") or []
             except (httpx.HTTPError, ValueError) as exc:
                 logger.warning("лента %s: страница %s не прочиталась: %s",
-                               person["vats_login"], page, exc)
+                               who or "заявки", page, exc)
                 break
             if not rows:
                 break
             for row in rows:
                 attrs = row.get("attributes") or {}
+                author_id = str(((((row.get("relationships") or {}).get("user") or {})
+                                  .get("data")) or {}).get("id") or "")
                 created = str(attrs.get("created-at") or "")
                 local_date, _hour = local_parts(created, settings.timezone_offset_hours)
                 params = attrs.get("parameters") or {}
@@ -752,8 +766,10 @@ def collect_activities(
                     id=str(row["id"]),
                     created_at=created,
                     local_date=local_date,
-                    synergy_user=str(person["synergy_user"]),
-                    vats_login=person["vats_login"],
+                    # У общей ленты по заявкам автор произвольный — берём его
+                    # из самого события, а нашего человека опознаём по учётке.
+                    synergy_user=author_id,
+                    vats_login=who or by_user.get(author_id, ""),
                     entity_type=str(attrs.get("trackable-type") or ""),
                     entity_id=str(attrs.get("trackable-id") or ""),
                     entity_title=str(params.get("this") or "")[:200],
@@ -766,6 +782,53 @@ def collect_activities(
             conn.commit()
     logger.info("лента действий: просмотрено %s, новых %s", seen, new)
     return new, seen
+
+
+SEARCH_STAGE = "нужен подбор"
+
+
+def note_search_tasks(conn: sqlite3.Connection, client: SynergyClient,
+                      settings: Settings) -> int:
+    """Отметить заявки, отданные в подбор техники.
+
+    Момент передачи виден в ленте: менеджер отдела продаж меняет этап на
+    «Нужен Подбор». С этой секунды и считается работа подборщика — до неё
+    он про заявку не знал.
+
+    Тип техники берём из карточки заявки: по нему потом сопоставляем, какие
+    карточки транспорта он смотрел. Сопоставление приблизительное — владелец
+    выбрал его сознательно вместо точной привязки карточек к заявке.
+    """
+    rows = conn.execute(
+        """SELECT entity_id, entity_title, created_at, local_date
+             FROM activities
+            WHERE entity_type = 'Order' AND summary LIKE '%Этап:%'
+              AND lower(summary) LIKE ?
+            ORDER BY created_at""",
+        (f"%→ {SEARCH_STAGE}%",),
+    ).fetchall()
+    noted = 0
+    for row in rows:
+        try:
+            order = (client.get(f"orders/{row['entity_id']}").get("data") or {})
+        except (httpx.HTTPError, ValueError):
+            continue
+        customs = (order.get("attributes") or {}).get("customs") or {}
+        kinds = customs.get(FIELD_ORDER_TRANSPORT)
+        if isinstance(kinds, list):
+            equipment = "; ".join(str(k) for k in kinds if k)
+        else:
+            equipment = str(kinds or "")
+        save_search_task(
+            conn, order_id=str(row["entity_id"]), entered_at=row["created_at"],
+            local_date=row["local_date"], title=str(row["entity_title"] or "")[:200],
+            equipment=equipment[:200], is_demo=0,
+        )
+        noted += 1
+    conn.commit()
+    if noted:
+        logger.info("заявок в подборе отмечено: %s", noted)
+    return noted
 
 
 def contact_orders_around(

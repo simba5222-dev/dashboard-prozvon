@@ -20,7 +20,7 @@ from datetime import date, timedelta
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 
 from app.collector import (  # noqa: E402
-    SynergyClient, collect_activities, check_cards, check_inbound_calls, check_pending_cards,
+    SynergyClient, collect_activities, note_search_tasks, check_cards, check_inbound_calls, check_pending_cards,
     collect_calls, collect_range, refresh_tasks, sync_managers,
 )
 from app.config import get_settings  # noqa: E402
@@ -74,6 +74,11 @@ def main() -> int:
     if args.activities:
         new, seen = collect_activities(conn, client, settings)
         print(f"лента действий: просмотрено {seen}, новых {new}")
+        # Заявки, отданные в подбор: момент передачи виден только в ленте,
+        # поэтому сразу после её сбора.
+        noted = note_search_tasks(conn, client, settings)
+        if noted:
+            print(f"заявок в подборе: {noted}")
 
     last = date.fromisoformat(args.day) if args.day else local_now(settings.timezone_offset_hours).date()
 

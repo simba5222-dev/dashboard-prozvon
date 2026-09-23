@@ -97,6 +97,14 @@ def main() -> int:
         return 1
     cache.write_text(json.dumps(users, ensure_ascii=False), encoding="utf-8")
     print(f"список сохранён: {cache}")
+    if not args.apply:
+        # Под `agent` базу не открываем даже на чтение: sqlite заводит рядом
+        # файлы журнала от своего пользователя, и после этого `claude` не может
+        # писать — сервис встаёт с «attempt to write a readonly database».
+        # Один раз уже наступили.
+        print("теперь примените под claude: "
+              "sudo -u claude .venv/bin/python scripts/sync_vats_users.py --apply")
+        return 0
     return apply_users(settings, users, args.apply)
 
 

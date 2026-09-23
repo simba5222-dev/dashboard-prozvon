@@ -112,6 +112,18 @@ CREATE TABLE IF NOT EXISTS activities (
 );
 CREATE INDEX IF NOT EXISTS idx_activities_day ON activities (local_date, vats_login);
 
+-- Заявки, отданные в подбор техники. Момент передачи берётся из ленты: его
+-- делает менеджер отдела продаж, меняя этап на «Нужен Подбор». С этой
+-- секунды и считается работа по подбору.
+CREATE TABLE IF NOT EXISTS search_tasks (
+    order_id    TEXT PRIMARY KEY,
+    entered_at  TEXT NOT NULL,   -- когда отдали в подбор, ISO 8601
+    local_date  TEXT NOT NULL,
+    title       TEXT,            -- как называется заявка
+    equipment   TEXT,            -- тип техники из карточки заявки
+    is_demo     INTEGER NOT NULL DEFAULT 0
+);
+
 -- Задачи, поставленные после звонка. Отдельной строкой, а не галочкой:
 -- «задача есть» и «задача — перезвонить 17-го с готовым расчётом» — разные
 -- сведения, и руководителю нужно второе.
@@ -391,6 +403,22 @@ def save_call_order(conn: sqlite3.Connection, **row: Any) -> None:
             stage_name  = excluded.stage_name,
             stage_kind  = excluded.stage_kind,
             amount      = excluded.amount
+        """,
+        row,
+    )
+
+
+def save_search_task(conn: sqlite3.Connection, **row: Any) -> None:
+    """Запомнить заявку, отданную в подбор. Повтор обновляет тип техники."""
+    conn.execute(
+        """
+        INSERT INTO search_tasks (order_id, entered_at, local_date, title, equipment, is_demo)
+        VALUES (:order_id, :entered_at, :local_date, :title, :equipment, :is_demo)
+        ON CONFLICT (order_id) DO UPDATE SET
+            entered_at = excluded.entered_at,
+            local_date = excluded.local_date,
+            title      = excluded.title,
+            equipment  = excluded.equipment
         """,
         row,
     )

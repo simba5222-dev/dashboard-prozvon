@@ -201,3 +201,70 @@ def test_period_summary_counts_only_group_calls(conn):
     assert today_row["talked"] == 1
     # План — на менеджеров прозвона. Продажник в него не добавляется.
     assert today_row["plan"] == PLAN
+
+
+# ------------------------------------------- подбор техники по заявке
+
+def test_подбор_считается_по_типу_техники_и_времени(conn):
+    """Связь приблизительная: карточка транспорта в CRM привязана к
+    поставщику, а не к заявке. Поэтому совпадение по типу и времени.
+
+    Здесь же проверяется, что до передачи заявки в подбор ничего не
+    засчитывается: подборщик про неё ещё не знал.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import save_activity, save_search_task
+    from app.stats import search_tasks
+
+    upsert_manager(conn, vats_login="никитин", display_name="Никитин С.",
+                   synergy_user="42", plan_calls=None, active=1,
+                   dept="поиск", is_demo=0)
+    now = datetime.now(timezone.utc)
+    handed = (now - timedelta(hours=2)).isoformat()
+    save_search_task(conn, order_id="900", entered_at=handed,
+                     local_date=now.date().isoformat(), title="№107 кран",
+                     equipment="Автокран", is_demo=0)
+
+    def act(uid, title, when):
+        save_activity(conn, id=uid, created_at=when.isoformat(),
+                      local_date=when.date().isoformat(), synergy_user="42",
+                      vats_login="никитин", entity_type="Transport",
+                      entity_id=uid, entity_title=title, action="update",
+                      summary="Статус: — → Не отвечает", changes_json="{}",
+                      scenario="", is_demo=0)
+
+    act("1", "Автокран \xa0 -\xa0 -", now - timedelta(hours=1))   # нужный тип, после передачи
+    act("2", "Автокран 25 тонн", now - timedelta(minutes=30))      # он же, другая карточка
+    act("3", "Самосвал \xa0 -", now - timedelta(minutes=20))       # другой тип — мимо
+    act("4", "Автокран старый", now - timedelta(hours=5))          # до передачи — мимо
+    conn.commit()
+
+    task = search_tasks(conn)[0]
+    assert task["cards"] == 2, task
+    assert task["equipment"] == "Автокран"
+
+
+def test_правки_сценариев_в_подбор_не_идут(conn):
+    """Работу робота нельзя засчитывать человеку — по ней судят о людях."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import save_activity, save_search_task
+    from app.stats import search_tasks
+
+    upsert_manager(conn, vats_login="никитин", display_name="Никитин С.",
+                   synergy_user="42", plan_calls=None, active=1,
+                   dept="поиск", is_demo=0)
+    now = datetime.now(timezone.utc)
+    save_search_task(conn, order_id="901", entered_at=(now - timedelta(hours=2)).isoformat(),
+                     local_date=now.date().isoformat(), title="№108",
+                     equipment="Автокран", is_demo=0)
+    save_activity(conn, id="10", created_at=(now - timedelta(hours=1)).isoformat(),
+                  local_date=now.date().isoformat(), synergy_user="42",
+                  vats_login="никитин", entity_type="Transport", entity_id="10",
+                  entity_title="Автокран -", action="update",
+                  summary="Дата исх звонка: — → сегодня", changes_json="{}",
+                  scenario="Дата исходящего звонка в транспорт", is_demo=0)
+    conn.commit()
+
+    assert search_tasks(conn)[0]["cards"] == 0

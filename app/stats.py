@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -603,6 +603,61 @@ def search_feed(conn: sqlite3.Connection, day: str, vats_login: str | None = Non
         params + [limit],
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _norm(text: str) -> str:
+    """Схлопнуть пробелы и неразрывные пробелы — Synergy щедра на них."""
+    return re.sub(r"\s+", " ", str(text or "").replace("\xa0", " ")).strip().lower()
+
+
+def search_tasks(conn: sqlite3.Connection, days: int = 14) -> list[dict[str, Any]]:
+    """Заявки в подборе и сколько по ним сделано — приблизительно.
+
+    **Связь приблизительная, и это осознанный выбор владельца.** Точной в
+    данных нет: карточка транспорта связана с поставщиком, а не с заявкой.
+    Поэтому считаем по совпадению типа техники и времени: с момента передачи
+    заявки в подбор смотрим, какие карточки этого типа трогал подборщик.
+
+    Отсюда и границы применимости: если он ведёт две заявки на один тип
+    техники разом, работа разделится между ними неверно — одни и те же
+    карточки засчитаются обеим. Цифра годится как «сколько шевелений было по
+    заявке», а не как отчёт по каждому звонку.
+    """
+    tasks = conn.execute(
+        """SELECT order_id, entered_at, local_date, title, equipment
+             FROM search_tasks WHERE local_date >= date('now', ?)
+            ORDER BY entered_at DESC""",
+        (f"-{days} day",),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for task in tasks:
+        kinds = [_norm(k) for k in str(task["equipment"] or "").split(";") if _norm(k)]
+        rows = conn.execute(
+            """SELECT entity_id, entity_title, created_at, vats_login
+                 FROM activities
+                WHERE entity_type = 'Transport' AND scenario = ''
+                  AND created_at >= ?
+                  AND vats_login IN (SELECT vats_login FROM managers WHERE dept = 'поиск')""",
+            (task["entered_at"],),
+        ).fetchall()
+        # Название карточки начинается с типа техники: «Автокран  -  -  -».
+        # Этого хватает, чтобы отличить подбор крана от подбора самосвала.
+        cards = {
+            r["entity_id"] for r in rows
+            if kinds and any(_norm(r["entity_title"]).startswith(k) for k in kinds)
+        }
+        out.append({
+            "order_id": task["order_id"],
+            "entered_at": task["entered_at"],
+            "title": task["title"],
+            "equipment": task["equipment"],
+            "cards": len(cards),
+            "touched": sum(
+                1 for r in rows
+                if kinds and any(_norm(r["entity_title"]).startswith(k) for k in kinds)
+            ),
+        })
+    return out
 
 
 def openai_spend(data_dir: str, day: str | None = None) -> dict[str, Any]:

@@ -35,6 +35,38 @@
 
 <div class="card">
   <div class="card-head">
+    <h2>Заявки в подборе</h2>
+    <span class="sub">с момента, когда продажи перевели их на «Нужен Подбор»</span>
+  </div>
+  <div class="card-body">
+    {% if not tasks %}
+      <p class="dim">Заявок в подборе пока нет. Они появятся здесь, как только
+      менеджер отдела продаж переведёт заявку на этап «Нужен Подбор».</p>
+    {% else %}
+    <table>
+      <tr><th>Заявка</th><th>Техника</th><th>Отдали</th>
+          <th class="num">Карточек</th><th class="num">Правок</th></tr>
+      {% for t in tasks %}
+      <tr>
+        <td>{{ t.title or t.order_id }}</td>
+        <td>{{ t.equipment or '—' }}</td>
+        <td>{{ t.entered_at[:16].replace('T', ' ') }}</td>
+        <td class="num">{{ t.cards }}</td>
+        <td class="num">{{ t.touched }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {# Границы применимости важнее самой цифры: по ней будут судить о человеке. #}
+    <p class="dim">Счёт приблизительный: карточка транспорта в CRM связана с
+    поставщиком, а не с заявкой, поэтому сопоставляем по типу техники и
+    времени. Если подборщик ведёт две заявки на один тип разом, работа
+    разделится между ними неверно.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
     <h2>Что менял</h2>
     <span class="sub">только правки руками · {{ feed|length }} за день</span>
   </div>
