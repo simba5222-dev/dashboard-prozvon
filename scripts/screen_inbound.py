@@ -28,7 +28,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import analyzer  # noqa: E402
+from app import analyzer, search_calls  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db import connect, init_schema, save_screen  # noqa: E402
 
@@ -59,6 +59,10 @@ def main() -> int:
     since = (date.fromisoformat(until) - timedelta(days=max(args.days - 1, 0))).isoformat()
 
     conn = connect(settings.db_path)
+    # Кто из контактов бывал заказчиком — список собирает classify_contacts.py.
+    # Нет файла — просев просто не получит эту часть подсказки.
+    buyers = search_calls.contacts_with_orders(
+        Path(settings.db_path).parent / "contacts-with-orders.json")
     init_schema(conn)
     records = Path(settings.records_dir)
 
@@ -125,6 +129,7 @@ def main() -> int:
                 text, row["active_names"] or "",
                 api_key=settings.openai_api_key, model=settings.analysis_model,
                 own_company=settings.own_company,
+                known=search_calls.number_profile(conn, row["client_phone"], buyers),
             )
             save_screen(
                 conn, call_uid=uid, head_text=text,

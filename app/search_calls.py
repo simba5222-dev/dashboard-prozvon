@@ -104,8 +104,41 @@ def supplier_cards(conn: sqlite3.Connection, number: str) -> list[dict[str, Any]
     if not digits:
         return []
     return [dict(row) for row in conn.execute(
-        "SELECT id, name, type_name, status, contact_name FROM transport_cards "
+        "SELECT id, name, type_name, status, contact_name, contact_id "
+        "FROM transport_cards "
         "WHERE phone10 = ? ORDER BY type_name", (digits,))]
+
+
+def number_profile(conn: sqlite3.Connection, number: str,
+                   with_orders: set[str] | None = None) -> str:
+    """Что мы знаем про номер: техника в базе и был ли он заказчиком.
+
+    Нужна просеву входящих. Владелец 23.09.2026 предложил исключать из
+    прослушки контакты-исполнителей — на данных это оказалось опасно: из 67
+    пойманных заявок 16 пришли с номеров, у которых есть карточки техники,
+    и в них люди просят технику у нас. Поэтому признак идёт подсказкой, а не
+    запретом: разбор видит факт и решает по разговору.
+    """
+    cards = supplier_cards(conn, number)
+    if not cards:
+        return ""
+    types = sorted({card["type_name"] for card in cards if card["type_name"]})
+    who = cards[0]["contact_name"] or "без имени"
+    part = (f"номер есть в разделе «Транспорт»: {who}, карточек {len(cards)}"
+            + (f" ({', '.join(types[:5])})" if types else ""))
+    contact_id = str(cards[0].get("contact_id") or "")
+    if with_orders is not None and contact_id:
+        part += ("; у этого контакта есть заявки — он бывал и заказчиком"
+                 if contact_id in with_orders else "; заявок у контакта нет")
+    return part
+
+
+def contacts_with_orders(path: Path) -> set[str]:
+    """Кто из контактов хоть раз был заказчиком. Собирает classify_contacts.py."""
+    try:
+        return set(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
 
 
 def heard_types(transcript: str, allowed: list[str], *, api_key: str, model: str,
