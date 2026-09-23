@@ -125,6 +125,22 @@ def machines_section() -> Section:
         state = sh("systemctl", "is-active", unit) or "нет ответа"
         s.add(f"{unit} (Амстердам)", state, "ok" if state == "active" else "beda")
 
+    # У одноразовых юнитов `is-active` почти всегда «inactive» — это норма,
+    # и по нему падение не видно. 22–23.09.2026 так и вышло: dashboard-leads
+    # падал каждую минуту почти сутки, а в строке служб всё выглядело живым.
+    # Поэтому считаем неудачные запуски за сутки — их само по себе не бывает.
+    #
+    # Берём `systemctl show -p Result`, а не журнал: отчёт работает под
+    # `agent`, а журнал чужих юнитов ему не виден — `journalctl -u ... | grep -c`
+    # вернул бы ноль навсегда и выглядел бы как «всё хорошо». Ровно такую
+    # слепоту мы чинили накануне на боевом сервере.
+    for unit in ("dashboard-leads", "dashboard-prozvon", "dashboard-orders",
+                 "dashboard-records", "dashboard-collect"):
+        result = sh("systemctl", "show", unit, "--property=Result", "--value")
+        code = sh("systemctl", "show", unit, "--property=ExecMainStatus", "--value")
+        if result and result not in ("success", ""):
+            s.add(f"{unit}: последний запуск", f"{result}, код {code or '?'}", "beda")
+
     load = (Path("/proc/loadavg").read_text().split()[:3])
     s.add("нагрузка (Амстердам)", " ".join(load))
     free = sh("df", "-h", "--output=avail", "/").splitlines()

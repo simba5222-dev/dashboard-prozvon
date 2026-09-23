@@ -760,8 +760,12 @@ def check_inbound_calls(
             conn, call_uid=row["uid"], contact_id=contact_id, contact_found=1,
             contact_name=str(attrs.get("as-string") or "").strip(),
             company_name=contact_company(client, contact_id),
-            orders_after=len(after), order_names="; ".join(after),
-            active_orders=len(active), active_names="; ".join(active[:5]),
+            # `order_names` через помощника: с 22.09.2026
+            # `contact_orders_around` возвращает словари с id, а не имена.
+            # Прямой join по ним роняет весь сбор — так таймер поиска
+            # потерянных заявок молча падал каждую минуту почти сутки.
+            orders_after=len(after), order_names=order_names(after),
+            active_orders=len(active), active_names=order_names(active[:5]),
             checked_at=now,
         )
         # Фиксируем каждую проверку: обход сотни звонков идёт минутами, и по
