@@ -20,9 +20,14 @@
 75 тысяч по 50 на страницу — полторы тысячи запросов, а спрашивать каждый из
 шести тысяч контактов отдельно — шесть тысяч.
 
-Тип не трогается, если он уже верный, и не перебивается у «Диспетчеров» и
-«Кадров»: это другая ось. Там человек помечен по роли в компании, а не по
-тому, чем торгует, и решение по таким контактам — за человеком.
+Тип пишется в поле «Тип контакта_API» (`custom-30616`). Штатная связь
+`contact-type` через API не меняется: запрос проходит с ответом 200, а
+значение остаётся прежним — проверено 23.09.2026. Поле-обходчик завёл
+владелец, и это единственный способ проставить тип извне.
+
+Тип не трогается, если он уже верный, и не перебивается у «Кадров» и
+«Диспетчеров»: это другая ось. Там человек помечен по роли в компании, а не
+по тому, чем торгует, и решение по таким контактам — за человеком.
 """
 
 from __future__ import annotations
@@ -43,14 +48,22 @@ from app.config import Settings  # noqa: E402
 
 logger = logging.getLogger("classify_contacts")
 
-TYPE_BOTH = "4265"       # «Заказчик/исп.»
-TYPE_PERFORMER = "101"   # «Исполнитель»
-TYPE_CUSTOMER = "97"     # «Заказчик»
-# Эти типы не перебиваем: они про роль человека, а не про то, что у него есть.
-KEEP = {"1138", "2055"}  # «Диспетчер», «Кадры»
+# Тип пишется в поле «Тип контакта_API» (`custom-30616`), а не в штатную
+# связь `contact-type`: ту API принимает и молча не применяет — проверено
+# 23.09.2026 на контакте 3115806, ответ 200, значение не меняется. Поле
+# заведено владельцем ровно затем, чтобы тип можно было проставить извне.
+FIELD_TYPE = "custom-30616"
 
-NAMES = {TYPE_BOTH: "Заказчик/исп.", TYPE_PERFORMER: "Исполнитель",
-         TYPE_CUSTOMER: "Заказчик", "1138": "Диспетчер", "2055": "Кадры"}
+# Значения берутся ИЗ СПРАВОЧНИКА ПОЛЯ, слово в слово, включая опечатку
+# «Исполнтиель». Своё написание здесь недопустимо: поле-список, и значение
+# не из списка в отчётах и фильтрах окажется отдельной категорией. Если
+# опечатку в CRM поправят, скрипт подхватит это сам — он сверяется со
+# справочником и ругается, когда нужного варианта в нём нет.
+BOTH = "Заказчик/Исп"
+PERFORMER = "Исполнтиель"
+# Эти значения не перебиваем: они про роль человека в компании, а не про
+# то, что у него есть.
+KEEP = {"Кадры", "Диспетчер"}
 
 
 def scan_orders(client: SynergyClient, target: Path) -> int:
@@ -81,6 +94,13 @@ def scan_orders(client: SynergyClient, target: Path) -> int:
     return 0
 
 
+def field_options(client: SynergyClient) -> list[str]:
+    """Допустимые значения поля «Тип контакта_API» — из самой CRM."""
+    data = client.get(f"custom-fields/{FIELD_TYPE.split('-')[1]}")
+    attrs = (data.get("data") or {}).get("attributes") or {}
+    return [str(v) for v in (attrs.get("select-options") or [])]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scan", action="store_true",
@@ -98,6 +118,14 @@ def main() -> int:
     )
     # Рядом с базой: у дашборда всё рабочее лежит в data/.
     cache = Path(settings.db_path).parent / "contacts-with-orders.json"
+
+    options = field_options(client)
+    missing = [name for name in (BOTH, PERFORMER) if name not in options]
+    if missing:
+        print(f"в поле «Тип контакта_API» нет вариантов: {', '.join(missing)}")
+        print(f"есть: {', '.join(options)}")
+        print("добавьте их в CRM или поправьте BOTH/PERFORMER в этом скрипте")
+        return 1
 
     if args.scan:
         return scan_orders(client, cache)
@@ -117,18 +145,18 @@ def main() -> int:
 
     plan: list[tuple[dict, str]] = []
     for owner in owners:
-        want = TYPE_BOTH if owner["contact_id"] in with_orders else TYPE_PERFORMER
+        want = BOTH if owner["contact_id"] in with_orders else PERFORMER
         plan.append((owner, want))
-    both = sum(1 for _, want in plan if want == TYPE_BOTH)
+    both = sum(1 for _, want in plan if want == BOTH)
     print(f"контактов с транспортом: {len(plan)}")
-    print(f"  из них с заявками → «Заказчик/исп.»: {both}")
-    print(f"  только транспорт  → «Исполнитель»:   {len(plan) - both}")
+    print(f"  из них с заявками → «{BOTH}»: {both}")
+    print(f"  только транспорт  → «{PERFORMER}»: {len(plan) - both}")
     if not args.apply:
         print("\nэто предварительный расчёт, в CRM ничего не записано."
               " Для записи: --apply")
         for owner, want in plan[:5]:
             print(f"  пример: контакт {owner['contact_id']} "
-                  f"({owner['name'] or 'без имени'}, карточек {owner['cards']}) → {NAMES[want]}")
+                  f"({owner['name'] or 'без имени'}, карточек {owner['cards']}) → {want}")
         return 0
 
     if args.limit:
@@ -142,8 +170,9 @@ def main() -> int:
             logger.warning("контакт %s не прочитан: %s", cid, exc)
             failed += 1
             continue
-        current = str((((data.get("data") or {}).get("relationships") or {})
-                       .get("contact-type") or {}).get("data", {}).get("id") or "")
+        customs = ((data.get("data") or {}).get("attributes") or {}).get("customs") or {}
+        value = customs.get(FIELD_TYPE)
+        current = str(value[0]) if isinstance(value, list) and value else str(value or "")
         if current in KEEP:
             kept += 1
             continue
@@ -151,10 +180,11 @@ def main() -> int:
             same += 1
             continue
         try:
+            # Только своё поле: `customs` при записи не перетирает остальные,
+            # проверено — соседние значения в карточке остаются на месте.
             client.patch(f"contacts/{cid}", {"data": {
                 "id": str(cid), "type": "contacts",
-                "relationships": {"contact-type": {
-                    "data": {"type": "contact-types", "id": want}}},
+                "attributes": {"customs": {FIELD_TYPE: [want]}},
             }})
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("контакт %s не записан: %s", cid, exc)
@@ -165,7 +195,7 @@ def main() -> int:
             logger.info("  проставлено %s из %s", changed, len(plan))
 
     print(f"проставлено: {changed}, уже стояло: {same}, "
-          f"не тронуто (Диспетчер/Кадры): {kept}, не вышло: {failed}")
+          f"не тронуто (Кадры/Диспетчер): {kept}, не вышло: {failed}")
     return 0
 
 

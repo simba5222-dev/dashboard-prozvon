@@ -225,6 +225,25 @@ CREATE TABLE IF NOT EXISTS search_checks (
     is_demo     INTEGER NOT NULL DEFAULT 0
 );
 
+-- Справочник номеров: кто нам звонит и кем он нам приходится.
+--
+-- Заведён 23.09.2026 по требованию владельца: проверка одного входящего
+-- звонка стоила до десяти обращений в CRM (поиск контакта по четырём полям
+-- в двух написаниях номера, потом заявки, потом компания). Номеров при этом
+-- всего три с половиной тысячи, и меняются они редко. Поэтому номер
+-- разбирается один раз и кладётся сюда, а решения по звонку принимаются
+-- из этой таблицы — мгновенно и без сети.
+CREATE TABLE IF NOT EXISTS numbers (
+    phone10     TEXT PRIMARY KEY,
+    name        TEXT,
+    contact_id  TEXT,
+    category    TEXT NOT NULL DEFAULT '',  -- заказчик / исполнитель / оба / неизвестный
+    cards       INTEGER NOT NULL DEFAULT 0,
+    types       TEXT,                      -- типы техники через запятую
+    orders      INTEGER NOT NULL DEFAULT 0,
+    resolved_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS transcripts (
     call_uid      TEXT PRIMARY KEY REFERENCES calls (uid),
     text          TEXT,
@@ -508,6 +527,24 @@ def save_search_check(conn: sqlite3.Connection, **row: Any) -> None:
             known = excluded.known, missing = excluded.missing,
             verdict = excluded.verdict, checked_at = excluded.checked_at,
             more_unnamed = excluded.more_unnamed
+        """,
+        row,
+    )
+
+
+def save_number(conn: sqlite3.Connection, **row: Any) -> None:
+    """Запомнить, кем нам приходится номер. Повтор обновляет."""
+    conn.execute(
+        """
+        INSERT INTO numbers (phone10, name, contact_id, category, cards, types,
+                             orders, resolved_at)
+        VALUES (:phone10, :name, :contact_id, :category, :cards, :types,
+                :orders, :resolved_at)
+        ON CONFLICT (phone10) DO UPDATE SET
+            name = excluded.name, contact_id = excluded.contact_id,
+            category = excluded.category, cards = excluded.cards,
+            types = excluded.types, orders = excluded.orders,
+            resolved_at = excluded.resolved_at
         """,
         row,
     )
