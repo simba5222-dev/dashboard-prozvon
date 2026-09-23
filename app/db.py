@@ -192,6 +192,39 @@ CREATE TABLE IF NOT EXISTS screens (
 );
 
 -- Расшифровка и разбор. Заполняется отдельно и может отставать.
+CREATE TABLE IF NOT EXISTS transport_cards (
+    id          TEXT PRIMARY KEY,   -- id карточки транспорта в Synergy
+    name        TEXT,               -- «Название» из карточки
+    type_id     TEXT,               -- id типа техники в справочнике
+    type_name   TEXT,               -- «Экскаватор погрузчик» и прочие 72 вида
+    phone10     TEXT,               -- телефон, последние 10 цифр
+    contact_id  TEXT,
+    contact_name TEXT,
+    status      TEXT,               -- «Работаем», «Не отвечает», «Выключен»
+    updated_at  TEXT,
+    synced_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS transport_cards_phone ON transport_cards (phone10);
+
+-- Сверка разговора поисковика с базой: что поставщик назвал вслух против
+-- того, что занесено в его карточки. Ключ — звонок: один разговор даёт
+-- один вердикт, повторный разбор его переписывает.
+CREATE TABLE IF NOT EXISTS search_checks (
+    call_uid    TEXT PRIMARY KEY REFERENCES calls (uid),
+    local_date  TEXT NOT NULL,
+    vats_login  TEXT,
+    phone10     TEXT,
+    contact_name TEXT,
+    asked_type  TEXT,               -- о чём звонил менеджер
+    offered     TEXT,               -- что у поставщика есть, по разговору
+    known       TEXT,               -- что уже есть в карточках
+    missing     TEXT,               -- чего в карточках нет
+    verdict     TEXT NOT NULL,      -- all_saved / missing / no_cards / unclear
+    checked_at  TEXT NOT NULL,
+    is_demo     INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS transcripts (
     call_uid      TEXT PRIMARY KEY REFERENCES calls (uid),
     text          TEXT,
@@ -270,6 +303,9 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # ушли в чужой счёт.
     ("managers", "ext", "TEXT"),
     ("managers", "vats_user", "TEXT"),
+    # «У нас много разной техники» — поставщик сказал, что есть ещё, но не
+    # назвал что. Типом это не станет, а работа для менеджера — да.
+    ("search_checks", "more_unnamed", "TEXT"),
     ("screens", "verdict", "TEXT NOT NULL DEFAULT ''"),
     ("screens", "verdict_at", "TEXT"),
 )
@@ -419,6 +455,59 @@ def save_search_task(conn: sqlite3.Connection, **row: Any) -> None:
             local_date = excluded.local_date,
             title      = excluded.title,
             equipment  = excluded.equipment
+        """,
+        row,
+    )
+
+
+def phone10(number: str | None) -> str:
+    """Последние десять цифр номера.
+
+    В CRM телефон пишут как придётся: «+7951…», «8951…», со скобками и без.
+    Сравнивать их как строки бессмысленно, поэтому и карточки, и звонки
+    приводятся к одному виду — к десяти цифрам без кода страны.
+    """
+    digits = "".join(ch for ch in str(number or "") if ch.isdigit())
+    return digits[-10:] if len(digits) >= 10 else ""
+
+
+def save_transport_card(conn: sqlite3.Connection, **row: Any) -> None:
+    """Карточка транспорта из Synergy в местный справочник."""
+    conn.execute(
+        """
+        INSERT INTO transport_cards (id, name, type_id, type_name, phone10,
+                                     contact_id, contact_name, status,
+                                     updated_at, synced_at)
+        VALUES (:id, :name, :type_id, :type_name, :phone10, :contact_id,
+                :contact_name, :status, :updated_at, :synced_at)
+        ON CONFLICT (id) DO UPDATE SET
+            name = excluded.name, type_id = excluded.type_id,
+            type_name = excluded.type_name, phone10 = excluded.phone10,
+            contact_id = excluded.contact_id, contact_name = excluded.contact_name,
+            status = excluded.status, updated_at = excluded.updated_at,
+            synced_at = excluded.synced_at
+        """,
+        row,
+    )
+
+
+def save_search_check(conn: sqlite3.Connection, **row: Any) -> None:
+    """Вердикт сверки разговора с карточками. Повтор разбора переписывает."""
+    conn.execute(
+        """
+        INSERT INTO search_checks (call_uid, local_date, vats_login, phone10,
+                                   contact_name, asked_type, offered, known,
+                                   missing, verdict, checked_at, is_demo,
+                                   more_unnamed)
+        VALUES (:call_uid, :local_date, :vats_login, :phone10, :contact_name,
+                :asked_type, :offered, :known, :missing, :verdict, :checked_at,
+                :is_demo, :more_unnamed)
+        ON CONFLICT (call_uid) DO UPDATE SET
+            phone10 = excluded.phone10, contact_name = excluded.contact_name,
+            asked_type = excluded.asked_type, offered = excluded.offered,
+            known = excluded.known, missing = excluded.missing,
+            verdict = excluded.verdict, checked_at = excluded.checked_at,
+            more_unnamed = excluded.more_unnamed
         """,
         row,
     )

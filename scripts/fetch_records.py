@@ -69,6 +69,10 @@ def main() -> int:
                     help="только исходящие прозвона: их разбирает отчёт по "
                          "менеджеру. Их десятки в день, а всех звонков компании "
                          "полтысячи — без отбора ждать записи прозвона придётся часами")
+    ap.add_argument("--search", action="store_true",
+                    help="только исходящие отдела поиска техники: их разбирает "
+                         "сверка «что поставщик назвал — что занесено в карточку». "
+                         "Порог длительности у них свой, короткий")
     args = ap.parse_args()
 
     settings = settings_without_secrets()
@@ -81,7 +85,9 @@ def main() -> int:
 
     until = args.day or date.today().isoformat()
     since = (date.fromisoformat(until) - timedelta(days=max(args.days - 1, 0))).isoformat()
-    min_sec = args.min_sec or settings.transcribe_min_duration_sec or settings.talk_threshold_sec
+    min_sec = args.min_sec or (settings.search_min_duration_sec if args.search
+                               else settings.transcribe_min_duration_sec
+                               or settings.talk_threshold_sec)
 
     conn = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
@@ -98,6 +104,14 @@ def main() -> int:
         # признак ставится при сборе и живёт у самого звонка.
         where.append("in_group = 1")
         where.append("direction = 'out'")
+    if args.search:
+        # У поиска техники нет своего признака у звонка: отдел определяется
+        # по сотруднику. Отбор по `dept` — единственный способ не утащить
+        # заодно полтысячи звонков продаж.
+        where.append("direction = 'out'")
+        where.append("vats_login IN (SELECT vats_login FROM managers "
+                     "WHERE dept = ? AND active = 1)")
+        params.append(settings.search_dept)
     rows = conn.execute(
         f"""
         SELECT uid, record_url, duration_sec, local_date FROM calls

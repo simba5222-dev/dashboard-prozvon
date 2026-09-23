@@ -79,7 +79,42 @@
 
 <div class="card">
   <div class="card-head">
-    <h2>Что менял</h2>
+    <h2>Что услышали в разговорах</h2>
+<p class="dim">Разбор исходящих: какую технику поставщик назвал своей и есть ли
+  она в его карточках. Разговоров разобрано {{ heard_total['всего'] }} ·
+  не занесено {{ heard_total['не занесено'] }} ·
+  спросить ещё {{ heard_total['спросить ещё'] }} ·
+  всё занесено {{ heard_total['всё занесено'] }}.</p>
+{% if heard %}
+<table>
+  <tr><th>Когда</th><th>Поставщик</th><th>Спрашивал</th>
+      <th>Что у него есть</th><th>Отметка</th></tr>
+  {% for h in heard %}
+  <tr>
+    <td>{{ h.started_at[11:16] }}</td>
+    <td>{{ h.contact_name or h.client_phone }}</td>
+    <td>{{ h.asked_type or '—' }}</td>
+    <td>
+      {% if h.offered %}
+        {% for item in h.offered %}
+          <div{% if item.type in h.missing %} class="warn"{% endif %}>
+            {{ item.type }}{% if item.type in h.missing %} — нет в карточке{% endif %}
+            <span class="dim">«{{ item.quote }}»</span>
+          </div>
+        {% endfor %}
+      {% elif h.more_unnamed %}
+        <span class="dim">«{{ h.more_unnamed }}»</span>
+      {% else %}—{% endif %}
+    </td>
+    <td{% if h.verdict in ('missing', 'ask_more') %} class="warn"{% endif %}>{{ h.label }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="dim">За этот день разговоры ещё не разобраны.</p>
+{% endif %}
+
+<h2>Что менял</h2>
     <span class="sub">только правки руками · {{ feed|length }} за день</span>
   </div>
   <div class="card-body scroll">

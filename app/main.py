@@ -29,7 +29,7 @@ from app.db import (
 from fastapi.responses import FileResponse, RedirectResponse
 
 from app.stats import (  # noqa: F401
-    search_day, search_feed, search_tasks,
+    search_day, search_feed, search_tasks, heard_checks, heard_summary,
     call_detail,
     calls_of_day,
     day_summary,
@@ -242,11 +242,14 @@ async def search_page(request: Request, day: str | None = None,
     conn = request.app.state.db
     current = day or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
     ctx = _base_context(request)
+    heard = heard_checks(conn, current)
     ctx.update({
         "day": current,
         "people": search_day(conn, current, threshold_sec=settings.talk_threshold_sec),
         "feed": search_feed(conn, current, who),
         "tasks": search_tasks(conn),
+        "heard": heard,
+        "heard_total": heard_summary(heard),
         "who": who,
     })
     return TEMPLATES.TemplateResponse("search.html", ctx)

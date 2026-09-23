@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from app.db import CARD_FIELDS
+from app.search_calls import VERDICT_LABEL
 
 
 def local_now(offset_hours: int) -> datetime:
@@ -608,6 +609,43 @@ def search_feed(conn: sqlite3.Connection, day: str, vats_login: str | None = Non
 def _norm(text: str) -> str:
     """Схлопнуть пробелы и неразрывные пробелы — Synergy щедра на них."""
     return re.sub(r"\s+", " ", str(text or "").replace("\xa0", " ")).strip().lower()
+
+
+def heard_checks(conn: sqlite3.Connection, day: str,
+                 limit: int = 100) -> list[dict[str, Any]]:
+    """Разговоры поисковика за день: что поставщик назвал и что из этого в CRM.
+
+    Порядок намеренный: сначала то, где есть работа для человека — техника
+    не занесена или поставщик сказал «есть ещё». Разговоры, где ничего не
+    прозвучало, идут в конец: их большинство, и если ставить их подряд,
+    до полезного никто не долистает.
+    """
+    order = {"missing": 0, "ask_more": 1, "no_cards": 2, "all_saved": 3, "unclear": 4}
+    rows = []
+    for row in conn.execute(
+        """SELECT c.*, k.started_at, k.duration_sec, k.client_phone
+             FROM search_checks c JOIN calls k ON k.uid = c.call_uid
+            WHERE c.local_date = ? ORDER BY k.started_at DESC""", (day,)):
+        item = dict(row)
+        item["offered"] = json.loads(item.get("offered") or "[]")
+        item["known"] = json.loads(item.get("known") or "[]")
+        item["missing"] = json.loads(item.get("missing") or "[]")
+        item["label"] = VERDICT_LABEL.get(item.get("verdict"), item.get("verdict"))
+        rows.append(item)
+    rows.sort(key=lambda item: (order.get(item.get("verdict"), 9),
+                                item.get("started_at") or ""), reverse=False)
+    return rows[:limit]
+
+
+def heard_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Итог по дню: сколько разговоров разобрано и сколько из них с работой."""
+    return {
+        "всего": len(rows),
+        "не занесено": sum(1 for r in rows if r.get("verdict") == "missing"),
+        "спросить ещё": sum(1 for r in rows if r.get("verdict") == "ask_more"),
+        "всё занесено": sum(1 for r in rows if r.get("verdict") == "all_saved"),
+        "нет в базе": sum(1 for r in rows if r.get("verdict") == "no_cards"),
+    }
 
 
 def search_tasks(conn: sqlite3.Connection, days: int = 14) -> list[dict[str, Any]]:
