@@ -799,14 +799,17 @@ def note_search_tasks(conn: sqlite3.Connection, client: SynergyClient,
     карточки транспорта он смотрел. Сопоставление приблизительное — владелец
     выбрал его сознательно вместо точной привязки карточек к заявке.
     """
-    rows = conn.execute(
-        """SELECT entity_id, entity_title, created_at, local_date
+    # Отбор по-русски делаем в Python, а не в SQL: `lower()` у SQLite знает
+    # только латиницу, и условие `lower(summary) LIKE '%нужен подбор%'`
+    # не совпадало никогда — событие в базе лежало, а заявка не появлялась.
+    candidates = conn.execute(
+        """SELECT entity_id, entity_title, created_at, local_date, summary
              FROM activities
             WHERE entity_type = 'Order' AND summary LIKE '%Этап:%'
-              AND lower(summary) LIKE ?
-            ORDER BY created_at""",
-        (f"%→ {SEARCH_STAGE}%",),
+            ORDER BY created_at"""
     ).fetchall()
+    rows = [r for r in candidates
+            if f"→ {SEARCH_STAGE}" in str(r["summary"] or "").casefold()]
     noted = 0
     for row in rows:
         try:

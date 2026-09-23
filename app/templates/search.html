@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Поиск техники — {{ day }}{% endblock %}
 
+{% block extra_style %}
+<style>.warn { color: #b45309; }</style>
+{% endblock %}
+
 {% block content %}
 <div class="card">
   <div class="card-head">
@@ -49,10 +53,18 @@
       {% for t in tasks %}
       <tr>
         <td>{{ t.title or t.order_id }}</td>
-        <td>{{ t.equipment or '—' }}</td>
+        <td>{% if t.no_equipment %}<span class="warn">не указан</span>
+            {% else %}{{ t.equipment }}{% endif %}</td>
         <td>{{ t.entered_at[:16].replace('T', ' ') }}</td>
+        {# Ноль при незаполненном типе — не результат работы, а отсутствие
+           данных. Показывать его цифрой значит обвинять человека молча. #}
+        {% if t.no_equipment %}
+        <td colspan="2" class="dim">тип техники в заявке не указан —
+            сопоставить не с чем</td>
+        {% else %}
         <td class="num">{{ t.cards }}</td>
         <td class="num">{{ t.touched }}</td>
+        {% endif %}
       </tr>
       {% endfor %}
     </table>

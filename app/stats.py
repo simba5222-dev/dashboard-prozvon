@@ -651,6 +651,10 @@ def search_tasks(conn: sqlite3.Connection, days: int = 14) -> list[dict[str, Any
             "entered_at": task["entered_at"],
             "title": task["title"],
             "equipment": task["equipment"],
+            # Без типа техники сопоставлять не с чем. Это надо говорить прямо:
+            # иначе строка с нулями читается как «подборщик не работал», хотя
+            # на самом деле не заполнена карточка заявки.
+            "no_equipment": not kinds,
             "cards": len(cards),
             "touched": sum(
                 1 for r in rows
