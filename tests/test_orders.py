@@ -216,3 +216,47 @@ def test_заявка_вокруг_звонка_попадает_в_after():
     client = _FakeSynergy([_order("1", "s-new", "2026-09-22T09:55:00+00:00")])
     after, active = contact_orders_around(client, "c1", CALL, STAGES, fresh_days=30)
     assert [o["name"] for o in after] == ["№1"] and active == []
+
+
+# ------------------------------------------- кто сделал звонок
+
+def test_добавочный_вернее_имени_из_synergy(conn):
+    """Добавочные переиспользуют, и поле автора в Synergy устаревает.
+
+    23.09.2026 добавочный 766 числился за Ратенковым, хотя там уже работал
+    Никитин: 58 его звонков за день ушли в чужой счёт, а сам он в отчётах
+    не появился вовсе.
+    """
+    from app.collector import logins_by_ext
+
+    upsert_manager(conn, vats_login="никитин", display_name="Никитин Сергей",
+                   synergy_user="42", plan_calls=None, active=1,
+                   dept="поиск", is_demo=0)
+    conn.execute("UPDATE managers SET ext = '766' WHERE vats_login = 'никитин'")
+    assert logins_by_ext(conn) == {"766": "никитин"}
+
+
+def test_без_добавочных_соответствие_пустое(conn):
+    """До первого запуска sync_vats_users всё работает по-старому, по имени."""
+    from app.collector import logins_by_ext
+
+    assert logins_by_ext(conn) == {}
+
+
+def test_общий_добавочный_не_приписывается_одному(conn):
+    """739 в базе на троих — взять любого значит переписать чужую работу.
+
+    Это опаснее исходной ошибки: там звонки терялись в «неизвестно», а так
+    они достались бы конкретному человеку, который их не делал.
+    """
+    from app.collector import logins_by_ext
+
+    for login, name in (("воронков", "Воронков Е."), ("шабанов", "Шабанов А.")):
+        upsert_manager(conn, vats_login=login, display_name=name, synergy_user="1",
+                       plan_calls=None, active=1, dept="продажи", is_demo=0)
+        conn.execute("UPDATE managers SET ext = '739' WHERE vats_login = ?", (login,))
+    upsert_manager(conn, vats_login="никитин", display_name="Никитин С.", synergy_user="2",
+                   plan_calls=None, active=1, dept="поиск", is_demo=0)
+    conn.execute("UPDATE managers SET ext = '766' WHERE vats_login = 'никитин'")
+
+    assert logins_by_ext(conn) == {"766": "никитин"}

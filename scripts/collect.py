@@ -63,6 +63,10 @@ def main() -> int:
     # Отдел продаж нужен для поиска потерянных заявок: клиенты звонят его
     # менеджерам напрямую. В счётчики прозвона эти люди не попадают.
     sync_managers(conn, client, settings.sales_group, dept=settings.sales_dept)
+    # Поиск техники: менеджер обзванивает поставщиков под заявку. Его звонки
+    # и правки в карточках транспорта считаются отдельно от прозвона — это
+    # другая работа и другие показатели.
+    sync_managers(conn, client, settings.search_group, dept=settings.search_dept)
 
     last = date.fromisoformat(args.day) if args.day else local_now(settings.timezone_offset_hours).date()
 

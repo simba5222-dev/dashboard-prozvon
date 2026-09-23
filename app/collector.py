@@ -372,6 +372,7 @@ def collect_range(
     if not known:
         logger.warning("менеджеров прозвона в базе нет — сначала синхронизируйте группу")
         return 0, 0
+    by_ext = logins_by_ext(conn)
 
     now = datetime.now(timezone.utc).isoformat()
     new = seen = 0
@@ -393,7 +394,7 @@ def collect_range(
                 continue
             if created > until:
                 continue
-            is_new, in_group = store_call(conn, item, settings, known, now)
+            is_new, in_group = store_call(conn, item, settings, known, now, by_ext)
             if in_group:
                 seen += 1
                 new += int(is_new)
@@ -405,6 +406,31 @@ def collect_range(
     conn.commit()
     logger.info("период %s…%s: найдено %s, новых %s", since, until, seen, new)
     return new, seen
+
+
+def logins_by_ext(conn: sqlite3.Connection) -> dict[str, str]:
+    """Добавочный номер → фамилия сотрудника.
+
+    Synergy кладёт в звонок добавочный, а чей он — пишет отдельным полем, и
+    это поле врёт при переиспользовании номера. 23.09.2026 добавочный 766
+    числился за Ратенковым, хотя там работал уже Никитин: 58 его звонков за
+    день ушли в чужой счёт, а сам он в отчётах не появился вовсе.
+
+    Правду знает ВАТС, её приносит `scripts/sync_vats_users.py`. Здесь —
+    готовое соответствие; пусто оно только до первого запуска того скрипта,
+    и тогда всё работает по-старому, по имени.
+    """
+    holders: dict[str, set[str]] = {}
+    for row in conn.execute(
+        "SELECT ext, vats_login FROM managers WHERE ext IS NOT NULL AND ext <> ''"
+    ):
+        holders.setdefault(str(row["ext"]).strip(), set()).add(row["vats_login"])
+    # Общий добавочный не говорит, кто звонил. У нас таких два: 739 на
+    # Воронкове, Филиппове и Шабанове, 713 на Сергееве и Толстове. Взять
+    # «любого из них» — значит переписать чужую работу на одного человека,
+    # то есть сделать хуже, чем было. Такие добавочные пропускаем и
+    # остаёмся при имени из Synergy.
+    return {ext: next(iter(who)) for ext, who in holders.items() if len(who) == 1}
 
 
 def group_logins(conn: sqlite3.Connection, dept: str) -> set[str]:
@@ -430,7 +456,7 @@ def group_logins(conn: sqlite3.Connection, dept: str) -> set[str]:
 
 def store_call(
     conn: sqlite3.Connection, item: dict[str, Any], settings: Settings,
-    known: set[str], now: str,
+    known: set[str], now: str, by_ext: dict[str, str] | None = None,
 ) -> tuple[bool, bool]:
     """Сохранить звонок как он пришёл из Synergy.
 
@@ -443,6 +469,12 @@ def store_call(
     outgoing = attrs.get("direction") == "outgoing"
     author, _ = parse_author((attrs.get("customs") or {}).get(CALL_AUTHOR_FIELD))
     surname = surname_of(author)
+    # Добавочный вернее имени: у исходящего он в `src`, у входящего в `dst`.
+    # Если он известен — верим ему, иначе остаёмся при имени из Synergy.
+    side = attrs.get("src-phone-number") if outgoing else attrs.get("dst-phone-number")
+    ext = re.sub(r"\D", "", str(side or ""))
+    if by_ext and 2 <= len(ext) <= 5 and ext in by_ext:
+        surname = by_ext[ext]
     in_group = bool(surname in known and outgoing)
     started = attrs.get("started-at") or attrs.get("created-at") or ""
     local_date, local_hour = local_parts(started, settings.timezone_offset_hours)
@@ -475,6 +507,7 @@ def collect_calls(
     if not known:
         logger.warning("менеджеров прозвона в базе нет — сначала синхронизируйте группу")
         return 0, 0
+    by_ext = logins_by_ext(conn)
 
     now = datetime.now(timezone.utc).isoformat()
     new = seen = 0
@@ -491,7 +524,7 @@ def collect_calls(
     # Именно этого комментарий выше и велит избегать.
     processed = 0
     for item in iter_calls_for_day(client, day):
-        is_new, in_group = store_call(conn, item, settings, known, now)
+        is_new, in_group = store_call(conn, item, settings, known, now, by_ext)
         processed += 1
         if in_group:
             seen += 1
