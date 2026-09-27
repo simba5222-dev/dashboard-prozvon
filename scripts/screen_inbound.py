@@ -74,7 +74,7 @@ def main() -> int:
         rows = conn.execute(
             f"""
             SELECT k.uid, k.duration_sec, k.started_at, k.vats_login,
-                   c.contact_name, c.active_names
+                   k.client_phone, c.contact_name, c.active_names
             FROM calls k
             LEFT JOIN inbound_checks c ON c.call_uid = k.uid
             WHERE k.uid IN ({placeholders})
@@ -87,7 +87,7 @@ def main() -> int:
         rows = conn.execute(
             f"""
             SELECT k.uid, k.duration_sec, k.started_at, k.vats_login,
-                   c.contact_name, c.active_names
+                   k.client_phone, c.contact_name, c.active_names
             FROM calls k
             JOIN inbound_checks c ON c.call_uid = k.uid
             LEFT JOIN screens s ON s.call_uid = k.uid

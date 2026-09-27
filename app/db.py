@@ -244,6 +244,16 @@ CREATE TABLE IF NOT EXISTS numbers (
     resolved_at TEXT
 );
 
+-- Что из звонков подборщика уже ушло в заявку. Нужна, чтобы не писать
+-- один и тот же вариант в ленту заявки дважды: разбор перезапускается,
+-- а комментарий в CRM удалить некому.
+CREATE TABLE IF NOT EXISTS search_options (
+    call_uid   TEXT NOT NULL,
+    order_id   TEXT NOT NULL,
+    posted_at  TEXT NOT NULL,
+    PRIMARY KEY (call_uid, order_id)
+);
+
 CREATE TABLE IF NOT EXISTS transcripts (
     call_uid      TEXT PRIMARY KEY REFERENCES calls (uid),
     text          TEXT,
@@ -325,6 +335,9 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # «У нас много разной техники» — поставщик сказал, что есть ещё, но не
     # назвал что. Типом это не станет, а работа для менеджера — да.
     ("search_checks", "more_unnamed", "TEXT"),
+    # Что сейчас стоит в поле «Позвонить» карточки транспорта. Держим копию,
+    # чтобы сторож ссылок сверял её у себя и ходил в CRM только на запись.
+    ("transport_cards", "call_link", "TEXT"),
     ("screens", "verdict", "TEXT NOT NULL DEFAULT ''"),
     ("screens", "verdict_at", "TEXT"),
 )
@@ -496,15 +509,15 @@ def save_transport_card(conn: sqlite3.Connection, **row: Any) -> None:
         """
         INSERT INTO transport_cards (id, name, type_id, type_name, phone10,
                                      contact_id, contact_name, status,
-                                     updated_at, synced_at)
+                                     updated_at, synced_at, call_link)
         VALUES (:id, :name, :type_id, :type_name, :phone10, :contact_id,
-                :contact_name, :status, :updated_at, :synced_at)
+                :contact_name, :status, :updated_at, :synced_at, :call_link)
         ON CONFLICT (id) DO UPDATE SET
             name = excluded.name, type_id = excluded.type_id,
             type_name = excluded.type_name, phone10 = excluded.phone10,
             contact_id = excluded.contact_id, contact_name = excluded.contact_name,
             status = excluded.status, updated_at = excluded.updated_at,
-            synced_at = excluded.synced_at
+            synced_at = excluded.synced_at, call_link = excluded.call_link
         """,
         row,
     )

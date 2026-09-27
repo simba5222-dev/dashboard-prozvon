@@ -80,6 +80,12 @@ def main() -> int:
     ap.add_argument("--only-approved", action="store_true",
                     help="заводить заявки только по подтверждённым человеком "
                          "находкам — мягкий режим, включён в часовом таймере")
+    ap.add_argument("--skip-performers", action="store_true",
+                    help="не заводить заявки по номерам, у которых есть карточки "
+                         "техники в разделе «Транспорт». Решение владельца "
+                         "24.09.2026: такие звонки в этот прогон не берём. "
+                         "Помним, что 16 из 67 прошлых заявок пришли именно "
+                         "с таких номеров — правило спорное, но это его выбор")
     ap.add_argument("--fix", action="store_true",
                     help="не создавать новые, а дозаполнить уже заведённые: "
                          "выжимка, соисполнитель, ответственный")
@@ -106,6 +112,10 @@ def main() -> int:
                        settings.crm_lead_stage)
 
     have_order = "IS NOT NULL" if args.fix else "IS NULL"
+    no_performers = ("""AND NOT EXISTS (SELECT 1 FROM transport_cards tc
+                          WHERE tc.phone10 <> '' AND tc.phone10 =
+                                substr(replace(replace(replace(k.client_phone,'+',''),
+                                       '-',''),' ',''), -10))""" if args.skip_performers else "")
     approved = "AND s.approved = 1" if args.only_approved else ""
     rows = conn.execute(
         f"""
@@ -121,6 +131,7 @@ def main() -> int:
           {approved}
           AND c.contact_id IS NOT NULL AND c.dismissed = 0
           AND k.local_date BETWEEN ? AND ?
+          {no_performers}
         ORDER BY k.started_at
         """,
         (since, until),

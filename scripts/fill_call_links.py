@@ -14,9 +14,17 @@
 поля есть и у контактов (`custom-30342`), но там номер выводится без
 разделителей — здесь читаемее.
 
-    ./scripts/fill_call_links.py              посчитать, ничего не меняя
-    ./scripts/fill_call_links.py --apply      записать
-    ./scripts/fill_call_links.py --apply --limit 20
+    ./scripts/fill_call_links.py                посчитать, ничего не меняя
+    ./scripts/fill_call_links.py --apply        записать
+    ./scripts/fill_call_links.py --watch --apply  только новые и разошедшиеся
+
+**Как это заменяет сценарий в CRM.** Сценарии Synergy через API создать
+нельзя: `POST /scenarios` отвечает 404, а условия и действия существующих
+не отдаются вовсе. Поэтому «заполнять у новых карточек и обновлять при
+смене телефона» делает сторож: `sync_transports.py` приносит свежие
+карточки с телефонами, а этот скрипт в режиме `--watch` дописывает ссылку
+там, где её нет или где она разошлась с телефоном. Задержка — один прогон
+таймера, а не мгновение, зато оно наше и чинится нами.
 
 Номер берётся из местного справочника карточек (`sync_transports.py`), где
 он уже приведён к десяти цифрам, и разворачивается в `+7XXXXXXXXXX`.
@@ -67,6 +75,18 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Записать в CRM.")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--id", help="Только эти карточки, через запятую.")
+    parser.add_argument("--watch", action="store_true",
+                        help="Сторож: записать только те карточки, где ссылка "
+                             "пуста или разошлась с телефоном. Сверка идёт по "
+                             "своей копии, в CRM уходит только запись. Так "
+                             "новая карточка и смена телефона у контакта "
+                             "подхватываются сами.")
+    parser.add_argument("--fast", action="store_true",
+                        help="Не перечитывать карточку перед записью. Годится "
+                             "для первого прохода, когда поле пустое у всех: "
+                             "вдвое меньше обращений. На повторном проходе не "
+                             "использовать — перезапишет уже верные значения и "
+                             "лишний раз разбудит сценарии.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -84,6 +104,14 @@ def main() -> int:
             f"""SELECT id, phone10, name FROM transport_cards
                  WHERE id IN ({",".join("?" * len(ids))}) AND phone10 <> ''""",
             ids).fetchall()
+    elif args.watch:
+        # Ссылка пуста или не совпадает с нынешним телефоном карточки.
+        # Второе — это как раз «у контакта сменился номер»: `sync_transports`
+        # приносит новый телефон, и расхождение видно без единого запроса.
+        rows = [row for row in conn.execute(
+            "SELECT id, phone10, name, call_link FROM transport_cards "
+            "WHERE phone10 <> '' ORDER BY CAST(id AS INTEGER)")
+            if str(row["call_link"] or "") != link_for(row["phone10"])]
     else:
         rows = conn.execute(
             "SELECT id, phone10, name FROM transport_cards "
@@ -104,16 +132,17 @@ def main() -> int:
     written = same = failed = 0
     for index, row in enumerate(rows, 1):
         want = link_for(row["phone10"])
-        try:
-            data = client.get(f"transports/{row['id']}")
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("карточка %s не прочитана: %s", row["id"], exc)
-            failed += 1
-            continue
-        customs = ((data.get("data") or {}).get("attributes") or {}).get("customs") or {}
-        if str(customs.get(FIELD_LINK) or "") == want:
-            same += 1
-            continue
+        if not (args.fast or args.watch):
+            try:
+                data = client.get(f"transports/{row['id']}")
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.warning("карточка %s не прочитана: %s", row["id"], exc)
+                failed += 1
+                continue
+            customs = ((data.get("data") or {}).get("attributes") or {}).get("customs") or {}
+            if str(customs.get(FIELD_LINK) or "") == want:
+                same += 1
+                continue
         try:
             client.patch(f"transports/{row['id']}", {"data": {
                 "id": str(row["id"]), "type": "transports",

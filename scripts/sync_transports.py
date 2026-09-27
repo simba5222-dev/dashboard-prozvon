@@ -35,6 +35,7 @@ logger = logging.getLogger("sync_transports")
 FIELD_PHONE = "custom-29545"
 FIELD_NAME = "custom-30419"
 FIELD_STATUS = "custom-26967"
+FIELD_LINK = "custom-30617"   # «Позвонить»
 
 
 def first(value: object) -> str:
@@ -124,6 +125,7 @@ def main() -> int:
                 status=first(customs.get(FIELD_STATUS)),
                 updated_at=str(attrs.get("updated-at") or ""),
                 synced_at=now,
+                call_link=first(customs.get(FIELD_LINK)),
             )
             saved += 1
             skipped += int(not number)
