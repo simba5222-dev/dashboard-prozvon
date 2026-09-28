@@ -1,10 +1,19 @@
 #!/usr/bin/env python
 """Тип контакта в Synergy по тому, что у человека есть на самом деле.
 
-Правило владельца (23.09.2026):
+Правило владельца (28.09.2026), целиком:
 
-    есть привязанный транспорт и есть заявки  →  «Заказчик/исп.»
+    есть заявка                               →  «Заказчик»
     есть только транспорт                     →  «Исполнитель»
+    есть и транспорт, и заявки                →  «Заказчик/Исп»
+
+Третий тип в решениях ведёт себя как заказчик: звонки таких контактов из
+прослушки не исключаются.
+
+**Заказчиков на два порядка больше.** С транспортом 6 245 контактов, с одними
+заявками — 42 475. При скорости CRM в 1,25 секунды на карточку это 15 часов
+записи подряд, и каждая правка будит сценарии Synergy. Поэтому заказчики идут
+не одним махом, а ночными порциями: `--customers --limit N`.
 
 Зачем. В нашем деле одна и та же контора сегодня сдаёт нам погрузчик, а
 завтра ищет у нас экскаватор себе на объект. Разделение «исполнитель против
@@ -14,7 +23,8 @@
 
     ./scripts/classify_contacts.py --scan     собрать, у кого есть заявки
     ./scripts/classify_contacts.py            показать, что получится
-    ./scripts/classify_contacts.py --apply    проставить типы в CRM
+    ./scripts/classify_contacts.py --apply    проставить типы владельцам техники
+    ./scripts/classify_contacts.py --customers --limit 3000 --apply   порция заказчиков
 
 `--scan` проходит все заявки и запоминает их контакты. Так дешевле: заявок
 75 тысяч по 50 на страницу — полторы тысячи запросов, а спрашивать каждый из
@@ -62,6 +72,7 @@ FIELD_TYPE = "custom-30616"
 # чем в базу ушли тысячи значений мимо списка.
 BOTH = "Заказчик/Исп"
 PERFORMER = "Исполнитель"
+CUSTOMER = "Заказчик"
 # Эти значения не перебиваем: они про роль человека в компании, а не про
 # то, что у него есть.
 KEEP = {"Кадры", "Диспетчер"}
@@ -112,6 +123,9 @@ def main() -> int:
                         help="Пройти заявки и запомнить, у кого они есть.")
     parser.add_argument("--apply", action="store_true", help="Записать типы в CRM.")
     parser.add_argument("--limit", type=int, default=0, help="Не больше стольких контактов.")
+    parser.add_argument("--customers", action="store_true",
+                        help="Те, у кого есть заявки и нет техники, — «Заказчик». "
+                             "Их 42 тысячи, поэтому идти порциями и ночью.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -125,7 +139,7 @@ def main() -> int:
     cache = Path(settings.db_path).parent / "contacts-with-orders.json"
 
     options = field_options(client)
-    missing = [name for name in (BOTH, PERFORMER) if name not in options]
+    missing = [name for name in (BOTH, PERFORMER, CUSTOMER) if name not in options]
     if missing:
         print(f"в поле «Тип контакта_API» нет вариантов: {', '.join(missing)}")
         print(f"есть: {', '.join(options)}")
@@ -149,13 +163,22 @@ def main() -> int:
     conn.close()
 
     plan: list[tuple[dict, str]] = []
-    for owner in owners:
-        want = BOTH if owner["contact_id"] in with_orders else PERFORMER
-        plan.append((owner, want))
-    both = sum(1 for _, want in plan if want == BOTH)
-    print(f"контактов с транспортом: {len(plan)}")
-    print(f"  из них с заявками → «{BOTH}»: {both}")
-    print(f"  только транспорт  → «{PERFORMER}»: {len(plan) - both}")
+    if args.customers:
+        # Заказчики: заявки есть, техники нет. Владельцев техники здесь быть
+        # не должно — они разбираются обычным проходом и получают «Исполнитель»
+        # или «Заказчик/Исп».
+        свои = {o["contact_id"] for o in owners}
+        for cid in sorted(with_orders - свои, key=lambda x: int(x) if str(x).isdigit() else 0):
+            plan.append(({"contact_id": str(cid), "name": "", "cards": 0}, CUSTOMER))
+        print(f"контактов с заявками и без техники → «{CUSTOMER}»: {len(plan)}")
+    else:
+        for owner in owners:
+            want = BOTH if owner["contact_id"] in with_orders else PERFORMER
+            plan.append((owner, want))
+        both = sum(1 for _, want in plan if want == BOTH)
+        print(f"контактов с транспортом: {len(plan)}")
+        print(f"  из них с заявками → «{BOTH}»: {both}")
+        print(f"  только транспорт  → «{PERFORMER}»: {len(plan) - both}")
     if not args.apply:
         print("\nэто предварительный расчёт, в CRM ничего не записано."
               " Для записи: --apply")
