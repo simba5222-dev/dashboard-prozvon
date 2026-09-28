@@ -16,6 +16,7 @@ def conn() -> sqlite3.Connection:
         CREATE TABLE managers (vats_login TEXT, display_name TEXT, dept TEXT, phone TEXT);
         CREATE TABLE numbers (phone10 TEXT, name TEXT, category TEXT, cards INT, orders INT);
         CREATE TABLE calls (uid TEXT, direction TEXT, client_phone TEXT, started_at TEXT);
+        CREATE TABLE lines (phone10 TEXT, name TEXT, kind TEXT, calls_in INT, seen_at TEXT);
         """
     )
     c.executemany(
@@ -30,6 +31,11 @@ def conn() -> sqlite3.Connection:
          ("9164445566", "Валера", "исполнитель", 4, 0),
          ("9167778899", "Егор", "оба", 2, 2)],
     )
+    c.executemany(
+        "INSERT INTO lines VALUES (?,?,?,?,?)",
+        [("9214401135", "", "прямой", 20, ""),
+         ("8123091309", "Авито СПБ", "рекламная", 58, "")],
+    )
     return c
 
 
@@ -41,11 +47,20 @@ def звонок(**over):
     return row
 
 
-def test_входящий_на_общий_номер(conn):
+def test_входящий_на_рекламную_линию(conn):
     ctx = call_context.build(conn, звонок(diversion="+78123091309"))
-    assert ctx.line == "общий"
+    assert ctx.line == "рекламная"
+    assert ctx.line_name == "Авито СПБ"
     assert ctx.scenario == "входящий_на_общий"
+    assert "Авито СПБ" in ctx.hint()
     assert "новое обращение" in ctx.hint()
+
+
+def test_незнакомая_линия_не_считается_рекламной(conn):
+    """Номера нет в справочнике — молчим, а не записываем в рекламные."""
+    ctx = call_context.build(conn, звонок(diversion="+79990001122"))
+    assert ctx.line == "неизвестная"
+    assert ctx.scenario != "входящий_на_общий"
 
 
 def test_входящий_на_прямой_от_заказчика(conn):

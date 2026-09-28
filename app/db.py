@@ -244,6 +244,22 @@ CREATE TABLE IF NOT EXISTS numbers (
     resolved_at TEXT
 );
 
+-- НАШИ линии: номера, на которые звонят нам. ВАТС подписывает рекламные
+-- линии сама — поле `telnum_name` в истории: «Авито СПБ», «Сайт МСК»,
+-- «Виджет Реклама». Имя есть только у них; прямые номера сотрудников
+-- приходят безымянными. Это и есть готовое различение, которое раньше
+-- пытались вывести из списка менеджеров и выводили неверно.
+--
+-- Заполняется `scripts/sync_lines.py` из истории ВАТС: она доступна только
+-- питерскому серверу, поэтому запрос уходит туда по ssh.
+CREATE TABLE IF NOT EXISTS lines (
+    phone10    TEXT PRIMARY KEY,
+    name       TEXT NOT NULL DEFAULT '',   -- как линия названа в ВАТС; пусто — прямой номер
+    kind       TEXT NOT NULL DEFAULT '',   -- рекламная / прямой / неизвестная
+    calls_in   INTEGER NOT NULL DEFAULT 0,
+    seen_at    TEXT
+);
+
 -- Что из звонков подборщика уже ушло в заявку. Нужна, чтобы не писать
 -- один и тот же вариант в ленту заявки дважды: разбор перезапускается,
 -- а комментарий в CRM удалить некому.
@@ -558,6 +574,20 @@ def save_number(conn: sqlite3.Connection, **row: Any) -> None:
             category = excluded.category, cards = excluded.cards,
             types = excluded.types, orders = excluded.orders,
             resolved_at = excluded.resolved_at
+        """,
+        row,
+    )
+
+
+def save_line(conn: sqlite3.Connection, **row: Any) -> None:
+    """Запомнить нашу линию: номер, её имя в ВАТС и что это за линия."""
+    conn.execute(
+        """
+        INSERT INTO lines (phone10, name, kind, calls_in, seen_at)
+        VALUES (:phone10, :name, :kind, :calls_in, :seen_at)
+        ON CONFLICT (phone10) DO UPDATE SET
+            name = excluded.name, kind = excluded.kind,
+            calls_in = excluded.calls_in, seen_at = excluded.seen_at
         """,
         row,
     )

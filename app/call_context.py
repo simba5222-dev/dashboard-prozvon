@@ -55,7 +55,8 @@ class CallContext:
     """Что известно о звонке до того, как кто-либо его послушал."""
 
     direction: str = "in"
-    line: str = "неизвестная"            # прямой | общий | неизвестная
+    line: str = "неизвестная"            # рекламная | прямой | неизвестная
+    line_name: str = ""                  # как линия названа в ВАТС: «Авито СПБ»
     manager: str = ""
     manager_dept: str = ""
     counterpart: str = "незнакомый"      # заказчик | исполнитель | оба | незнакомый
@@ -70,6 +71,7 @@ class CallContext:
         return {
             "направление": "входящий" if self.direction == "in" else "исходящий",
             "линия": self.line,
+            "название линии": self.line_name,
             "менеджер": self.manager,
             "отдел": self.manager_dept,
             "собеседник": self.counterpart,
@@ -89,6 +91,7 @@ class CallContext:
             менеджер=self.manager or "менеджер",
             собеседник=self.counterpart_name or "собеседник",
             заявок=self.open_orders,
+            линия=self.line_name or "без названия",
         )
 
 
@@ -97,8 +100,8 @@ class CallContext:
 # наша реконструкция.
 SCENARIOS: dict[str, str] = {
     "входящий_на_общий":
-        "Входящий на общий (многоканальный или рекламный) номер. На такие номера "
-        "звонят по объявлению, то есть это почти всегда **новое обращение за "
+        "Входящий на рекламную линию «{линия}» — этот номер стоит в объявлении, "
+        "личным он не бывает. Значит это почти всегда **новое обращение за "
         "техникой**. Исключение одно — спам и ошиблись номером.",
     "входящий_от_заказчика":
         "Входящий на прямой номер менеджера {менеджер} от заказчика, с которым мы "
@@ -173,24 +176,35 @@ def _called_recently(conn: sqlite3.Connection, phone10: str, before: str) -> boo
     return row is not None
 
 
-def _line_kind(conn: sqlite3.Connection, diversion: str, direction: str) -> str:
-    """Прямой номер менеджера или общий. У исходящих линия смысла не несёт."""
+def _line_kind(conn: sqlite3.Connection, diversion: str, direction: str) -> tuple[str, str]:
+    """Что за линия набрана. Возвращает (вид, имя линии в ВАТС).
+
+    **Спрашиваем справочник линий, а не список менеджеров.** ВАТС подписывает
+    рекламные линии сама — «Авито СПБ», «Сайт МСК», «Виджет Реклама», — и имя
+    есть только у них. Попытка вывести это из списка менеджеров давала 257
+    «чужих» номеров из 372 звонков за трое суток: почти все они оказались
+    прямыми номерами сотрудников, просто не записанными у нас.
+
+    Справочник наполняет `scripts/sync_lines.py`. Номера, которого в нём нет,
+    мы не знаем — и говорим об этом прямо, а не записываем в рекламные.
+    """
     if direction != "in":
-        return "исходящая"
+        return "исходящая", ""
     number = digits(diversion)
     if not number:
-        return "неизвестная"
+        return "неизвестная", ""
     row = conn.execute(
-        """SELECT 1 FROM managers WHERE phone <> ''
-           AND REPLACE(REPLACE(REPLACE(phone,'+',''),' ',''),'-','') LIKE ? LIMIT 1""",
-        (f"%{number}",),
+        "SELECT name, kind FROM lines WHERE phone10 = ?", (number,)
     ).fetchone()
-    return "прямой" if row else "общий"
+    if row is None:
+        return "неизвестная", ""
+    вид = str(row["kind"] or "")
+    return (вид or "неизвестная"), str(row["name"] or "")
 
 
 def _pick_scenario(ctx: CallContext) -> str:
     if ctx.direction == "in":
-        if ctx.line == "общий":
+        if ctx.line == "рекламная":
             return "входящий_на_общий"
         if ctx.counterpart == "исполнитель":
             return "входящий_перезвон_исполнителя" if ctx.called_back else "входящий_от_исполнителя"
@@ -216,7 +230,7 @@ def build(conn: sqlite3.Connection, call: dict[str, Any] | sqlite3.Row) -> CallC
     call = dict(call)
     phone = digits(call.get("client_phone"))
     ctx = CallContext(direction=str(call.get("direction") or "in"))
-    ctx.line = _line_kind(conn, call.get("diversion") or "", ctx.direction)
+    ctx.line, ctx.line_name = _line_kind(conn, call.get("diversion") or "", ctx.direction)
 
     login = str(call.get("vats_login") or "")
     row = conn.execute(
@@ -248,7 +262,8 @@ def describe(ctx: CallContext) -> str:
         кто,
         "",
         f"Направление: {'входящий' if ctx.direction == 'in' else 'исходящий'}"
-        + (f", на {ctx.line} номер" if ctx.direction == "in" and ctx.line != "неизвестная" else ""),
+        + (f", на {ctx.line} линию" if ctx.direction == "in" and ctx.line != "неизвестная" else "")
+        + (f" «{ctx.line_name}»" if ctx.line_name else ""),
     ]
     if ctx.manager:
         строки.append(f"Наш сотрудник: {ctx.manager}"
