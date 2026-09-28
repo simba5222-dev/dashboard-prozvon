@@ -166,11 +166,19 @@ def добрать_номера(conn, записи: list[dict]) -> int:
         if когда is not None and телефон:
             свежие.setdefault(телефон, []).append((когда, номер))
 
+    # Коммитим пачками, а не одной транзакцией на весь проход. Правило
+    # выстрадано 17.09.2026: сборщик держал базу на запись, пока листал
+    # историю, и разбор падал с «database is locked». 28.09.2026 наступили
+    # на те же грабли — этот самый проход уронил разбор номеров на 271-м из
+    # 4 836, потому что шесть тысяч правок шли одной транзакцией.
     добрано = 0
     for uid, номер in прямо.items():
         добрано += conn.execute(
             "UPDATE calls SET diversion = ? WHERE uid = ? AND COALESCE(diversion,'') = ''",
             (номер, uid)).rowcount
+        if добрано % 200 == 0:
+            conn.commit()
+    conn.commit()
 
     пустые = conn.execute(
         """SELECT uid, client_phone, started_at FROM calls
@@ -188,6 +196,9 @@ def добрать_номера(conn, записи: list[dict]) -> int:
             continue
         добрано += conn.execute(
             "UPDATE calls SET diversion = ? WHERE uid = ?", (близкие[0], row["uid"])).rowcount
+        if добрано % 200 == 0:
+            conn.commit()
+    conn.commit()
     return добрано
 
 
