@@ -29,7 +29,7 @@ from typing import Any
 
 import httpx
 
-from app import analyzer, hints
+from app import analyzer, call_context, hints
 from app.collector import (SynergyClient, contact_orders_around, find_contact,
                            load_stages, order_names)
 from app.config import Settings
@@ -296,9 +296,19 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
         return {"uid": uid, "skipped": f"перезвон на наш поиск ({tries} недозвона)"}
 
     head = transcribe(settings, f"{uid}.mp3", audio, seconds=75)
+    # Повод звонка считается из метаданных и уходит в задание как факт.
+    # Раньше модель выводила его из слов, и на перезвонах исполнителей
+    # придумывала заявки, которых не было.
+    контекст = call_context.describe(call_context.build(conn, {
+        "uid": uid, "direction": "in",
+        "client_phone": str(call.get("client") or ""),
+        "vats_login": manager["vats_login"] if manager else "",
+        "diversion": digits(dialed), "started_at": started,
+    }))
     verdict = analyzer.screen_call(
         head, "", api_key=settings.openai_api_key,
         model=settings.analysis_model, own_company=settings.own_company,
+        context=контекст,
     )
     is_request = bool(verdict["is_request"] and not verdict["about_existing"])
     save_screen(conn, call_uid=uid, head_text=head,
