@@ -43,6 +43,20 @@
   max-width:340px}
 .ord .why.dim{color:var(--ink-3)}
 .rep tr.filt td{padding:4px 14px 10px 0;border-bottom:1px solid var(--line-2);vertical-align:middle}
+/* Выбор периода живёт над таблицей, а не в её шапке. В шапке он пропадал
+   вместе с таблицей, когда за день не было ни одного разговора, и выйти из
+   пустого дня было нечем. */
+.period{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;
+  background:var(--surface);border:1px solid var(--line);border-radius:3px;
+  padding:11px 15px;margin-bottom:18px;font-size:13px}
+.period label{display:flex;align-items:center;gap:6px;color:var(--ink-3)}
+.period input[type=date],.period select{font:inherit;color:var(--ink);
+  background:var(--surface-2);border:1px solid var(--line-2);border-radius:2px;padding:3px 6px}
+.period button{font:inherit;cursor:pointer;color:var(--surface);background:var(--accent);
+  border:1px solid var(--accent);border-radius:2px;padding:4px 14px}
+.period .quick{margin-left:auto;color:var(--ink-3)}
+.period .quick a{margin-left:10px}
+.period .quick a.now{font-weight:600;text-decoration:none}
 .rep tr.filt:hover td{background:none}
 .rep tr.filt input,.rep tr.filt select{font:inherit;font-size:12px;padding:3px 5px;
   border:1px solid var(--line-2);border-radius:2px;background:var(--surface);color:var(--ink)}
@@ -83,6 +97,31 @@
   задача считается поставленной по звонку, если создана в течение {{ card_window_min }} мин после него,
   заявка — в течение {{ order_window_hours }} ч
 </p>
+
+<form class="period" method="get" action="{{ base }}/report">
+  <label>с <input type="date" name="since" value="{{ since }}"></label>
+  <label>по <input type="date" name="until" value="{{ until }}"></label>
+  <label>менеджер
+    <select name="manager">
+      <option value="">все</option>
+      {% for m in all_managers %}
+      <option value="{{ m.vats_login }}" {% if m.vats_login == manager_login %}selected{% endif %}>{{ m.display_name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {# Отбор по колонкам переживает смену периода: иначе владелец, сдвинув даты,
+     молча теряет фильтр и смотрит не на то, что думает. #}
+  {% for name, value in filters.items() %}{% if value not in ("", 0, None) %}
+  <input type="hidden" name="{{ name }}" value="{{ value }}">
+  {% endif %}{% endfor %}
+  <button type="submit">Показать</button>
+  <span class="quick">быстро:
+    {% for q in quick %}
+    <a href="{{ link(since=q.since, until=q.until) }}"
+       class="{% if since == q.since and until == q.until %}now{% endif %}">{{ q.name }}</a>
+    {% endfor %}
+  </span>
+</form>
 
 <div class="card">
   <div class="tiles">
@@ -136,19 +175,13 @@
       </tr>
       <tr class="filt">
         <td>
-          <input type="date" name="since" value="{{ since }}" title="с какой даты">
-          <input type="date" name="until" value="{{ until }}" title="по какую дату">
+          {# Период и менеджер заданы наверху; здесь они едут скрытыми полями,
+             чтобы отбор по колонкам не сбрасывал выбранные даты. #}
+          <input type="hidden" name="since" value="{{ since }}">
+          <input type="hidden" name="until" value="{{ until }}">
+          <input type="hidden" name="manager" value="{{ manager_login or '' }}">
         </td>
-        {% if not manager_login %}
-        <td>
-          <select name="manager" onchange="this.form.submit()">
-            <option value="">все</option>
-            {% for m in all_managers %}
-            <option value="{{ m.vats_login }}" {% if m.vats_login == manager_login %}selected{% endif %}>{{ m.display_name }}</option>
-            {% endfor %}
-          </select>
-        </td>
-        {% endif %}
+        {% if not manager_login %}<td></td>{% endif %}
         <td>
           <input type="search" name="q" value="{{ filters.q }}" placeholder="имя, фирма, телефон">
           <span class="tgs">есть в CRM {{ tog("contact", "клиент заведён в CRM") }}</span>
@@ -179,7 +212,7 @@
         <td colspan="11">
           <button type="submit">Показать</button>
           {% if filters_on %}<a class="clear" href="{{ link(need='', objects='', inn='', task='', contact='', company='', orders='', transcript='', missed='', q='', min_sec=0) }}">сбросить отборы</a>{% endif %}
-          <span class="dim">даты, поиск и длительность применяются кнопкой, значки — сразу</span>
+          <span class="dim">поиск и длительность применяются кнопкой, значки — сразу; период — в шапке страницы</span>
         </td>
       </tr>
       {% for r in rows %}

@@ -292,6 +292,7 @@ async def report(
     ctx.update({
         "since": since,
         "until": until,
+        "quick": quick_periods(today),
         "manager_login": manager,
         "manager": next((m for m in managers(conn) if m["vats_login"] == manager), None),
         "all_managers": managers(conn),
@@ -305,6 +306,22 @@ async def report(
         "threshold": settings.talk_threshold_sec,
     })
     return TEMPLATES.TemplateResponse("report.html", ctx)
+
+
+def quick_periods(today: str) -> list[dict[str, str]]:
+    """Готовые периоды для шапки отчёта.
+
+    Отчёт открывается на сегодняшний день, и в тихий день он пуст. Пустая
+    страница без единой кнопки читается как «сервис сломался» — так и вышло
+    28.09.2026. Поэтому рядом с полями дат всегда лежат три готовых периода:
+    промахнуться некуда.
+    """
+    end = date.fromisoformat(today)
+    return [
+        {"name": "сегодня", "since": today, "until": today},
+        {"name": "неделя", "since": (end - timedelta(days=6)).isoformat(), "until": today},
+        {"name": "месяц", "since": (end - timedelta(days=29)).isoformat(), "until": today},
+    ]
 
 
 def report_link(
