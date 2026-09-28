@@ -252,6 +252,18 @@ class Settings(BaseSettings):
         default="Новый", description="Стадия, в которую кладём пойманную заявку."
     )
 
+    yandex_api_key: str | None = Field(
+        default=None,
+        description="Ключ SpeechKit. Российское распознавание: записи "
+        "разговоров не покидают страну, и это главный довод за него.",
+    )
+    yandex_folder: str | None = Field(
+        default=None, description="Каталог Yandex Cloud, в котором живёт сервисный аккаунт."
+    )
+    yandex_sa_id: str | None = Field(
+        default=None, description="Сервисный аккаунт `speechkit`. Нужен для ключей к хранилищу."
+    )
+
     own_company: str = Field(
         default="Техно-Ресурс",
         description="Как называется наша компания. Нужно разбору: без этого "
@@ -271,6 +283,7 @@ class Settings(BaseSettings):
     @field_validator(
         "vats_api_token", "synergy_api_token", "openai_api_key",
         "asr_analysis_token", "crm_lead_responsible",
+        "yandex_api_key", "yandex_folder", "yandex_sa_id",
         "record_ssh_host", "record_ssh_key",
         "field_need", "field_objects", "field_objects_extra", "field_inn",
         mode="before",
@@ -292,6 +305,10 @@ class Settings(BaseSettings):
     @property
     def analysis_configured(self) -> bool:
         return bool(self.openai_api_key)
+
+    @property
+    def yandex_stt_configured(self) -> bool:
+        return bool(self.yandex_api_key and self.yandex_folder)
 
     @property
     def card_fields_configured(self) -> bool:
