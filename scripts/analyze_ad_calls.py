@@ -5,8 +5,8 @@
 технику. Заявку по ним CRM заводит сама, ещё до разбора; здесь мы смотрим на
 **содержание** — что именно просили, что менеджер выяснил и чего не выяснил.
 
-Распознаёт SpeechKit, разбирает ассистент Яндекса с доступом к нашей базе
-знаний. Всё внутри России, за границу не уходит ничего.
+Распознаёт SpeechKit, разбирает YandexGPT Lite. Всё внутри России, за
+границу не уходит ничего.
 
     ./scripts/analyze_ad_calls.py --since 2026-09-22 --until 2026-09-28
     ./scripts/analyze_ad_calls.py --since … --until … --apply
@@ -30,17 +30,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import yandex  # noqa: E402
+from app import knowledge, yandex  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.db import connect, init_schema, save_ad_call  # noqa: E402
 
 logger = logging.getLogger("ad_calls")
-
-ЧТО_ЗА_ТЕХНИКА = """Прочитай расшифровку телефонного разговора и назови, какая техника
-нужна позвонившему. Ответь одним-двумя словами, как технику называют в жизни.
-Если о технике речи не было — ответь словом «нет».
-
-{текст}"""
 
 ЗАДАНИЕ = """Разбери телефонный разговор. Звонок входящий, на рекламную линию «{линия}» —
 человек позвонил по объявлению, значит почти наверняка ему нужна техника.
@@ -82,12 +76,13 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--apply", action="store_true", help="Записать разбор в базу.")
     parser.add_argument("--redo", action="store_true", help="Переразобрать уже разобранные.")
+    parser.add_argument("--uid", default="", help="Только эти звонки, через запятую.")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     settings = Settings()
-    if not (settings.yandex_stt_configured and settings.yandex_assistant_id):
-        print("нет ключа Яндекса или не задан DASH_YANDEX_ASSISTANT_ID")
+    if not settings.yandex_stt_configured:
+        print("нет ключа Яндекса")
         return 1
 
     conn = connect(settings.db_path)
@@ -104,6 +99,9 @@ def main() -> int:
         ORDER BY k.started_at
     """, (args.since, args.until, args.min_sec)).fetchall()
 
+    если_эти = {x.strip() for x in args.uid.split(",") if x.strip()}
+    if если_эти:
+        rows = [r for r in rows if r["uid"] in если_эти]
     записи = Path(settings.records_dir)
     дела = []
     нет_записи = 0
@@ -137,26 +135,19 @@ def main() -> int:
             logger.warning("  расшифровка пустая, пропускаем")
             пусто += 1
             continue
-        # Два хода. Сначала коротким вопросом узнаём технику и спрашиваем
-        # память, что по ней положено выяснить; затем разбираем разговор
-        # прямым вызовом модели. Одним ходом нельзя: ассистент ищет в памяти
-        # по всему сообщению, и расшифровка целиком роняет поиск.
-        техника = yandex.complete(
-            ЧТО_ЗА_ТЕХНИКА.format(текст=текст[:4000]),
-            api_key=settings.yandex_api_key, folder=settings.yandex_folder,
-            max_tokens=20).strip().strip(".!»«\"").lower()
-        чеклист = ""
-        if техника and техника != "нет":
-            чеклист = yandex.ask(
-                settings.yandex_assistant_id,
-                f"Какие обязательные вопросы надо задать клиенту про «{техника}»? "
-                f"Если в материалах их нет — так и скажи.",
-                api_key=settings.yandex_api_key, folder=settings.yandex_folder)
+        # Чек-лист берём из своего кода, а не спрашиваем у облачной памяти.
+        # 29.09.2026 посчитали по биллингу: обращение к памяти на каждом
+        # звонке почти удваивало счёт за разбор — 6,9 ₽ против 1,8 ₽, — и
+        # всё ради списка, который лежит в `knowledge.py` даром. Память
+        # осталась складом и местом, где можно спросить «что уточнять про
+        # ямобур»; внутри конвейера ей делать нечего.
+        вопросы = knowledge.questions_for(текст)
+        чеклист = ("\n".join(f"- {в}" for в in вопросы) if вопросы
+                   else "(по этой технике списка вопросов у нас нет)")
         ответ = yandex.complete(
-            ЗАДАНИЕ.format(линия=r["line"], текст=текст[:12000],
-                           чеклист=чеклист or "(в базе знаний по этой технике ничего нет)"),
+            ЗАДАНИЕ.format(линия=r["line"], текст=текст[:12000], чеклист=чеклист),
             api_key=settings.yandex_api_key, folder=settings.yandex_folder,
-            max_tokens=1500)
+            model=settings.yandex_model, max_tokens=1500)
         разбор = yandex.parse_json(ответ)
         if разбор is None:
             logger.warning("  разбор не разобрался: %s", (ответ or "")[:120])

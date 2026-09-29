@@ -40,6 +40,24 @@ ul.q li{font-size:13px;color:var(--ink-2);padding-left:15px;position:relative;li
 ul.q li::before{position:absolute;left:0;font-weight:700}
 ul.q.asked li::before{content:"✓";color:var(--ok)}
 ul.q.missed li::before{content:"✗";color:var(--stop)}
+/* Слушать надо раньше, чем читать: по тексту разговор не всегда понятен,
+   а по голосу понятен сразу. Поэтому проигрыватель идёт первой строкой. */
+.play{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;
+  padding:11px 17px;border-bottom:1px solid var(--line)}
+.play audio{flex:1 1 320px;height:34px;min-width:260px}
+.play .hint{font-size:12px;color:var(--ink-3)}
+
+.talk{display:flex;flex-direction:column;gap:9px;padding:15px 17px;
+  border-top:1px solid var(--line);max-height:380px;overflow:auto}
+.turn{display:grid;grid-template-columns:96px 1fr;gap:12px;font-size:13.5px;line-height:1.55}
+@media(max-width:620px){.turn{grid-template-columns:1fr;gap:2px}}
+.turn .who{font-size:11px;letter-spacing:.07em;text-transform:uppercase;
+  font-family:ui-monospace,Menlo,monospace;padding-top:3px}
+.turn.op .who{color:var(--accent)}
+.turn.cl .who{color:var(--warn)}
+.turn .said{color:var(--ink-2)}
+.turn.cl .said{color:var(--ink)}
+
 details.tr{border-top:1px solid var(--line)}
 details.tr summary{padding:11px 17px;cursor:pointer;font-size:12.5px;color:var(--ink-3);
   font-family:ui-monospace,Menlo,monospace}
@@ -113,6 +131,11 @@ details.tr .text{padding:0 17px 15px;font-size:13px;line-height:1.6;color:var(--
       {{ r.duration_sec }} с · {{ r.client_phone }}</span>
   </div>
 
+  <div class="play">
+    <audio controls preload="none" src="{{ base }}/record/{{ r.call_uid }}.mp3"></audio>
+    <span class="hint">слушайте и правьте отметку внизу — расшифровка машинная, она врёт</span>
+  </div>
+
   <div class="grid">
     <div>
       <p class="lbl">что просил клиент</p>
@@ -133,8 +156,16 @@ details.tr .text{padding:0 17px 15px;font-size:13px;line-height:1.6;color:var(--
   </div>
 
   <details class="tr">
-    <summary>расшифровка целиком ({{ (r.transcript or '')|length }} символов)</summary>
-    <div class="text">{{ r.transcript or 'расшифровки нет' }}</div>
+    <summary>расшифровка ({{ (r.transcript or '')|length }} символов)</summary>
+    <div class="talk">
+      {% for кто, что in r.turns %}
+      <div class="turn {{ 'op' if кто == 'менеджер' else 'cl' }}">
+        <span class="who">{{ кто }}</span><span class="said">{{ что }}</span>
+      </div>
+      {% else %}
+      <div class="turn"><span class="said dim">расшифровки нет</span></div>
+      {% endfor %}
+    </div>
   </details>
 
   <div class="mark">

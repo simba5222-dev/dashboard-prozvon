@@ -260,6 +260,14 @@ class Settings(BaseSettings):
     yandex_folder: str | None = Field(
         default=None, description="Каталог Yandex Cloud, в котором живёт сервисный аккаунт."
     )
+    yandex_model: str = Field(
+        default="yandexgpt-lite",
+        description="Какой головой разбирать разговоры. Замер 29.09.2026 на "
+        "двенадцати разговорах: Pro, Lite и gpt-4o назвали технику одинаково "
+        "все двенадцать раз и ни разу не разошлись в том, просил ли клиент "
+        "технику. Pro при этом вшестеро дороже Lite и даёт более куцые "
+        "выжимки. Поэтому Lite.",
+    )
     yandex_assistant_id: str | None = Field(
         default=None,
         description="Ассистент Яндекса с доступом к нашей базе знаний. Им идёт "

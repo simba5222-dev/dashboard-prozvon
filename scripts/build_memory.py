@@ -134,6 +134,35 @@ def снести(headers: dict, folder: str) -> None:
             print(f"  удалено: {x.get('name') or x['id']}")
 
 
+def переключить(headers: dict, ассистент: str | None, индекс: str) -> int:
+    """Перевести ассистента на свежий индекс.
+
+    Пересборка памяти создаёт **новый** индекс, а старый удаляется. Если не
+    переключить ассистента, он останется смотреть на удалённый: поиск начнёт
+    молча возвращать пустоту, и разбор будет работать «как будто без памяти»,
+    ничем на это не жалуясь. Поэтому переключение — часть сборки, а не
+    отдельный шаг, который можно забыть.
+    """
+    if not ассистент:
+        print("ассистент не задан (DASH_YANDEX_ASSISTANT_ID) — переключать нечего")
+        return 0
+    r = httpx.patch(
+        f"https://rest-assistant.api.cloud.yandex.net/assistants/v1/assistants/{ассистент}",
+        headers=headers,
+        # Маска обновления — объект со списком путей, а не строка. Строка
+        # отвечает `cannot unmarshal string into Go value of type map` и
+        # выглядит как ошибка в теле запроса, а не в маске.
+        json={"updateMask": {"paths": ["tools"]},
+              "tools": [{"searchIndex": {"searchIndexIds": [индекс]}}]},
+        timeout=60)
+    if r.status_code != 200:
+        print(f"ассистент НЕ переключён на новый индекс: {r.status_code} {r.text[:200]}")
+        print("поиск по памяти будет молча пустым — переключите в консоли")
+        return 1
+    print(f"ассистент {ассистент} переключён на индекс {индекс}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Загрузить в облако.")
@@ -196,7 +225,7 @@ def main() -> int:
         if st.get("done"):
             иид = (st.get("response") or {}).get("id") or операция
             print(f"\nиндекс собран: {иид}")
-            return 0
+            return переключить(headers, settings.yandex_assistant_id, иид)
     print("индекс собирается дольше шести минут — проверьте в консоли")
     return 0
 

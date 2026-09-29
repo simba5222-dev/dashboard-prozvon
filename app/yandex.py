@@ -21,6 +21,8 @@ import io
 import json
 import logging
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -28,15 +30,55 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Свой учёт расхода. У OpenAI он у нас был с 18.09, у Яндекса не было — и
+# 29.09.2026 это стоило суток неведения: владелец увидел 360 ₽ в кабинете
+# раньше, чем мы узнали, за что они. Цены — из выгрузки биллинга, ₽.
+ЦЕНЫ = {
+    "deferred-general": 0.152 / 60,   # ₽ за секунду дорожки, отложенный режим
+    "general": 0.606 / 60,            # то же самое вчетверо дороже
+    "general:rc": 0.606 / 60,
+    "general:deprecated": 0.606 / 60,
+    "yandexgpt": 1.20 / 1000,         # ₽ за токен, Pro 5
+    "yandexgpt-lite": 0.20 / 1000,    # Lite 5
+}
+УЧЁТ = "yandex_usage.jsonl"
+
+
+def _записать(запись: dict) -> None:
+    """Дописать строку расхода рядом с базой. Учёт не должен ронять работу."""
+    try:
+        from app.config import get_settings
+
+        путь = Path(get_settings().db_path).parent / УЧЁТ
+        путь.parent.mkdir(parents=True, exist_ok=True)
+        with путь.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(запись, ensure_ascii=False) + "\n")
+    except (OSError, ValueError) as exc:
+        logger.debug("учёт расхода не записан: %s", exc)
+
 RATE = 16000
 STT_START = "https://stt.api.cloud.yandex.net/stt/v3/recognizeFileAsync"
 STT_RESULT = "https://stt.api.cloud.yandex.net/stt/v3/getRecognition"
 OPERATIONS = "https://operation.api.cloud.yandex.net/operations"
 ASSIST = "https://rest-assistant.api.cloud.yandex.net/assistants/v1"
 
-# Только `general`. Проверено на живом разговоре: `general:rc` потерял «не»
-# («у меня не стоит» стало «у меня стоит»), остальные дали тот же текст.
-STT_MODEL = "general"
+# `deferred-general`, и это про деньги, а не про качество.
+#
+# Текст у него тот же: 29.09.2026 прогнали одну дорожку через `general`,
+# `general:rc`, `general:deprecated` и `deferred-general` — первый, третий и
+# четвёртый дали побуквенно одинаковый результат, а `general:rc` потерял «не»
+# («у меня не стоит» стало «у меня стоит»).
+#
+# А в счёте разница вчетверо, и видно её только в детализации:
+#     `general`          → «Асинхронное распознавание»            0,606 ₽/мин
+#     `deferred-general` → «Асинхронное, отложенный режим»         0,152 ₽/мин
+# Оба идут через один и тот же `recognizeFileAsync`, поэтому по коду они
+# неразличимы: платишь вчетверо больше за тот же ответ и не узнаёшь об этом,
+# пока не откроешь выгрузку по биллингу.
+#
+# Плата за отложенность — время: результат готов не мгновенно. Для разбора
+# записей это безразлично, для живого разговора — нет.
+STT_MODEL = "deferred-general"
 
 
 def track(path: str, channel: int) -> np.ndarray:
@@ -77,6 +119,9 @@ def transcribe_track(samples: np.ndarray, *, api_key: str, folder: str,
         },
     }
     started = time.time()
+    _записать({"at": datetime.now(timezone.utc).isoformat(), "kind": "распознавание",
+               "model": STT_MODEL, "seconds": round(len(samples) / RATE, 1),
+               "rub": round(len(samples) / RATE * ЦЕНЫ.get(STT_MODEL, 0), 3)})
     try:
         response = httpx.post(STT_START, headers=headers, json=body, timeout=300)
         response.raise_for_status()
@@ -194,6 +239,13 @@ def complete(prompt: str, *, api_key: str, folder: str, model: str = "yandexgpt"
             headers={"Authorization": f"Api-Key {api_key}"}, json=body, timeout=timeout_sec)
         response.raise_for_status()
         result = response.json()["result"]
+        usage = result.get("usage") or {}
+        токенов = int(usage.get("totalTokens") or 0)
+        _записать({"at": datetime.now(timezone.utc).isoformat(), "kind": "генерация",
+                   "model": model, "tokens": токенов,
+                   "in": int(usage.get("inputTextTokens") or 0),
+                   "out": int(usage.get("completionTokens") or 0),
+                   "rub": round(токенов * ЦЕНЫ.get(model, 0), 3)})
         return str(result["alternatives"][0]["message"]["text"]).strip()
     except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
         logger.warning("модель не ответила: %s", exc)

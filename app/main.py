@@ -256,6 +256,25 @@ async def search_page(request: Request, day: str | None = None,
     return TEMPLATES.TemplateResponse("search.html", ctx)
 
 
+def split_turns(transcript: str | None) -> list[tuple[str, str]]:
+    """Расшифровку — репликами с именем стороны, а не сплошным полотном.
+
+    Распознавание отдаёт по одной строке на дорожку: `operator: …` и
+    `client: …`. Читать это подряд невозможно, а слушая запись, глазами
+    ищешь именно «кто что сказал». Поэтому строка режется на предложения
+    и показывается с подписью стороны.
+    """
+    имена = {"operator": "менеджер", "client": "клиент", "speaker": "сторона"}
+    куски: list[tuple[str, str]] = []
+    for line in (transcript or "").splitlines():
+        голова, _, тело = line.partition(":")
+        кто = имена.get(голова.strip(), голова.strip() or "сторона")
+        тело = тело.strip()
+        if тело:
+            куски.append((кто, тело))
+    return куски
+
+
 @app.get("/ads", response_class=HTMLResponse)
 async def ads(request: Request, since: str = "", until: str = "",
               verdict: str = "", min_sec: str = "") -> Any:
@@ -292,6 +311,7 @@ async def ads(request: Request, since: str = "", until: str = "",
     """, параметры)]
     for row in rows:
         row["analysis"] = parsed_analysis(row.get("analysis_json"))
+        row["turns"] = split_turns(row.get("transcript"))
 
     оценки = [r["analysis"]["quality"] for r in rows
               if (r["analysis"] or {}).get("quality") not in (None, "")]
