@@ -30,7 +30,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import analyzer  # noqa: E402
+from app import analyzer, inbound  # noqa: E402
 from app.collector import (SynergyClient, contact_orders_around,  # noqa: E402
                            load_stages, order_names)
 from app.inbound import caught_mark, lead_block_reason  # noqa: E402
@@ -226,6 +226,7 @@ def main() -> int:
                 writer.mark_call(uid, f"заявка {target} — «{after[0]['name']}»")
                 conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?",
                              (target, uid))
+                inbound._mirror_order(conn, uid, target, after[0].get("name") or "")
                 conn.commit()
                 print(f"  заявка {target}: дописана (заведена не нами — «{after[0]['name']}»)")
                 made += 1
@@ -255,6 +256,7 @@ def main() -> int:
                 writer.mark_call(uid, f"заявка {order_id} — «{settings.crm_lead_order_name}»")
                 conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?",
                              (order_id, uid))
+                inbound._mirror_order(conn, uid, order_id, settings.crm_lead_order_name)
                 conn.commit()
             made += 1
             print(f"  {row['started_at'][11:16]} {row['contact_name'] or row['client_phone']}"

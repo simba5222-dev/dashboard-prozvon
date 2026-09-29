@@ -35,7 +35,7 @@ from app.collector import (SynergyClient, contact_orders_around, find_contact,
 from app.config import Settings
 from app import prozvon
 from app.crm_write import CrmWriter, lead_comment, lead_summary, order_customs
-from app.db import save_call, save_inbound_check, save_screen, save_transcript
+from app.db import save_call, save_call_order, save_inbound_check, save_screen, save_transcript
 from app.stats import local_parts
 
 logger = logging.getLogger(__name__)
@@ -497,6 +497,7 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
         writer.mark_call(uid, f"заявка {target} — «{after[0]['name']}»")
         _remember_orders(conn, uid, after, active)
         conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?", (target, uid))
+        _mirror_order(conn, uid, target, after[0].get("name") or "")
         conn.commit()
         logger.info("звонок %s: дописана существующая заявка %s (%s)",
                     uid, target, after[0]["name"])
@@ -513,10 +514,31 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
     if order_id:
         writer.mark_call(uid, f"заявка {order_id} — «{settings.crm_lead_order_name}»")
         conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?", (order_id, uid))
+        _mirror_order(conn, uid, order_id, settings.crm_lead_order_name)
         conn.commit()
     logger.info("звонок %s: заявка %s по контакту %s", uid, order_id, contact["id"])
     return {"uid": uid, "request": True, "order": order_id, "enriched": False,
             "manager": manager["display_name"] if manager else "—"}
+
+
+def _mirror_order(conn: sqlite3.Connection, uid: str, order_id: str, name: str) -> None:
+    """Записать заявку в своё зеркало `call_orders`.
+
+    Зеркало наполняется проверкой карточек, а она ходит **только по
+    исходящим** — это её работа, там речь о прозвоне. Заявки, которые мы
+    заводим по входящим, туда не попадали вовсе: 29.09.2026 в CRM их было 34
+    с начала недели, а в нашей таблице пять. Любой отчёт, построенный на
+    `call_orders`, занижал результат в семь раз — причём в нашу же невыгоду.
+
+    Пишем прямо здесь, в момент создания: связь известна ровно тут, а
+    восстанавливать её потом приходится по контакту и времени.
+    """
+    if not (order_id and uid):
+        return
+    save_call_order(conn, order_id=str(order_id), call_uid=uid, name=name,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                    responsible="", stage_name="", stage_kind="opened",
+                    amount=None, is_demo=0)
 
 
 def caught_mark(uid: str, call: dict[str, Any] | None = None,
