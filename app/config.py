@@ -260,6 +260,12 @@ class Settings(BaseSettings):
     yandex_folder: str | None = Field(
         default=None, description="Каталог Yandex Cloud, в котором живёт сервисный аккаунт."
     )
+    yandex_assistant_id: str | None = Field(
+        default=None,
+        description="Ассистент Яндекса с доступом к нашей базе знаний. Им идёт "
+        "разбор разговоров: модель российская, память российская, за границу "
+        "не уходит ничего.",
+    )
     yandex_sa_id: str | None = Field(
         default=None, description="Сервисный аккаунт `speechkit`. Нужен для ключей к хранилищу."
     )
@@ -283,7 +289,7 @@ class Settings(BaseSettings):
     @field_validator(
         "vats_api_token", "synergy_api_token", "openai_api_key",
         "asr_analysis_token", "crm_lead_responsible",
-        "yandex_api_key", "yandex_folder", "yandex_sa_id",
+        "yandex_api_key", "yandex_folder", "yandex_sa_id", "yandex_assistant_id",
         "record_ssh_host", "record_ssh_key",
         "field_need", "field_objects", "field_objects_extra", "field_inn",
         mode="before",

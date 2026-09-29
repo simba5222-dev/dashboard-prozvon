@@ -24,10 +24,11 @@ from app import __version__
 from app.config import Settings, get_settings
 from app.db import (
     CARD_FIELDS, approve_screen, connect, dismiss_inbound, has_any_data, init_schema,
-    judge_screen,
+    judge_screen, save_ad_verdict,
 )
 from fastapi.responses import FileResponse, RedirectResponse
 
+from app.stats import _parsed_analysis as parsed_analysis  # noqa: E402
 from app.stats import (  # noqa: F401
     search_day, search_feed, search_tasks, heard_checks, heard_summary,
     call_detail,
@@ -253,6 +254,75 @@ async def search_page(request: Request, day: str | None = None,
         "who": who,
     })
     return TEMPLATES.TemplateResponse("search.html", ctx)
+
+
+@app.get("/ads", response_class=HTMLResponse)
+async def ads(request: Request, since: str = "", until: str = "",
+              verdict: str = "", min_sec: str = "") -> Any:
+    """Звонки с рекламных линий: разбор и отметки человека.
+
+    Заявку по таким звонкам CRM заводит сама, ещё до всякого разбора. Здесь
+    другое — смотрим содержание и помечаем, верно ли разобрано. Отметки и
+    есть смысл экрана: из них растёт проверочный набор, без которого смену
+    модели нельзя измерить, можно только поверить.
+    """
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    today = local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    until = as_date(until) or today
+    since = as_date(since) or (date.fromisoformat(until) - timedelta(days=6)).isoformat()
+    if since > until:
+        since, until = until, since
+    порог = as_int(min_sec) or settings.inbound_min_duration_sec
+
+    где = ["k.local_date BETWEEN ? AND ?", "k.duration_sec >= ?"]
+    параметры: list[Any] = [since, until, порог]
+    if verdict == "none":
+        где.append("COALESCE(a.verdict, '') = ''")
+    elif verdict:
+        где.append("a.verdict = ?")
+        параметры.append(verdict)
+
+    rows = [dict(r) for r in conn.execute(f"""
+        SELECT a.call_uid, a.line, a.transcript, a.analysis_json, a.verdict,
+               a.verdict_note, a.verdict_at, k.started_at, k.duration_sec, k.client_phone
+        FROM ad_calls a JOIN calls k ON k.uid = a.call_uid
+        WHERE {' AND '.join(где)}
+        ORDER BY k.started_at DESC
+    """, параметры)]
+    for row in rows:
+        row["analysis"] = parsed_analysis(row.get("analysis_json"))
+
+    оценки = [r["analysis"]["quality"] for r in rows
+              if (r["analysis"] or {}).get("quality") not in (None, "")]
+    totals = {
+        "all": len(rows),
+        "requests": sum(1 for r in rows if (r["analysis"] or {}).get("is_request")),
+        "equipment": sum(1 for r in rows if (r["analysis"] or {}).get("equipment")),
+        "avg_quality": f"{sum(оценки) / len(оценки):.1f}".replace(".", ",") if оценки else "—",
+        "right": sum(1 for r in rows if r["verdict"] == "верно"),
+        "wrong": sum(1 for r in rows if r["verdict"] == "неверно"),
+        "unmarked": sum(1 for r in rows if not r["verdict"]),
+    }
+    ctx = _base_context(request)
+    ctx.update({"rows": rows, "totals": totals, "since": since, "until": until,
+                "verdict": verdict, "min_sec": порог,
+                "back": f"{ctx['base']}/ads?since={since}&until={until}"
+                        + (f"&verdict={verdict}" if verdict else "")})
+    return TEMPLATES.TemplateResponse("ads.html", ctx)
+
+
+@app.post("/ads/mark")
+async def ads_mark(request: Request, call_uid: str = Form(...), verdict: str = Form(""),
+                   note: str = Form(""), back: str = Form("")) -> Any:
+    """Отметка человека по одному разбору. Сам разбор не трогаем."""
+    conn = request.app.state.db
+    save_ad_verdict(conn, call_uid, verdict.strip(), note.strip(),
+                    datetime.now(timezone.utc).isoformat())
+    conn.commit()
+    ctx = _base_context(request)
+    адрес = back or f"{ctx['base']}/ads"
+    return RedirectResponse(f"{адрес}#c{call_uid}", status_code=303)
 
 
 @app.get("/report", response_class=HTMLResponse)

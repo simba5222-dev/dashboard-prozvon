@@ -244,6 +244,28 @@ CREATE TABLE IF NOT EXISTS numbers (
     resolved_at TEXT
 );
 
+-- Разбор звонков с рекламных линий и отметки человека к нему.
+--
+-- Зачем отдельная таблица. Эти звонки обрабатывает боевой сервер по своему
+-- сценарию, и заявка по ним заводится ещё до всякого разбора. Здесь другое:
+-- владелец и агент смотрят разговоры вместе и помечают, верно ли разобрано.
+-- Из этих отметок вырастает проверочный набор — без него смену модели
+-- нельзя измерить, можно только поверить.
+--
+-- `verdict` заполняет человек, а не машина: «верно», «неверно», «спорно».
+-- Пустой вердикт значит «ещё не смотрели», и это не то же самое, что «плохо».
+CREATE TABLE IF NOT EXISTS ad_calls (
+    call_uid     TEXT PRIMARY KEY,
+    line         TEXT NOT NULL DEFAULT '',
+    engine       TEXT NOT NULL DEFAULT '',   -- чем распознано
+    transcript   TEXT,
+    analysis_json TEXT,
+    made_at      TEXT,
+    verdict      TEXT NOT NULL DEFAULT '',
+    verdict_note TEXT,
+    verdict_at   TEXT
+);
+
 -- НАШИ линии: номера, на которые звонят нам. ВАТС подписывает рекламные
 -- линии сама — поле `telnum_name` в истории: «Авито СПБ», «Сайт МСК»,
 -- «Виджет Реклама». Имя есть только у них; прямые номера сотрудников
@@ -576,6 +598,30 @@ def save_number(conn: sqlite3.Connection, **row: Any) -> None:
             resolved_at = excluded.resolved_at
         """,
         row,
+    )
+
+
+def save_ad_call(conn: sqlite3.Connection, **row: Any) -> None:
+    """Сохранить разбор звонка с рекламной линии. Отметку человека не трогаем."""
+    conn.execute(
+        """
+        INSERT INTO ad_calls (call_uid, line, engine, transcript, analysis_json, made_at)
+        VALUES (:call_uid, :line, :engine, :transcript, :analysis_json, :made_at)
+        ON CONFLICT (call_uid) DO UPDATE SET
+            line = excluded.line, engine = excluded.engine,
+            transcript = excluded.transcript,
+            analysis_json = excluded.analysis_json, made_at = excluded.made_at
+        """,
+        row,
+    )
+
+
+def save_ad_verdict(conn: sqlite3.Connection, call_uid: str, verdict: str,
+                    note: str, at: str) -> None:
+    """Отметка человека: верно разобрано или нет. Разбор при этом не трогаем."""
+    conn.execute(
+        "UPDATE ad_calls SET verdict = ?, verdict_note = ?, verdict_at = ? WHERE call_uid = ?",
+        (verdict, note, at, call_uid),
     )
 
 

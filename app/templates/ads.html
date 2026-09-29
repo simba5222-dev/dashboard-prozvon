@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Звонки с рекламы — разбор и отметки{% endblock %}
+
+{% block extra_style %}
+<style>
+.wrap{max-width:1180px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:3px;margin-bottom:18px}
+.tile{background:var(--surface);padding:14px 16px}
+.tile .n{font-size:25px;line-height:1.05;font-variant-numeric:tabular-nums}
+.tile .l{font-size:12px;color:var(--ink-3);margin-top:3px}
+.tile.ok .n{color:var(--ok)} .tile.bad .n{color:var(--stop)} .tile.mid .n{color:var(--warn)}
+
+.call{background:var(--surface);border:1px solid var(--line);border-radius:3px;margin-bottom:16px}
+.call.v-верно{border-left:3px solid var(--ok)}
+.call.v-неверно{border-left:3px solid var(--stop)}
+.call.v-спорно{border-left:3px solid var(--warn)}
+.call-head{padding:13px 16px;background:var(--surface-2);border-bottom:1px solid var(--line);
+  display:flex;flex-wrap:wrap;gap:7px 14px;align-items:baseline}
+.call-head h3{margin:0;font-size:16px;line-height:1.25;flex:1 1 240px}
+.call-head .meta{font-size:12px;color:var(--ink-3);font-family:ui-monospace,Menlo,monospace}
+.pill{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;
+  padding:3px 8px;border-radius:2px;font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+.pill.req{background:var(--ok-soft);color:var(--ok)}
+.pill.noreq{background:var(--sunken);color:var(--ink-3)}
+.pill.q1,.pill.q2{background:var(--stop-soft);color:var(--stop)}
+.pill.q3{background:var(--warn-soft);color:var(--warn)}
+.pill.q4,.pill.q5{background:var(--ok-soft);color:var(--ok)}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
+@media(max-width:820px){.grid{grid-template-columns:1fr}}
+.grid > div{background:var(--surface);padding:15px 17px}
+.lbl{font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3);
+  font-family:ui-monospace,Menlo,monospace;margin-bottom:7px}
+.fact{margin:0 0 7px;font-size:13.5px;line-height:1.5}
+.fact b{font-weight:600}
+.fact:last-child{margin-bottom:0}
+ul.q{list-style:none;margin:5px 0 0;padding:0;display:flex;flex-direction:column;gap:5px}
+ul.q li{font-size:13px;color:var(--ink-2);padding-left:15px;position:relative;line-height:1.45}
+ul.q li::before{position:absolute;left:0;font-weight:700}
+ul.q.asked li::before{content:"✓";color:var(--ok)}
+ul.q.missed li::before{content:"✗";color:var(--stop)}
+details.tr{border-top:1px solid var(--line)}
+details.tr summary{padding:11px 17px;cursor:pointer;font-size:12.5px;color:var(--ink-3);
+  font-family:ui-monospace,Menlo,monospace}
+details.tr .text{padding:0 17px 15px;font-size:13px;line-height:1.6;color:var(--ink-2);
+  white-space:pre-wrap;max-height:340px;overflow:auto}
+
+.mark{display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+  padding:12px 17px;border-top:1px solid var(--line);background:var(--surface-2)}
+.mark form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%}
+.mark button{font:inherit;font-size:12.5px;padding:6px 14px;border-radius:2px;cursor:pointer;
+  border:1px solid var(--line-2);background:var(--surface);color:var(--ink-2)}
+.mark button.yes{border-color:var(--ok);color:var(--ok)}
+.mark button.no{border-color:var(--stop);color:var(--stop)}
+.mark button.hm{border-color:var(--warn);color:var(--warn)}
+.mark button.on{color:var(--surface)}
+.mark button.yes.on{background:var(--ok)} .mark button.no.on{background:var(--stop)}
+.mark button.hm.on{background:var(--warn)}
+.mark input[type=text]{flex:1 1 220px;font:inherit;font-size:13px;padding:6px 10px;
+  border:1px solid var(--line-2);border-radius:2px;background:var(--surface);color:var(--ink)}
+.mark .was{font-size:11.5px;color:var(--ink-3);font-family:ui-monospace,Menlo,monospace}
+.filters{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:18px;font-size:13px}
+.filters a{text-decoration:none;color:var(--ink-2);border:1px solid var(--line);
+  background:var(--surface);padding:5px 11px;border-radius:2px}
+.filters a.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="top">
+  <h1>Звонки с рекламы</h1>
+  <span class="date">{{ since }} — {{ until }}</span>
+</div>
+<p class="crumbs">
+  <a href="{{ base }}/">← дашборд</a> ·
+  входящие на рекламные линии, дольше {{ min_sec }} с ·
+  распознано и разобрано Яндексом, память — наша база знаний ·
+  <b>отметки ставит человек</b>, из них растёт проверочный набор
+</p>
+
+<div class="tiles">
+  <div class="tile"><div class="n">{{ totals.all }}</div><div class="l">разговоров</div></div>
+  <div class="tile ok"><div class="n">{{ totals.requests }}</div><div class="l">признано запросом</div></div>
+  <div class="tile"><div class="n">{{ totals.equipment }}</div><div class="l">техника названа</div></div>
+  <div class="tile mid"><div class="n">{{ totals.avg_quality }}</div><div class="l">средняя оценка разговора</div></div>
+  <div class="tile ok"><div class="n">{{ totals.right }}</div><div class="l">помечено «верно»</div></div>
+  <div class="tile bad"><div class="n">{{ totals.wrong }}</div><div class="l">помечено «неверно»</div></div>
+  <div class="tile"><div class="n">{{ totals.unmarked }}</div><div class="l">ещё не смотрели</div></div>
+</div>
+
+<div class="filters">
+  {% for key, name in [('', 'все'), ('none', 'без отметки'), ('верно', 'верно'),
+                       ('неверно', 'неверно'), ('спорно', 'спорно')] %}
+  <a href="{{ base }}/ads?since={{ since }}&until={{ until }}{% if key %}&verdict={{ key }}{% endif %}"
+     class="{% if verdict == key %}on{% endif %}">{{ name }}</a>
+  {% endfor %}
+</div>
+
+{% if not rows %}
+<p class="dim">Под этот отбор ничего не подошло.</p>
+{% endif %}
+
+{% for r in rows %}
+{% set a = r.analysis or {} %}
+<div class="call v-{{ r.verdict }}" id="c{{ r.call_uid }}">
+  <div class="call-head">
+    <h3>{{ a.equipment or 'техника не названа' }}</h3>
+    {% if a.is_request %}<span class="pill req">запрос</span>
+    {% else %}<span class="pill noreq">не запрос</span>{% endif %}
+    {% if a.quality %}<span class="pill q{{ a.quality }}">разговор на {{ a.quality }}</span>{% endif %}
+    <span class="meta">{{ r.line }} · {{ r.started_at[:16].replace('T', ' ') }} ·
+      {{ r.duration_sec }} с · {{ r.client_phone }}</span>
+  </div>
+
+  <div class="grid">
+    <div>
+      <p class="lbl">что просил клиент</p>
+      {% if a.object %}<p class="fact"><b>Объект:</b> {{ a.object }}</p>{% endif %}
+      {% if a.when %}<p class="fact"><b>Сроки:</b> {{ a.when }}</p>{% endif %}
+      {% if a.summary %}<p class="fact">{{ a.summary }}</p>{% endif %}
+      {% if a.next_step %}<p class="fact"><b>Договорились:</b> {{ a.next_step }}</p>{% endif %}
+      {% if not (a.object or a.when or a.summary) %}<p class="fact dim">разбор пуст</p>{% endif %}
+    </div>
+    <div>
+      <p class="lbl">вопросы по учебнику</p>
+      {% if a.asked %}<ul class="q asked">{% for q in a.asked %}<li>{{ q }}</li>{% endfor %}</ul>{% endif %}
+      {% if a.missed %}<ul class="q missed">{% for q in a.missed %}<li>{{ q }}</li>{% endfor %}</ul>{% endif %}
+      {% if not (a.asked or a.missed) %}
+        <p class="fact dim">{{ a.quality_note or 'по этой технике в базе знаний вопросов нет' }}</p>
+      {% elif a.quality_note %}<p class="fact dim" style="margin-top:9px">{{ a.quality_note }}</p>{% endif %}
+    </div>
+  </div>
+
+  <details class="tr">
+    <summary>расшифровка целиком ({{ (r.transcript or '')|length }} символов)</summary>
+    <div class="text">{{ r.transcript or 'расшифровки нет' }}</div>
+  </details>
+
+  <div class="mark">
+    <form method="post" action="{{ base }}/ads/mark">
+      <input type="hidden" name="call_uid" value="{{ r.call_uid }}">
+      <input type="hidden" name="back" value="{{ back }}">
+      <button class="yes {% if r.verdict == 'верно' %}on{% endif %}" name="verdict" value="верно">Верно</button>
+      <button class="no {% if r.verdict == 'неверно' %}on{% endif %}" name="verdict" value="неверно">Неверно</button>
+      <button class="hm {% if r.verdict == 'спорно' %}on{% endif %}" name="verdict" value="спорно">Спорно</button>
+      <input type="text" name="note" value="{{ r.verdict_note or '' }}"
+             placeholder="что именно не так — эта строка важнее галочки">
+      <button type="submit" name="verdict" value="{{ r.verdict or 'спорно' }}">Сохранить</button>
+      {% if r.verdict_at %}<span class="was">отмечено {{ r.verdict_at[:16].replace('T', ' ') }}</span>{% endif %}
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}
