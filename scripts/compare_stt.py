@@ -12,11 +12,15 @@
 
     ./scripts/compare_stt.py --calls 10 --out /var/www/karta/stt-compare.html
 
-**Почему Яндекс идёт кусками.** Синхронное распознавание берёт не больше
-30 секунд за раз. Отложенный режим умеет целые файлы, но читает их из
-Object Storage, а статических ключей к бакету у нас пока нет. Поэтому
-дорожка режется на куски до 25 секунд — и режется **по тишине**, а не по
-таймеру: иначе слово разрывается пополам и пропадает у обоих кусков.
+**Яндекс идёт третьим поколением API, целой дорожкой.** 29.09.2026
+выяснилось, что `recognizeFileAsync` принимает звук **прямо в теле запроса** —
+бакет в Object Storage не нужен. Это сняло ограничение в 30 секунд, из-за
+которого первая версия этого скрипта резала дорожку на куски по тишине.
+
+**И знаки препинания у Яндекса есть.** Они приходят отдельным событием
+`finalRefinement.normalizedText`, которое первая версия скрипта не читала, —
+отсюда взялся ложный вывод, будто Яндекс отдаёт сплошной поток слов. На деле
+там заглавные буквы, запятые, числа цифрами и «НДС» капсом.
 
 **Что здесь не измеряется.** Эталона, что именно было сказано, нет, поэтому
 скрипт не считает проценты ошибок. Он кладёт три текста рядом и подсвечивает
@@ -26,6 +30,7 @@ Object Storage, а статических ключей к бакету у нас
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import io
 import json
@@ -34,6 +39,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 import wave
 from collections import Counter
 from datetime import datetime
@@ -49,12 +55,15 @@ from app.config import Settings  # noqa: E402
 logger = logging.getLogger("compare_stt")
 
 RATE = 16000
-CHUNK_MAX_SEC = 25.0        # предел синхронного распознавания — 30 с, берём с запасом
-CHUNK_MIN_SEC = 12.0        # раньше этого рубить незачем, только швов больше
-YANDEX_STT = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
-# Цена синхронного распознавания, ₽ за 15 секунд звука. Отложенное дешевле
-# (0,0381), но оно требует бакета — считаем по тому, чем реально пользуемся.
-PRICE_PER_15S = 0.0475
+YANDEX_START = "https://stt.api.cloud.yandex.net/stt/v3/recognizeFileAsync"
+YANDEX_RESULT = "https://stt.api.cloud.yandex.net/stt/v3/getRecognition"
+YANDEX_OP = "https://operation.api.cloud.yandex.net/operations"
+# Модель: только `general`. Проверено 29.09.2026 — `general:rc` на нашем же
+# разговоре потерял «не» («у меня не стоит» стало «у меня стоит»), а
+# `general:deprecated` и `deferred-general` дали побуквенно тот же текст.
+YANDEX_MODEL = "general"
+# Цена отложенного распознавания, ₽ за 15 секунд звука.
+PRICE_PER_15S = 0.0381
 ROLES = (("оператор", 0), ("клиент", 1))
 
 
@@ -83,35 +92,6 @@ def decode_track(path: Path, channel: int) -> np.ndarray:
     return np.frombuffer(out.getvalue(), dtype=np.int16)
 
 
-def split_on_silence(samples: np.ndarray) -> list[np.ndarray]:
-    """Нарезать дорожку на куски до 25 секунд, рубя в самом тихом месте.
-
-    Громкость считаем по окнам в 50 мс. В пределах от 12-й до 25-й секунды
-    ищем самое тихое окно и режем там: шов приходится на паузу между
-    словами, а не на середину слова.
-    """
-    win = RATE // 20                       # 50 мс
-    frames = len(samples) // win
-    if frames == 0:
-        return [samples]
-    trimmed = samples[: frames * win].reshape(frames, win).astype(np.float32)
-    loudness = np.sqrt((trimmed ** 2).mean(axis=1))
-
-    pieces: list[np.ndarray] = []
-    start = 0
-    step_max = int(CHUNK_MAX_SEC * 20)
-    step_min = int(CHUNK_MIN_SEC * 20)
-    while start < frames:
-        if frames - start <= step_max:
-            pieces.append(samples[start * win:])
-            break
-        window = loudness[start + step_min: start + step_max]
-        cut = start + step_min + int(np.argmin(window))
-        pieces.append(samples[start * win: cut * win])
-        start = cut
-    return [p for p in pieces if len(p) > RATE // 2]
-
-
 def to_wav(samples: np.ndarray) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as handle:
@@ -125,25 +105,74 @@ def to_wav(samples: np.ndarray) -> bytes:
 # ── распознаватели ────────────────────────────────────────────────────────
 
 def yandex_track(samples: np.ndarray, key: str, folder: str) -> tuple[str, float]:
-    """Дорожка целиком через синхронное распознавание, кусками по тишине."""
-    said: list[str] = []
-    seconds = 0.0
-    for piece in split_on_silence(samples):
-        seconds += len(piece) / RATE
-        response = httpx.post(
-            YANDEX_STT,
-            params={"folderId": folder, "lang": "ru-RU", "format": "lpcm",
-                    "sampleRateHertz": RATE, "profanityFilter": "false"},
-            headers={"Authorization": f"Api-Key {key}"},
-            content=piece.tobytes(), timeout=90.0,
-        )
-        if response.status_code != 200:
-            logger.warning("Яндекс ответил %s: %s", response.status_code, response.text[:200])
+    """Дорожка целиком через отложенное распознавание Яндекса.
+
+    Порядок важен: сначала ждём, пока операция отметится завершённой в
+    Operations API, и только потом просим текст. Спросить раньше — получить
+    404: операции ещё нет в хранилище результатов.
+
+    Берём **нормализованный** текст из `finalRefinement`, а не сырой из
+    `final`: в нормализованном есть знаки препинания, заглавные буквы и числа
+    цифрами. Сырой оставлен без внимания намеренно — читать его человеку хуже,
+    а модели он ничего не добавляет.
+    """
+    headers = {"Authorization": f"Api-Key {key}", "x-folder-id": folder}
+    body = {
+        "content": base64.b64encode(samples.tobytes()).decode(),
+        "recognitionModel": {
+            "model": YANDEX_MODEL,
+            "audioFormat": {"rawAudio": {"audioEncoding": "LINEAR16_PCM",
+                                         "sampleRateHertz": RATE, "audioChannelCount": 1}},
+            "textNormalization": {"textNormalization": "TEXT_NORMALIZATION_ENABLED",
+                                  "literatureText": True, "profanityFilter": False},
+            "audioProcessingType": "FULL_DATA",
+        },
+    }
+    seconds = len(samples) / RATE
+    started = time.time()
+    try:
+        response = httpx.post(YANDEX_START, headers=headers, json=body, timeout=300)
+        response.raise_for_status()
+        operation = response.json()["id"]
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.warning("Яндекс не принял дорожку: %s", exc)
+        return "", seconds
+
+    while time.time() - started < 900:
+        time.sleep(3)
+        try:
+            state = httpx.get(f"{YANDEX_OP}/{operation}", headers=headers, timeout=60).json()
+        except (httpx.HTTPError, ValueError):
             continue
-        text = (response.json() or {}).get("result", "").strip()
-        if text:
-            said.append(text)
-    return " ".join(said), seconds
+        if state.get("error"):
+            logger.warning("Яндекс вернул ошибку: %s", str(state["error"])[:200])
+            return "", seconds
+        if state.get("done"):
+            break
+    else:
+        logger.warning("Яндекс не ответил за 15 минут")
+        return "", seconds
+
+    try:
+        page = httpx.get(YANDEX_RESULT, headers=headers,
+                         params={"operationId": operation}, timeout=180)
+    except httpx.HTTPError as exc:
+        logger.warning("результат не забран: %s", exc)
+        return "", seconds
+
+    said: list[str] = []
+    for line in page.text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            result = (json.loads(line).get("result") or {})
+        except ValueError:
+            continue
+        refined = (result.get("finalRefinement") or {}).get("normalizedText") or {}
+        for alternative in refined.get("alternatives") or []:
+            if alternative.get("text"):
+                said.append(alternative["text"])
+    return " ".join(said).strip(), seconds
 
 
 def local_track(samples: np.ndarray, url: str, role: str) -> str:
@@ -243,6 +272,11 @@ table.cmp col.ya{width:34%}table.cmp col.wh{width:33%}table.cmp col.lo{width:33%
 .miss b{font-weight:600;font-size:12px;padding:2px 7px;border-radius:2px;background:var(--stop-soft);
  color:var(--stop);font-family:ui-monospace,Menlo,monospace}
 .note{font-size:13px;color:var(--ink-2);line-height:1.6}
+/* Поправка к прошлой версии страницы должна быть заметна: её смысл в том,
+   чтобы читавший вчера увидел, что вывод изменился. */
+.body p + p.note{margin-top:14px;padding:12px 15px;border:1px solid var(--warn);
+  background:var(--warn-soft);color:var(--warn);border-radius:3px}
+.body p.note b{color:inherit}
 .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--ink-3);margin-bottom:18px}
 .legend i{font-style:normal;padding:2px 8px;border-radius:2px}
 audio{width:100%;max-width:420px;margin-top:6px}
@@ -273,14 +307,16 @@ def render(results: list[dict], totals: dict) -> str:
 
     out.append('<div class="card"><div class="card-head"><h2>Как это читать</h2></div>'
                '<div class="body"><p class="note">'
-               'Три колонки — один и тот же кусок разговора, услышанный тремя способами. '
+               'Три колонки — один и тот же разговор, услышанный тремя способами. '
                'Эталона, что было сказано на самом деле, нет, поэтому процентов ошибок здесь нет тоже: '
                'судить глазами. Смотрите на узнаваемое — название фирмы, названия техники, города, числа. '
                'Под каждым разговором — слова, которые один распознаватель услышал, а другой пропустил.'
-               '<br><br>Яндекс отдаёт текст без знаков препинания и заглавных букв: '
-               'для чтения человеком это хуже, для разбора моделью — почти всё равно. '
-               'whisper-1 расставляет знаки и делит на реплики, но чаще путает слова.'
-               '</p></div></div>')
+               '</p><p class="note"><b>Поправка к первой версии этой страницы.</b> 28 сентября здесь '
+               'стояло, что Яндекс отдаёт текст без знаков препинания и заглавных букв. Это было неверно: '
+               'так ведёт себя только старое синхронное API, которым делался первый прогон. Знаки '
+               'препинания приходят отдельным событием, которое скрипт тогда не читал. Страница '
+               'пересобрана 29 сентября через третье поколение API — с нормализацией, целыми дорожками '
+               'и моделью <code>general</code>.</p></div></div>')
 
     for item in results:
         out.append('<div class="card"><div class="card-head">')
