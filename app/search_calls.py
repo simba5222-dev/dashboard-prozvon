@@ -225,8 +225,13 @@ def check_call(conn: sqlite3.Connection, settings: Settings, uid: str, path: Pat
     call = dict(row)
 
     if not text:
-        # Разговоры здесь короткие, и местная модель на них рассыпается.
-        # Подробности и цена — в `app/voice.py` и в настройке.
+        # Распознаём тем же сервисом, что и всё остальное. До 29.09.2026 здесь
+        # стоял отдельный путь через whisper-1: местная модель на коротких
+        # разговорах подборщика рассыпалась, и ради качества звук уходил в
+        # OpenAI — единственное место, где он покидал наши серверы. Теперь
+        # сервис ходит в Яндекс, который на названиях техники точнее обоих,
+        # и отдельный путь стал лишним. Настройка `search_voice_model`
+        # оставлена: если понадобится вернуть whisper-1, она всё ещё работает.
         if settings.search_voice_model and settings.analysis_configured:
             turns = voice.transcribe(path, api_key=settings.openai_api_key,
                                      model=settings.search_voice_model)

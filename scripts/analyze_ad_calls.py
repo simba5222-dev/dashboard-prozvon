@@ -5,8 +5,14 @@
 технику. Заявку по ним CRM заводит сама, ещё до разбора; здесь мы смотрим на
 **содержание** — что именно просили, что менеджер выяснил и чего не выяснил.
 
-Распознаёт SpeechKit, разбирает YandexGPT Lite. Всё внутри России, за
-границу не уходит ничего.
+**Расшифровку берём готовую из CRM, а не делаем заново.** Боевой сервер
+распознаёт эти же звонки своим путём и кладёт текст в поле «Транскрибация»
+(`custom-30604`) карточки звонка. До 29.09.2026 мы распознавали их второй раз
+и платили за это дважды — при том что оба раза получался один и тот же
+разговор. Если в CRM текста нет, распознаём сами: ключ `--fresh` заставляет
+делать это всегда.
+
+Разбирает YandexGPT Lite. Всё внутри России, за границу не уходит ничего.
 
     ./scripts/analyze_ad_calls.py --since 2026-09-22 --until 2026-09-28
     ./scripts/analyze_ad_calls.py --since … --until … --apply
@@ -24,13 +30,17 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import httpx  # noqa: E402
+
 from app import knowledge, yandex  # noqa: E402
+from app.collector import SynergyClient  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.db import connect, init_schema, save_ad_call  # noqa: E402
 
@@ -68,6 +78,32 @@ logger = logging.getLogger("ad_calls")
 не должно. Не прозвучало — пустая строка."""
 
 
+ПОЛЕ_ТРАНСКРИПТА = "custom-30604"   # «Транскрибация» в карточке звонка
+
+
+def из_crm(client: SynergyClient, uid: str) -> str:
+    """Готовая расшифровка звонка из CRM, если она там есть.
+
+    Ключ звонка у нас двух видов: цифровой — это номер строки Synergy, и её
+    можно спросить напрямую; буквенный — код ВАТС, по нему строка не ищется.
+    Второй случай встречается у звонков, пришедших вебхуком, и для них
+    расшифровку придётся делать самим.
+    """
+    if not uid.isdigit():
+        return ""
+    try:
+        данные = client.get(f"telephony-calls/{uid}")
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("  расшифровка из CRM не прочитана: %s", str(exc)[:120])
+        return ""
+    customs = (((данные.get("data") or {}).get("attributes") or {}).get("customs") or {})
+    текст = str(customs.get(ПОЛЕ_ТРАНСКРИПТА) or "")
+    # В CRM текст лежит размеченным под HTML — переводы строк там тегами.
+    текст = re.sub(r"<br\s*/?>", "\n", текст)
+    текст = re.sub(r"<[^>]+>", "", текст)
+    return текст.strip()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--since", required=True)
@@ -77,6 +113,8 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Записать разбор в базу.")
     parser.add_argument("--redo", action="store_true", help="Переразобрать уже разобранные.")
     parser.add_argument("--uid", default="", help="Только эти звонки, через запятую.")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Распознавать самим, не беря готовое из CRM.")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -85,6 +123,9 @@ def main() -> int:
         print("нет ключа Яндекса")
         return 1
 
+    client = SynergyClient(
+        base_url=settings.synergy_url, token=settings.synergy_api_token,
+        min_interval_sec=settings.synergy_min_interval_sec, retries=settings.synergy_retries)
     conn = connect(settings.db_path)
     init_schema(conn)
     rows = conn.execute("""
@@ -129,8 +170,14 @@ def main() -> int:
     for индекс, (r, путь) in enumerate(дела, 1):
         logger.info("[%s/%s] %s · %s · %s с", индекс, len(дела),
                     r["uid"], r["line"], r["duration_sec"])
-        текст = yandex.transcribe_dialog(str(путь), api_key=settings.yandex_api_key,
-                                         folder=settings.yandex_folder)
+        текст = "" if args.fresh else из_crm(client, r["uid"])
+        откуда = "CRM"
+        if not текст.strip():
+            откуда = "распознали сами"
+            текст = yandex.transcribe_dialog(str(путь), api_key=settings.yandex_api_key,
+                                             folder=settings.yandex_folder)
+        else:
+            logger.info("  расшифровка взята из CRM, %s символов", len(текст))
         if not текст.strip():
             logger.warning("  расшифровка пустая, пропускаем")
             пусто += 1
@@ -151,7 +198,7 @@ def main() -> int:
         разбор = yandex.parse_json(ответ)
         if разбор is None:
             logger.warning("  разбор не разобрался: %s", (ответ or "")[:120])
-        save_ad_call(conn, call_uid=r["uid"], line=r["line"], engine="yandex",
+        save_ad_call(conn, call_uid=r["uid"], line=r["line"], engine=откуда,
                      transcript=текст,
                      analysis_json=json.dumps(разбор, ensure_ascii=False) if разбор else None,
                      made_at=datetime.now(timezone.utc).isoformat())
