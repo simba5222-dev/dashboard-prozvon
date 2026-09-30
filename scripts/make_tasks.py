@@ -10,6 +10,11 @@
 перезвонить такого-то числа, отправить КП, — ставим ему задачу. Но **только
 если заявка открыта**: по закрытой и по проваленной задач не ставим.
 
+Задача ставится на **ответственного за заявку**, а не на того, кто говорил с
+клиентом: заявку может вести уже другой человек, и у звонившего не будет
+полномочий её двигать. Решение владельца от 30.09.2026, тогда же выбран тип
+задачи — 5305 «Теплые».
+
 Откуда берётся шаг: разбор живой заявки (`analyze_orders.py --open`) слышит в
 разговоре договорённость и кладёт её в `order_reports.next_step`. Здесь мы
 только превращаем её в строку CRM.
@@ -17,10 +22,21 @@
 Задача — строка в CRM, и повторять её создание вслепую нельзя. Поэтому:
 
 - по заявке, где задача уже стоит (`task_at` заполнен), второй раз не ходим;
-- след пишем и в сухом прогоне, но помечаем его как сухой, чтобы первый
-  боевой запуск не завёл разом задачи по всем заявкам за месяц;
 - перед записью заново спрашиваем CRM про стадию заявки: пока мы считали,
-  менеджер мог закрыть её сам.
+  менеджер мог закрыть её сам;
+- договорённости старше `--max-age-days` пропускаем. Иначе первый боевой
+  запуск вывалит менеджеру два десятка задач о разговорах трёхнедельной
+  давности, и он закроет их все не глядя.
+
+Сухой прогон следа не оставляет: его можно гонять сколько угодно.
+
+ВНИМАНИЕ, 30.09.2026: боевой режим пока не работает. `POST /diaries`
+отвечает 500 на любое тело — от самого короткого до полного, с заявкой,
+типом и ответственным. Проверка полей у Synergy при этом работает: на
+недопустимый `status` приходит осмысленный 400. Значит, падает уже
+обработчик, а не разбор запроса. Письмо в поддержку —
+`docs/письмо-synergy-diaries.txt`. Сухой прогон показывает, какие задачи
+встанут, как только ответят.
 """
 
 from __future__ import annotations
@@ -57,8 +73,9 @@ logger = logging.getLogger("tasks")
 def pick(conn, args) -> list[dict]:
     """Живые заявки с договорённостью, по которым задача ещё не ставилась."""
     where = ["r.kind = 'live'", "r.next_step IS NOT NULL", "r.next_step <> ''",
-             "r.task_at IS NULL", "o.stage_kind NOT IN ('won', 'lost')"]
-    params: list = []
+             "r.task_at IS NULL", "o.stage_kind NOT IN ('won', 'lost')",
+             "r.created_at >= ?"]
+    params: list = [(date.today() - timedelta(days=args.max_age_days)).isoformat()]
     if args.order:
         where.append("o.order_id = ?")
         params.append(args.order)
@@ -128,6 +145,8 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=30, help="за сколько последних дней")
     ap.add_argument("--order", help="только одна заявка")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--max-age-days", type=int, default=7,
+                    help="насколько свежей должна быть договорённость")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -149,7 +168,7 @@ def main() -> int:
     print(f"договорённостей к постановке: {len(rows)}"
           + ("" if args.apply else " — сухой прогон, в CRM ничего не уйдёт"))
 
-    поставлено = пропущено = 0
+    поставлено = пропущено = не_завелось = 0
     for row in rows:
         order_id = row["order_id"]
         verdict = json.loads(row["verdict_json"] or "{}")
@@ -157,10 +176,11 @@ def main() -> int:
 
         if not still_open(client, order_id):
             print(f"  {order_id} «{row['name']}»: заявка уже закрыта — задачу не ставим")
-            save_order_task(conn, order_id, task_id=None,
-                            task_at=datetime.now(timezone.utc).isoformat(),
-                            note="заявка закрылась до постановки")
-            conn.commit()
+            if not writer.dry_run:
+                save_order_task(conn, order_id, task_id=None,
+                                task_at=datetime.now(timezone.utc).isoformat(),
+                                note="заявка закрылась до постановки")
+                conn.commit()
             пропущено += 1
             continue
 
@@ -185,19 +205,35 @@ def main() -> int:
             order_id=order_id, name=name, due_at=срок, responsible_id=responsible,
             type_id=settings.crm_task_type, description=описание,
         )
+        if writer.dry_run:
+            поставлено += 1
+            print(f"  {order_id} «{row['name']}»: {name} — на {срок[:10]}, "
+                  f"{row['responsible'] or 'ответственный ' + responsible}")
+            continue
+
+        # Задача не завелась — след всё равно пишем. Ответ «не получилось» от
+        # POST, создающего строку, означает «неизвестно», а не «нет»: строка
+        # могла и появиться. Разбираться с такими надо глазами, а не повторным
+        # запуском вслепую — он заведёт вторую.
         save_order_task(
             conn, order_id, task_id=task_id,
             task_at=datetime.now(timezone.utc).isoformat(),
-            note="сухой прогон" if writer.dry_run else "",
+            note="" if task_id else "CRM не приняла задачу — проверить руками",
         )
         conn.commit()
-        поставлено += 1
-        print(f"  {order_id} «{row['name']}»: {name} — на {срок[:10]}, "
-              f"{row['responsible'] or 'ответственный ' + responsible}")
+        if task_id:
+            поставлено += 1
+            print(f"  {order_id} «{row['name']}»: {name} — на {срок[:10]}, "
+                  f"{row['responsible'] or 'ответственный ' + responsible}, задача №{task_id}")
+        else:
+            не_завелось += 1
+            print(f"  {order_id} «{row['name']}»: CRM не приняла задачу — "
+                  f"проверьте руками, не появилась ли она всё же")
 
     conn.close()
     print(f"задач поставлено: {поставлено}"
-          + (f", пропущено: {пропущено}" if пропущено else ""))
+          + (f", пропущено: {пропущено}" if пропущено else "")
+          + (f", CRM не приняла: {не_завелось}" if не_завелось else ""))
     return 0
 
 
