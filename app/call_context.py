@@ -42,8 +42,12 @@ from typing import Any
 # тот же разговор, а не новое обращение.
 CALLBACK_WINDOW_HOURS = 24
 
-LEFT_ROLE = "operator"
-RIGHT_ROLE = "client"
+# Как подписаны дорожки в расшифровке. С 30.09.2026 — словами владельца:
+# «обязательно проставляем при транскрибации роли: менеджер и клиент».
+# До этого стояли «operator» и «client», и разбор читал «operator» как
+# оператора связи, а не как нашего сотрудника.
+LEFT_ROLE = "менеджер"
+RIGHT_ROLE = "клиент"
 
 
 def digits(value: object) -> str:
@@ -202,6 +206,11 @@ def _line_kind(conn: sqlite3.Connection, diversion: str, direction: str) -> tupl
     return (вид or "неизвестная"), str(row["name"] or "")
 
 
+# Вид линии хранится в справочнике в именительном падеже, а во фразу нужен
+# винительный: «на рекламную линию», а не «на рекламная линию».
+ВИД_ЛИНИИ = {"рекламная": "рекламную", "прямой": "прямую", "общая": "общую"}
+
+
 def _pick_scenario(ctx: CallContext) -> str:
     if ctx.direction == "in":
         if ctx.line == "рекламная":
@@ -256,13 +265,15 @@ def build(conn: sqlite3.Connection, call: dict[str, Any] | sqlite3.Row) -> CallC
 
 def describe(ctx: CallContext) -> str:
     """Блок для задания модели: факты, роли дорожек и что из них следует."""
-    кто = ("Левая дорожка (operator) — наш менеджер, правая (client) — собеседник. "
-           "Это известно из устройства записи, определять по содержанию не нужно.")
+    кто = (f"Левая дорожка ({LEFT_ROLE}) — наш сотрудник, правая ({RIGHT_ROLE}) — "
+           "собеседник. Это известно из устройства записи, определять по "
+           "содержанию не нужно и нельзя.")
     строки = [
         кто,
         "",
         f"Направление: {'входящий' if ctx.direction == 'in' else 'исходящий'}"
-        + (f", на {ctx.line} линию" if ctx.direction == "in" and ctx.line != "неизвестная" else "")
+        + (f", на {ВИД_ЛИНИИ.get(ctx.line, ctx.line)} линию"
+           if ctx.direction == "in" and ctx.line != "неизвестная" else "")
         + (f" «{ctx.line_name}»" if ctx.line_name else ""),
     ]
     if ctx.manager:

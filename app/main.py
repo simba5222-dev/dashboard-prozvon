@@ -154,6 +154,44 @@ async def inbound_call(
     return {"accepted": meta.get("uid")}
 
 
+@app.post("/api/call-context")
+async def call_context_api(request: Request) -> Any:
+    """Повод звонка по метаданным — для тех, у кого нет нашей базы.
+
+    Правила «кто кому звонил и что из этого следует» живут в одном месте —
+    `app/call_context.py`. Российскому серверу они нужны для разбора звонков
+    с рекламных линий, но справочников линий, номеров и менеджеров у него
+    нет: они собираются здесь. Поэтому он спрашивает готовый блок, а не
+    заводит вторую копию правил — две копии разъезжаются молча.
+
+    Ключ тот же, что у приёмника звонков: стучится тот же сервер.
+    """
+    settings: Settings = request.app.state.settings
+    expected = settings.inbound_hook_token
+    if not expected:
+        return JSONResponse({"error": "приёмник выключен"}, status_code=503)
+    if request.headers.get("X-Vats-Token", "") != expected:
+        logger.warning("контекст звонка: неверный ключ")
+        return JSONResponse({"error": "неверный ключ"}, status_code=403)
+
+    call = await request.json()
+    if not isinstance(call, dict):
+        return JSONResponse({"error": "ожидается объект"}, status_code=400)
+
+    from app import call_context
+
+    conn = request.app.state.db
+    ctx = call_context.build(conn, {
+        "client_phone": call.get("client_phone") or call.get("phone") or "",
+        "direction": call.get("direction") or ("in" if call.get("type") == "in" else "out"),
+        "diversion": call.get("diversion") or "",
+        "vats_login": call.get("vats_login") or call.get("user") or "",
+        "started_at": call.get("started_at") or call.get("start") or "",
+    })
+    return {"context": call_context.describe(ctx), "scenario": ctx.scenario,
+            "facts": ctx.as_dict()}
+
+
 def _handle_inbound(app_ref: FastAPI, meta: dict[str, Any], audio: bytes) -> None:
     """Фоновая обработка звонка: своё соединение с базой, свои ошибки."""
     from app import inbound
