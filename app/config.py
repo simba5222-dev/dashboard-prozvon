@@ -260,6 +260,16 @@ class Settings(BaseSettings):
     crm_lead_stage: str = Field(
         default="Новый", description="Стадия, в которую кладём пойманную заявку."
     )
+    crm_task_type: str = Field(
+        default="5304",
+        description="Тип задачи в CRM для поручений по заявке. 5304 — «Текущая "
+        "заявка», 5305 — «Теплые»; других в Synergy не заведено.",
+    )
+    crm_task_hour: int = Field(
+        default=10,
+        description="На какой час ставить срок задачи, если в разговоре назвали "
+        "только день.",
+    )
 
     yandex_api_key: str | None = Field(
         default=None,

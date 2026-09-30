@@ -378,6 +378,21 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("transport_cards", "call_link", "TEXT"),
     ("screens", "verdict", "TEXT NOT NULL DEFAULT ''"),
     ("screens", "verdict_at", "TEXT"),
+    # Разбор заявок спрашивает разное у проваленных и у живых: у первых —
+    # «где сорвалось», у вторых — «где сейчас и нужна ли помощь». Держим
+    # ответы в общей таблице, но помечаем, какой вопрос задавали.
+    ("order_reports", "kind", "TEXT NOT NULL DEFAULT ''"),
+    ("order_reports", "stage_now", "TEXT"),
+    ("order_reports", "next_step", "TEXT"),
+    ("order_reports", "next_step_due", "TEXT"),
+    ("order_reports", "needs_rop", "INTEGER NOT NULL DEFAULT 0"),
+    ("order_reports", "rop_reason", "TEXT"),
+    # След созданной задачи. Задача — строка в CRM, и повторять её создание
+    # вслепую нельзя: заведётся вторая. Здесь видно, что по этой заявке уже
+    # поставлено и когда.
+    ("order_reports", "task_id", "TEXT"),
+    ("order_reports", "task_at", "TEXT"),
+    ("order_reports", "task_note", "TEXT"),
 )
 
 
@@ -753,15 +768,40 @@ def save_screen(conn: sqlite3.Connection, **row: Any) -> None:
 def save_order_report(conn: sqlite3.Connection, **row: Any) -> None:
     conn.execute(
         """
-        INSERT INTO order_reports (order_id, contact_id, calls_count, verdict_json, created_at)
-        VALUES (:order_id, :contact_id, :calls_count, :verdict_json, :created_at)
+        INSERT INTO order_reports (
+            order_id, contact_id, calls_count, verdict_json, created_at,
+            kind, stage_now, next_step, next_step_due, needs_rop, rop_reason
+        ) VALUES (
+            :order_id, :contact_id, :calls_count, :verdict_json, :created_at,
+            :kind, :stage_now, :next_step, :next_step_due, :needs_rop, :rop_reason
+        )
         ON CONFLICT (order_id) DO UPDATE SET
-            contact_id   = excluded.contact_id,
-            calls_count  = excluded.calls_count,
-            verdict_json = excluded.verdict_json,
-            created_at   = excluded.created_at
+            contact_id    = excluded.contact_id,
+            calls_count   = excluded.calls_count,
+            verdict_json  = excluded.verdict_json,
+            created_at    = excluded.created_at,
+            kind          = excluded.kind,
+            stage_now     = excluded.stage_now,
+            next_step     = excluded.next_step,
+            next_step_due = excluded.next_step_due,
+            needs_rop     = excluded.needs_rop,
+            rop_reason    = excluded.rop_reason
         """,
-        row,
+        {"kind": "", "stage_now": None, "next_step": None, "next_step_due": None,
+         "needs_rop": 0, "rop_reason": None, **row},
+    )
+
+
+def save_order_task(conn: sqlite3.Connection, order_id: str, *,
+                    task_id: str | None, task_at: str, note: str = "") -> None:
+    """Отметить, что по заявке поставлена задача менеджеру.
+
+    Пишем след даже в сухом прогоне (`task_id` пустой): иначе при первом же
+    боевом запуске скрипт заведёт задачи по всем заявкам разом.
+    """
+    conn.execute(
+        "UPDATE order_reports SET task_id = ?, task_at = ?, task_note = ? WHERE order_id = ?",
+        (task_id, task_at, note, order_id),
     )
 
 

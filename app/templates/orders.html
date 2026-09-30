@@ -21,6 +21,9 @@
   border-radius:2px;background:var(--surface);color:var(--ink)}
 .filt-line button{font:inherit;font-size:12px;padding:4px 12px;border:1px solid var(--accent);
   background:var(--accent);color:#fff;border-radius:2px;cursor:pointer}
+.rop{color:var(--stop);font-weight:600;margin-bottom:3px}
+.step{margin-bottom:3px}
+.done{font-size:11px;color:var(--ok);margin-left:6px}
 </style>
 {% endblock %}
 
@@ -31,15 +34,21 @@
 </div>
 <p class="crumbs">
   <a href="{{ base }}/">← дашборд</a> ·
-  заявки, заведённые по звонкам прозвона · ведёт их уже другой человек,
-  поэтому «почему не дошла до сделки» считается по его разговорам с клиентом
+  заявки, заведённые по звонкам — и прозвона, и входящим · ведёт их другой человек,
+  поэтому всё считается по его разговорам с клиентом ·
+  у проваленных — где сорвалось и почему, у живых — где они сейчас,
+  о чём договорились и надо ли вмешаться руководителю
 </p>
 
 <div class="card">
   <div class="tiles">
-    <div class="tile"><div class="n">{{ orders|length }}</div><div class="l">заявок за период</div></div>
+    <div class="tile"><div class="n">{{ total }}</div><div class="l">заявок за период</div></div>
     <div class="tile {% if won %}good{% endif %}"><div class="n">{{ won }}</div><div class="l">дошло до сделки</div></div>
     <div class="tile {% if lost %}bad{% endif %}"><div class="n">{{ lost }}</div><div class="l">провалено</div></div>
+    <div class="tile {% if rop %}bad{% endif %}">
+      <div class="n"><a href="{{ base }}/orders?since={{ since }}&until={{ until }}&kind=rop"
+        style="color:inherit">{{ rop }}</a></div>
+      <div class="l">нужна помощь руководителя</div></div>
     <div class="tile"><div class="n">{{ analyzed }}</div><div class="l">разобрано по звонкам</div></div>
   </div>
 </div>
@@ -51,6 +60,7 @@
       <a class="{{ 'on' if not kind }}" href="{{ base }}/orders?since={{ since }}&until={{ until }}">все</a>
       <a class="{{ 'on' if kind == 'lost' }}" href="{{ base }}/orders?since={{ since }}&until={{ until }}&kind=lost">провалены</a>
       <a class="{{ 'on' if kind == 'open' }}" href="{{ base }}/orders?since={{ since }}&until={{ until }}&kind=open">в работе</a>
+      <a class="{{ 'on' if kind == 'rop' }}" href="{{ base }}/orders?since={{ since }}&until={{ until }}&kind=rop">нужна помощь</a>
       <a class="{{ 'on' if kind == 'won' }}" href="{{ base }}/orders?since={{ since }}&until={{ until }}&kind=won">сделки</a>
     </span>
   </div>
@@ -67,21 +77,41 @@
     <table class="ord-t">
       <tr>
         <th>Заведена</th>
+        <th>Откуда</th>
         <th>Заявка</th>
         <th>Клиент</th>
         <th>Ответственный</th>
         <th>Стадия</th>
-        <th class="why">Почему не дошла до сделки</th>
+        <th>Этап по звонкам</th>
+        <th class="why">Что происходит</th>
       </tr>
       {% for o in orders %}
       <tr>
         <td class="mono" style="white-space:nowrap">{{ (o.created_at or "")[:10] }}</td>
+        <td class="dim" style="white-space:nowrap">{% if o.in_group %}прозвон
+          {% elif o.direction == "in" %}входящий{% else %}исходящий{% endif %}</td>
         <td><a href="{{ base }}/order/{{ o.order_id }}">{{ o.name or "без названия" }}</a></td>
         <td>{{ o.contact_name or "—" }}{% if o.company_name %}<br><span class="dim">{{ o.company_name }}</span>{% endif %}</td>
         <td>{{ o.responsible or "не назначен" }}</td>
         <td><span class="st {{ o.stage_kind }}">{{ o.stage_name or "без стадии" }}</span></td>
+        <td class="dim" style="white-space:nowrap">{{ o.stage_now or "—" }}</td>
         <td class="why">
-          {% if o.verdict and o.verdict.outcome %}{{ o.verdict.outcome }}
+          {% if o.needs_rop %}
+            <div class="rop">РОП: {{ o.rop_reason }}</div>
+          {% endif %}
+          {% if o.report_kind == "live" %}
+            {% if o.next_step %}
+              <div class="step">Договорились: {{ o.next_step }}{% if o.next_step_due %}
+                <span class="dim">({{ o.next_step_due }})</span>{% endif %}
+                {% if o.task_id %}<span class="done">задача стоит</span>{% endif %}</div>
+            {% elif not o.needs_rop %}
+              <span class="dim">договорённости нет</span>
+            {% endif %}
+            {% if o.verdict and o.verdict.client_position %}
+              <div class="dim">{{ o.verdict.client_position }}</div>
+            {% endif %}
+            <a href="{{ base }}/order/{{ o.order_id }}" class="dim">разбор →</a>
+          {% elif o.verdict and o.verdict.outcome %}{{ o.verdict.outcome }}
             <a href="{{ base }}/order/{{ o.order_id }}" class="dim">разбор →</a>
           {% elif o.stage_kind == "won" %}<span class="dim">дошла</span>
           {% else %}<span class="dim">не разобрана</span>{% endif %}

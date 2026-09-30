@@ -30,7 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.config import get_settings  # noqa: E402
 from app.db import connect  # noqa: E402
 
-TIMERS = ("dashboard-collect", "dashboard-records", "dashboard-leads")
+TIMERS = ("dashboard-collect", "dashboard-records", "dashboard-leads",
+          "dashboard-order-analysis")
 
 # Слова, по которым в логах видно обрыв. «locked» отдельно: эта ошибка
 # выглядит безобидной строкой в конце файла, а означает потерянный день.
@@ -152,6 +153,38 @@ def check_pipeline(conn, rep: Report, day: str, threshold: int, records: Path) -
     return stats
 
 
+def check_orders(conn, rep: Report) -> None:
+    """Разбор заявок: считается ли он и не копятся ли договорённости без задач.
+
+    Сторож ровно для трёх правил владельца: проваленные разобраны, живые
+    подсвечены для руководителя, договорённости превращаются в задачи. Без
+    этой проверки разбор может молча перестать считаться, и никто не узнает.
+    """
+    живых = conn.execute(
+        "SELECT COUNT(DISTINCT order_id) FROM call_orders "
+        "WHERE stage_kind NOT IN ('won', 'lost')"
+    ).fetchone()[0]
+    свежих = conn.execute(
+        "SELECT COUNT(*) FROM order_reports WHERE kind = 'live' "
+        "AND created_at > datetime('now', '-2 days')"
+    ).fetchone()[0]
+    роп = conn.execute(
+        "SELECT COUNT(*) FROM order_reports WHERE needs_rop = 1"
+    ).fetchone()[0]
+    ждут = conn.execute(
+        "SELECT COUNT(*) FROM order_reports r JOIN call_orders o ON o.order_id = r.order_id "
+        "WHERE r.next_step IS NOT NULL AND r.next_step <> '' AND r.task_at IS NULL "
+        "AND o.stage_kind NOT IN ('won', 'lost')"
+    ).fetchone()[0]
+    rep.fact(f"заявки: живых {живых}, разобрано за двое суток {свежих}, "
+             f"подсвечено руководителю {роп}")
+    if живых and not свежих:
+        rep.problem(f"разбор заявок не считался двое суток, а живых заявок {живых}")
+    if ждут:
+        rep.fact(f"договорённостей с клиентом без задачи менеджеру: {ждут} "
+                 f"(ставит scripts/make_tasks.py --apply)")
+
+
 def check_logs(rep: Report, log_dir: Path, hours: int = 26) -> None:
     """Обрывы в логах за последние сутки."""
     cutoff = datetime.now().timestamp() - hours * 3600
@@ -256,6 +289,7 @@ def main() -> int:
 
     check_timers(rep)
     stats = check_pipeline(conn, rep, day, args.min_sec, records)
+    check_orders(conn, rep)
     check_logs(rep, db_path.parent)
     check_running(rep)
     check_asr(rep, settings.asr_url)

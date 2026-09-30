@@ -1,10 +1,23 @@
 #!/usr/bin/env python
-"""Разобрать заявки: почему переданная заявка не дошла до сделки.
+"""Разобрать заявки по разговорам с клиентом.
 
     sudo -u claude .venv/bin/python scripts/analyze_orders.py --order 732823
     ... --lost --days 30          все проваленные заявки за месяц
     ... --open                    и те, что висят в работе
+    ... --lost --open             и те, и другие — так ходит таймер
     ... --collect-only            только собрать звонки, без разбора
+    ... --refresh-hours 20        как часто освежать разбор живых заявок
+
+У проваленной заявки и у живой спрашивают разное, и это два разных разбора:
+
+- **провалена** — на каком этапе сорвалось и почему, можно ли вернуть клиента;
+- **в работе** — где заявка сейчас, что говорит клиент, о чём менеджер
+  договорился дальше и нужно ли вмешательство руководителя. Договорённость
+  отсюда забирает `make_tasks.py` и ставит менеджеру задачу в CRM.
+
+Проваленную разбираем один раз: её судьба решена. Живую освежаем, но **только
+если с клиентом с тех пор разговаривали** — иначе модель ответит то же самое,
+а деньги спишутся.
 
 Менеджер прозвона заводит заявку и передаёт её ответственному. Дальше клиенту
 звонит уже он — а его звонки дашборд не собирает, он следит за прозвоном.
@@ -28,6 +41,8 @@ import logging
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -92,6 +107,42 @@ def calls_with_client(conn, phones: set[str], after_iso: str) -> list[dict]:
     return out
 
 
+def order_contact(client: SynergyClient, order_id: str) -> str | None:
+    """Контакт заявки — из самой заявки.
+
+    След проверки карточки (`card_checks`) есть только у заявок, заведённых
+    разбором звонка: таких 37 из 170. У остальных заявку завёл человек, и
+    единственный способ узнать клиента — спросить CRM. Без этого разбор
+    молча проходит мимо четырёх заявок из пяти.
+    """
+    # `include` обязателен: без него Synergy отдаёт заявку со всеми связями,
+    # но с пустым `data` в каждой — молча, без ошибки.
+    try:
+        data = client.get(f"orders/{order_id}", include="contact")
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("заявка %s не прочиталась: %s", order_id, exc)
+        return None
+    rels = ((data or {}).get("data") or {}).get("relationships") or {}
+    ref = (rels.get("contact") or {}).get("data")
+    return str(ref["id"]) if ref else None
+
+
+def silence_days(calls: list[dict]) -> int | None:
+    """Сколько дней прошло с последнего разговора с клиентом.
+
+    Считаем сами, а не спрашиваем модель: даты у нас точные, а она из
+    расшифровки срок не выведет.
+    """
+    stamps = [c["started_at"] for c in calls if c.get("started_at")]
+    if not stamps:
+        return None
+    last = max(stamps)[:10]
+    try:
+        return (date.today() - date.fromisoformat(last)).days
+    except ValueError:
+        return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Разбор заявок: почему не дошли до сделки.")
     ap.add_argument("--order", help="идентификатор одной заявки")
@@ -103,6 +154,8 @@ def main() -> int:
     ap.add_argument("--collect-only", action="store_true",
                     help="только собрать звонки клиентов, без обращения к модели")
     ap.add_argument("--redo", action="store_true", help="переразобрать уже разобранные")
+    ap.add_argument("--refresh-hours", type=float, default=20.0,
+                    help="через сколько часов освежать разбор живых заявок")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -128,17 +181,33 @@ def main() -> int:
     # Компания делает около 1300 звонков в день: листать их заново под каждую
     # заявку — час работы и лишняя нагрузка на CRM.
     plan: list[tuple[dict, str, set[str]]] = []
+    # Когда живую заявку уже разбирали. Если с тех пор с клиентом не
+    # разговаривали, разбирать заново нечего: модель ответит то же самое, а
+    # деньги спишутся. Тридцать живых заявок в день — это 750 ₽ в месяц на
+    # пустом месте.
+    разбирали: dict[str, str] = {}
     for order in orders:
         order_id = order["order_id"]
-        if not args.redo and conn.execute(
-            "SELECT 1 FROM order_reports WHERE order_id = ? AND verdict_json IS NOT NULL",
+        # Проваленную заявку разбираем один раз: её судьба уже решена. Живая
+        # меняется каждый день — её вердикт протухает, и руководитель увидит
+        # вчерашнюю картину. Поэтому живые переразбираем, если прошли сутки.
+        was = conn.execute(
+            "SELECT created_at FROM order_reports "
+            "WHERE order_id = ? AND verdict_json IS NOT NULL",
             (order_id,),
-        ).fetchone():
-            continue
+        ).fetchone()
+        if was and not args.redo:
+            if order.get("stage_kind") in ("lost", "won"):
+                continue
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(was["created_at"])).total_seconds()
+            if age < args.refresh_hours * 3600:
+                continue
+            разбирали[order_id] = was["created_at"]
         check = conn.execute(
             "SELECT contact_id FROM card_checks WHERE call_uid = ?", (order["call_uid"],)
         ).fetchone()
-        contact_id = check["contact_id"] if check else None
+        contact_id = (check["contact_id"] if check else None) or order_contact(client, order_id)
         if not contact_id:
             logger.warning("заявка %s: контакт неизвестен", order_id)
             continue
@@ -174,26 +243,61 @@ def main() -> int:
             skipped += 1
             continue
 
+        # Проваленную заявку и живую спрашиваем о разном. У первой — где
+        # сорвалось и почему, у второй — где она сейчас, о чём договорились
+        # и надо ли звать руководителя.
+        live = order.get("stage_kind") not in ("lost", "won")
+
+        # Разбор освежаем только при новом разговоре. Пустой прогон стоит
+        # столько же, сколько содержательный.
+        прошлый = разбирали.get(order_id)
+        if прошлый and not any((c.get("started_at") or "") > прошлый for c in calls):
+            logger.info("заявка %s: новых разговоров нет, вердикт оставляем", order_id)
+            skipped += 1
+            continue
+
         verdict = None
         if not args.collect_only and settings.analysis_configured:
-            verdict = analyzer.analyze_order(
-                {**order, "order_id": order_id}, calls,
-                api_key=settings.openai_api_key, model=settings.analysis_model,
-                own_company=settings.own_company,
-            )
+            if live:
+                verdict = analyzer.analyze_live_order(
+                    {**order, "order_id": order_id}, calls,
+                    api_key=settings.openai_api_key, model=settings.analysis_model,
+                    own_company=settings.own_company,
+                    silence_days=silence_days(calls),
+                )
+            else:
+                verdict = analyzer.analyze_order(
+                    {**order, "order_id": order_id}, calls,
+                    api_key=settings.openai_api_key, model=settings.analysis_model,
+                    own_company=settings.own_company,
+                )
+        v = verdict or {}
         save_order_report(
             conn, order_id=order_id, contact_id=contact_id, calls_count=len(calls),
             verdict_json=json.dumps(verdict, ensure_ascii=False) if verdict else None,
             created_at=datetime.now(timezone.utc).isoformat(),
+            kind=("live" if live else "lost") if verdict else "",
+            stage_now=v.get("stage_now") or v.get("stage_failed") or None,
+            next_step=v.get("next_step") or None,
+            next_step_due=v.get("next_step_due") or None,
+            needs_rop=1 if v.get("needs_rop") else 0,
+            rop_reason=v.get("rop_reason") or None,
         )
         conn.commit()
         done += 1
-        mark = verdict["outcome"][:80] if verdict else "звонки собраны"
+        if not verdict:
+            mark = "звонки собраны"
+        elif live:
+            mark = ("РОП: " + v["rop_reason"][:70]) if v.get("needs_rop") else (
+                f"{v.get('stage_now') or 'этап неясен'}"
+                + (f", дальше: {v['next_step'][:50]}" if v.get("next_step") else ""))
+        else:
+            mark = v.get("outcome", "")[:80]
         print(f"  {order_id} «{order['name']}»: звонков {len(calls)} — {mark}")
 
     conn.close()
     print(f"разобрано заявок: {done}"
-          + (f", пропущено из-за неполного просмотра звонков: {skipped}" if skipped else ""))
+          + (f", пропущено: {skipped}" if skipped else ""))
     return 0
 
 

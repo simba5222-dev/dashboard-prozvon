@@ -21,7 +21,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -201,6 +201,31 @@ PROMPT = """Ты разбираешь запись исходящего звон
 """
 
 
+# Этапы сделки одним списком. Смысл в том, чтобы обе модели — и та, что
+# разбирает провал, и та, что смотрит на живую заявку — называли этап
+# одинаково. Иначе сравнить заявки между собой нельзя: у одной «считали
+# стоимость», у другой «расчёт», у третьей «ждём цену». Названия взяты из
+# стадий CRM, к ним добавлены ранние, которых в CRM нет.
+ЭТАПЫ_СДЕЛКИ = (
+    "не дозвонились",
+    "первый разговор",
+    "подбор техники",
+    "расчёт стоимости",
+    "КП отправлено",
+    "согласование цены",
+    "согласование даты работ",
+    "согласование договора",
+    "выставлен счёт",
+    "оплата",
+)
+ЛЕСТНИЦА = "\n".join(f"  - {name}" for name in ЭТАПЫ_СДЕЛКИ)
+
+# Что менеджер пообещал сделать дальше. Список закрытый: по нему ставится
+# задача в CRM, и текст «созвонимся как-нибудь» задачей быть не может.
+ШАГИ = ("позвонить", "отправить КП", "выставить счёт", "подготовить договор",
+        "привезти технику на осмотр", "нет")
+
+
 EMPTY_VERDICT: dict[str, Any] = {
     "outcome": "",
     "client_position": "",
@@ -209,6 +234,7 @@ EMPTY_VERDICT: dict[str, Any] = {
     "recommendations": [],
     "recoverable": None,
     "no_calls": False,
+    "stage_failed": "",
 }
 
 ORDER_PROMPT = """Ты разбираешь, почему заявка на аренду техники не дошла до сделки.
@@ -217,6 +243,9 @@ ORDER_PROMPT = """Ты разбираешь, почему заявка на ар
 согласовывает технику и сроки.
 
 {domain}
+
+ЭТАПЫ СДЕЛКИ, от первого к последнему:
+{ladder}
 
 ЗАЯВКА:
 {order}
@@ -230,6 +259,7 @@ ORDER_PROMPT = """Ты разбираешь, почему заявка на ар
 
 Верни JSON:
 {{
+  "stage_failed": "на каком этапе встало — ровно одно название из списка выше",
   "outcome": "почему заявка не стала сделкой — 1-2 предложения, по существу",
   "client_position": "что говорил клиент: цена, сроки, нашёл другого, передумал, не берёт трубку",
   "manager_actions": ["что ответственный действительно сделал: перезвонил, посчитал, предложил замену"],
@@ -242,6 +272,8 @@ ORDER_PROMPT = """Ты разбираешь, почему заявка на ар
 - «клиент не взял трубку» и «менеджер не перезвонил» — разные вещи, не путай:
   первое видно по недозвонам, второе — по отсутствию звонков вообще;
 - не повторяй в "gaps" то, что уже написал в "outcome";
+- "stage_failed" — самый дальний этап, до которого реально дошли по разговорам,
+  а не тот, что стоит в CRM: стадию там могли не двигать;
 - пиши по-русски, коротко, без вводных слов.
 """
 
@@ -290,6 +322,7 @@ def analyze_order(
     prompt = ORDER_PROMPT.format(
         own_company=own_company,
         domain=knowledge.DOMAIN,
+        ladder=ЛЕСТНИЦА,
         order=order_summary(order),
         calls=calls_summary(calls),
     )
@@ -315,10 +348,154 @@ def normalize_verdict(data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, str):
             value = [value]
         out[key] = [str(item).strip() for item in (value or []) if str(item).strip()][:3]
-    for key in ("outcome", "client_position"):
+    for key in ("outcome", "client_position", "stage_failed"):
         out[key] = str(out[key] or "").strip()
+    if out["stage_failed"] and out["stage_failed"] not in ЭТАПЫ_СДЕЛКИ:
+        out["stage_failed"] = ""
     if out["recoverable"] is not None:
         out["recoverable"] = bool(out["recoverable"])
+    out["no_calls"] = bool(out["no_calls"])
+    return out
+
+
+EMPTY_LIVE: dict[str, Any] = {
+    "stage_now": "",
+    "client_position": "",
+    "next_step_kind": "нет",
+    "next_step": "",
+    "next_step_due": "",
+    "next_step_date": "",
+    "blocker": "",
+    "needs_rop": False,
+    "rop_reason": "",
+    "recommendations": [],
+    "no_calls": False,
+}
+
+LIVE_ORDER_PROMPT = """Ты смотришь на живую заявку на аренду техники и говоришь
+руководителю отдела продаж, где она сейчас и надо ли вмешиваться.
+Наша компания — «{own_company}». Заявку ведёт ответственный менеджер: созванивается
+с клиентом, подбирает технику, считает стоимость, согласовывает сроки и договор.
+
+{domain}
+
+ЭТАПЫ СДЕЛКИ, от первого к последнему:
+{ladder}
+
+Сегодня {today}.
+
+ЗАЯВКА:
+{order}
+{silence}
+
+РАЗГОВОРЫ С КЛИЕНТОМ ПОСЛЕ СОЗДАНИЯ ЗАЯВКИ (в порядке времени):
+{calls}
+
+Расшифровки автоматические, с телефонной линии, местами рвутся. Додумывать
+нельзя: только то, что видно из разговоров и полей заявки. Если разговоров нет
+вовсе — поставь "no_calls": true, "stage_now": "не дозвонились" и не выдумывай.
+
+Верни JSON:
+{{
+  "stage_now": "где заявка сейчас — ровно одно название из списка этапов выше",
+  "client_position": "что клиент говорит сейчас: чего ждёт, что его держит",
+  "next_step_kind": "о чём менеджер договорился с клиентом — одно из: {steps}",
+  "next_step": "этот шаг словами: кому звонить, что отправить — одна строка",
+  "next_step_due": "когда договорились, как прозвучало в разговоре: «в понедельник», «завтра после обеда», «к концу недели». Пусто, если срока не называли",
+  "next_step_date": "тот же срок датой ГГГГ-ММ-ДД. Считай от даты того разговора, в котором договорились (она стоит в квадратных скобках), а не от сегодня. Пусто, если срока не называли",
+  "blocker": "что мешает двигаться дальше — одна строка, пусто если ничего",
+  "needs_rop": true/false — нужно ли вмешательство руководителя прямо сейчас,
+  "rop_reason": "почему нужен руководитель — одна строка с подробностями этого случая: сколько раз клиент звонил, чего именно ждёт, какую цену назвал. Не повторяй формулировку из списка ниже своими словами — она одинаковая у всех заявок и руководителю ничего не говорит. Пусто, если не нужен",
+  "recommendations": ["что сделать менеджеру дальше — не больше трёх"]
+}}
+
+Когда ставить "needs_rop": true:
+- клиент назвал цену конкурента или просит скидку, а менеджер не ответил;
+- клиент сказал, что ждёт расчёт или КП дольше суток, и не получил;
+- клиент недоволен, говорит о срыве сроков, грозит уйти;
+- менеджер обещал перезвонить и не перезвонил, а клиент звонил сам;
+- заявка молчит дольше недели, а последний разговор кончился на чём-то живом.
+Во всех остальных случаях — false. Руководитель не должен разгребать список
+из ста заявок: подсветка стоит ровно там, где без него хуже. Если сомневаешься —
+ставь false.
+
+Заявка с названием «Пойманная с прослушки» заведена автоматически: её создал
+разбор звонка, а не менеджер. По такой заявке менеджер мог ничего клиенту и не
+обещать — не приписывай ему обещание, которого в разговорах нет.
+
+Правила:
+- "next_step_kind" ставь "нет", если конкретной договорённости в разговорах нет.
+  «Я подумаю» и «созвонимся» — это не договорённость;
+- "stage_now" — самый дальний из двух: этап, который слышно в разговорах, и
+  стадия из карточки заявки. Менеджер мог договориться письмом или при встрече,
+  и тогда в разговорах этого не будет; но он мог и просто не двинуть стадию,
+  и тогда её нет в карточке. Берём то, что дальше;
+- пиши по-русски, коротко, без вводных слов.
+"""
+
+
+def analyze_live_order(
+    order: dict[str, Any], calls: list[dict[str, Any]], *, api_key: str, model: str,
+    own_company: str = "Техно-Ресурс", silence_days: int | None = None,
+    timeout_sec: float = 180.0,
+) -> dict[str, Any]:
+    """Живая заявка: где она сейчас, о чём договорились, нужен ли руководитель."""
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    silence = ""
+    if silence_days is not None:
+        silence = (f"\nПоследний разговор с клиентом был {silence_days} дн. назад."
+                   if silence_days else "\nС клиентом говорили сегодня.")
+    prompt = LIVE_ORDER_PROMPT.format(
+        own_company=own_company,
+        domain=knowledge.DOMAIN,
+        ladder=ЛЕСТНИЦА,
+        today=date.today().isoformat(),
+        steps=", ".join(f"«{name}»" for name in ШАГИ),
+        order=order_summary(order),
+        silence=silence,
+        calls=calls_summary(calls),
+    )
+    pace_calls()
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+        response_format={"type": "json_object"},
+    )
+    log_usage(response, kind="разбор живой заявки", model=model)
+    try:
+        data = json.loads(response.choices[0].message.content or "{}")
+    except ValueError:
+        return {**EMPTY_LIVE, "no_calls": not calls}
+    return normalize_live(data)
+
+
+def normalize_live(data: dict[str, Any]) -> dict[str, Any]:
+    out = {**EMPTY_LIVE, **{k: v for k, v in data.items() if k in EMPTY_LIVE}}
+    value = out["recommendations"]
+    if isinstance(value, str):
+        value = [value]
+    out["recommendations"] = [str(i).strip() for i in (value or []) if str(i).strip()][:3]
+    for key in ("stage_now", "client_position", "next_step", "next_step_due",
+                "next_step_date", "blocker", "rop_reason", "next_step_kind"):
+        out[key] = str(out[key] or "").strip()
+    try:
+        date.fromisoformat(out["next_step_date"])
+    except ValueError:
+        out["next_step_date"] = ""
+    if out["stage_now"] not in ЭТАПЫ_СДЕЛКИ:
+        out["stage_now"] = ""
+    if out["next_step_kind"] not in ШАГИ:
+        out["next_step_kind"] = "нет"
+    # Шаг без текста — не шаг: задачу из него не составить.
+    if out["next_step_kind"] == "нет" or not out["next_step"]:
+        out["next_step_kind"] = "нет"
+        out["next_step"] = out["next_step_due"] = out["next_step_date"] = ""
+    out["needs_rop"] = bool(out["needs_rop"])
+    if not out["needs_rop"]:
+        out["rop_reason"] = ""
     out["no_calls"] = bool(out["no_calls"])
     return out
 

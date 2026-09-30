@@ -617,13 +617,27 @@ async def orders_page(
     if since > until:
         since, until = until, since
 
-    rows = orders_of_period(conn, since, until, kind or None)
+    # Считаем по всем заявкам периода, а не по отфильтрованным: иначе цифра
+    # «нужна помощь» прыгает при переключении вкладки, и по ней нельзя перейти.
+    everything = orders_of_period(conn, since, until, None)
+    if kind == "rop":
+        rows = [r for r in everything if r["needs_rop"]]
+    elif kind == "lost":
+        rows = [r for r in everything if r["stage_kind"] == "lost"]
+    elif kind == "won":
+        rows = [r for r in everything if r["stage_kind"] == "won"]
+    elif kind == "open":
+        rows = [r for r in everything if r["stage_kind"] not in ("won", "lost")]
+    else:
+        rows = everything
     ctx = _base_context(request)
     ctx.update({
         "since": since, "until": until, "kind": kind, "orders": rows,
-        "won": sum(1 for r in rows if r["stage_kind"] == "won"),
-        "lost": sum(1 for r in rows if r["stage_kind"] == "lost"),
-        "analyzed": sum(1 for r in rows if r["verdict"]),
+        "total": len(everything),
+        "won": sum(1 for r in everything if r["stage_kind"] == "won"),
+        "lost": sum(1 for r in everything if r["stage_kind"] == "lost"),
+        "analyzed": sum(1 for r in everything if r["verdict"]),
+        "rop": sum(1 for r in everything if r["needs_rop"]),
     })
     return TEMPLATES.TemplateResponse("orders.html", ctx)
 

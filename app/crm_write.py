@@ -255,6 +255,56 @@ class CrmWriter:
             return False
 
 
+    def order_responsible(self, order_id: str) -> str | None:
+        """Идентификатор ответственного за заявку.
+
+        В нашей базе от ответственного лежит только имя, а задачу надо ставить
+        на конкретного человека. Спрашиваем CRM: задач в день единицы, лишним
+        обращением это не станет.
+        """
+        # `include` обязателен: без него связи приходят с пустым `data`.
+        try:
+            data = self._client.get(f"orders/{order_id}", include="responsible")
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("заявка %s не прочиталась: %s", order_id, exc)
+            return None
+        rels = ((data or {}).get("data") or {}).get("relationships") or {}
+        ref = (rels.get("responsible") or {}).get("data")
+        return str(ref["id"]) if ref else None
+
+    def create_task(
+        self, *, order_id: str, name: str, due_at: str, responsible_id: str,
+        type_id: str, description: str = "",
+    ) -> str | None:
+        """Задача менеджеру по заявке. Возвращает её идентификатор.
+
+        `due_at` — срок в ISO с часовым поясом, как его отдаёт CRM
+        («2026-10-01T13:19:00.000+03:00»). Без пояса Synergy считает время по
+        Гринвичу, и задача на утро встаёт на ночь.
+        """
+        attributes: dict[str, Any] = {"name": name[:250], "due-date": due_at,
+                                      "responsible-id": int(responsible_id)}
+        if description:
+            attributes["description"] = description
+        payload = {"data": {"type": "diaries", "attributes": attributes, "relationships": {
+            "order": {"data": {"type": "orders", "id": str(order_id)}},
+            "responsible": {"data": {"type": "users", "id": str(responsible_id)}},
+            "diary-type": {"data": {"type": "diary-types", "id": str(type_id)}},
+        }}}
+        if self.dry_run:
+            logger.info("сухой прогон: задача «%s» по заявке %s на %s, ответственный %s",
+                        name, order_id, due_at[:16], responsible_id)
+            return None
+        try:
+            data = self._client.post("diaries", payload)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("задача по заявке %s не завелась: %s", order_id, exc)
+            return None
+        task_id = str(((data or {}).get("data") or {}).get("id") or "")
+        logger.info("задача %s заведена по заявке %s", task_id or "?", order_id)
+        return task_id or None
+
+
 def order_customs(analysis: dict[str, Any], transcript: str, summary: str = "",
                   caught: str = "") -> dict[str, Any]:
     """Поля заявки из разбора — те же, что у звонков с общих номеров.

@@ -470,8 +470,14 @@ def order_detail(conn: sqlite3.Connection, order_id: str) -> dict[str, Any] | No
 def orders_of_period(
     conn: sqlite3.Connection, since: str, until: str, kind: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Заявки, заведённые по звонкам прозвона за период."""
-    where = ["k.local_date BETWEEN ? AND ?", "k.in_group = 1"]
+    """Заявки, заведённые по звонкам за период — все, а не только прозвона.
+
+    Раньше здесь стоял отбор `k.in_group = 1`, и страница показывала 18 заявок
+    из 159: заявки от входящих звонков — «Пойманная с прослушки» и прочие — на
+    неё просто не попадали. Руководителю нужны все: подсветка «нужна помощь»
+    без них теряет смысл.
+    """
+    where = ["k.local_date BETWEEN ? AND ?"]
     params: list[Any] = [since, until]
     if kind == "lost":
         where.append("o.stage_kind = 'lost'")
@@ -479,10 +485,14 @@ def orders_of_period(
         where.append("o.stage_kind NOT IN ('won', 'lost')")
     elif kind == "won":
         where.append("o.stage_kind = 'won'")
+    elif kind == "rop":
+        where.append("r.needs_rop = 1")
     rows = conn.execute(
         f"""
-        SELECT o.*, k.local_date, c.contact_name, c.company_name,
-               r.calls_count, r.verdict_json
+        SELECT o.*, k.local_date, k.in_group, k.direction, c.contact_name, c.company_name,
+               r.calls_count, r.verdict_json, r.kind AS report_kind,
+               r.stage_now, r.next_step, r.next_step_due, r.needs_rop,
+               r.rop_reason, r.task_id, r.task_at
         FROM call_orders o
         JOIN calls k ON k.uid = o.call_uid
         LEFT JOIN card_checks c ON c.call_uid = o.call_uid

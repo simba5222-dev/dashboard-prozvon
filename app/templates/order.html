@@ -3,6 +3,8 @@
 
 {% block extra_style %}
 <style>
+.rop-box{margin:0 0 12px;padding:8px 11px;border-left:3px solid var(--stop);
+  background:var(--stop-soft);color:var(--stop);font-weight:600}
 .dl{display:grid;grid-template-columns:180px 1fr;gap:7px 14px;margin:0}
 .dl dt{color:var(--ink-3)}
 .dl dd{margin:0}
@@ -56,7 +58,43 @@
   </div>
 </div>
 
-{% if order.verdict %}
+{% if order.verdict and "next_step_kind" in order.verdict %}
+{% set v = order.verdict %}
+<div class="card">
+  <div class="card-head">
+    <h2>Где заявка сейчас</h2>
+    <span class="sub">по разговорам с клиентом после её создания</span>
+  </div>
+  <div class="card-body">
+    {% if v.needs_rop %}
+    <p class="rop-box">Нужен руководитель: {{ v.rop_reason }}</p>
+    {% endif %}
+    {% if v.no_calls %}
+    <p style="margin:0 0 10px">После создания заявки с клиентом не разговаривали
+      ни разу — ни ответственный, ни кто-либо ещё.</p>
+    {% endif %}
+    <dl class="dl">
+      {% if v.stage_now %}<dt>этап</dt><dd>{{ v.stage_now }}</dd>{% endif %}
+      {% if v.client_position %}<dt>что говорит клиент</dt><dd>{{ v.client_position }}</dd>{% endif %}
+      {% if v.blocker %}<dt>что мешает</dt><dd class="gaps">{{ v.blocker }}</dd>{% endif %}
+      <dt>о чём договорились</dt>
+      <dd>{% if v.next_step %}{{ v.next_step }}{% if v.next_step_due %}
+          — {{ v.next_step_due }}{% endif %}
+          {% if v.next_step_date %}<span class="dim">срок {{ v.next_step_date }}</span>{% endif %}
+        {% else %}<span class="dim">конкретной договорённости в разговорах нет</span>{% endif %}</dd>
+      {% if order.report and order.report.task_at %}
+      <dt>задача менеджеру</dt>
+      <dd>{% if order.report.task_id %}поставлена в CRM, №{{ order.report.task_id }}
+        {% else %}не ставилась{% if order.report.task_note %} — {{ order.report.task_note }}{% endif %}{% endif %}</dd>
+      {% endif %}
+    </dl>
+    {% if v.recommendations %}
+    <h3 style="margin:16px 0 6px;font-size:13px">Что сделать менеджеру</h3>
+    <ul class="reco">{% for r in v.recommendations %}<li>{{ r }}</li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+</div>
+{% elif order.verdict %}
 {% set v = order.verdict %}
 <div class="card">
   <div class="card-head">
@@ -69,6 +107,7 @@
       ни разу — ни ответственный, ни кто-либо ещё.</p>
     {% endif %}
     <dl class="dl">
+      {% if v.stage_failed %}<dt>где сорвалось</dt><dd>{{ v.stage_failed }}</dd>{% endif %}
       {% if v.outcome %}<dt>что произошло</dt><dd>{{ v.outcome }}</dd>{% endif %}
       {% if v.client_position %}<dt>позиция клиента</dt><dd>{{ v.client_position }}</dd>{% endif %}
       {% if v.manager_actions %}
