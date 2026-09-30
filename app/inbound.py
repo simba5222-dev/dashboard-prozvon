@@ -212,7 +212,10 @@ def transcribe(settings: Settings, name: str, audio: bytes, seconds: float = 0.0
     )
     response.raise_for_status()
     text = analyzer.dialog_text(response.json().get("dialog") or [])
-    return text.replace("operator:", "сторона A:").replace("client:", "сторона B:")
+    # Стороны называем своими именами. Обезличивание было нужно, пока роли
+    # каналов не были измерены; теперь оно только мешает — модель решала
+    # загадку, ответ на которую у нас есть.
+    return analyzer.name_sides(text)
 
 
 def analyze_like_production(settings: Settings, transcript: str) -> dict[str, Any]:
