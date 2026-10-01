@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -190,6 +191,40 @@ async def call_context_api(request: Request) -> Any:
     })
     return {"context": call_context.describe(ctx), "scenario": ctx.scenario,
             "facts": ctx.as_dict()}
+
+
+@app.post("/api/line-in-scope")
+async def line_in_scope(request: Request) -> Any:
+    """Разбираем ли звонки на эту линию. Спрашивает питерский сервер.
+
+    Он решает это **до** скачивания записи, поэтому ручка должна быть дешёвой:
+    один запрос к справочнику линий, никакой модели и никакой CRM.
+
+    Отвечаем «разбираем» на всё, чего не знаем. Список — это способ убрать
+    лишнее, а не пропускать только разрешённое: номер, которого нет в
+    справочнике, может оказаться новой рекламной линией, и терять по нему
+    звонки клиентов дороже, чем разобрать несколько ненужных.
+    """
+    settings: Settings = request.app.state.settings
+    expected = settings.inbound_hook_token
+    if not expected:
+        return JSONResponse({"error": "приёмник выключен"}, status_code=503)
+    if request.headers.get("X-Vats-Token", "") != expected:
+        logger.warning("проверка линии: неверный ключ")
+        return JSONResponse({"error": "неверный ключ"}, status_code=403)
+
+    body = await request.json()
+    номер = re.sub(r"\D", "", str((body or {}).get("diversion") or ""))[-10:]
+    if not номер:
+        return {"in_scope": True, "name": "", "note": "номер линии не передан"}
+
+    row = request.app.state.db.execute(
+        "SELECT name, kind, in_scope, scope_note FROM lines WHERE phone10 = ?", (номер,)
+    ).fetchone()
+    if row is None:
+        return {"in_scope": True, "name": "", "note": "линии нет в справочнике"}
+    return {"in_scope": bool(row["in_scope"]), "name": row["name"] or "",
+            "kind": row["kind"] or "", "note": row["scope_note"] or ""}
 
 
 def _handle_inbound(app_ref: FastAPI, meta: dict[str, Any], audio: bytes) -> None:

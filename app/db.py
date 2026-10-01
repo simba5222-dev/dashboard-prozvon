@@ -393,6 +393,13 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("order_reports", "task_id", "TEXT"),
     ("order_reports", "task_at", "TEXT"),
     ("order_reports", "task_note", "TEXT"),
+    # Участвует ли линия в разборе потока 1. Решение владельца, а не ВАТС:
+    # ВАТС подписывает именем всё, что считает рекламным, включая линию для
+    # соискателей и офисные номера. Колонка живёт отдельно от `kind` именно
+    # потому, что `kind` переписывается ночным обновлением справочника, а
+    # решение владельца переписывать нельзя.
+    ("lines", "in_scope", "INTEGER NOT NULL DEFAULT 1"),
+    ("lines", "scope_note", "TEXT"),
 )
 
 
@@ -650,6 +657,8 @@ def save_line(conn: sqlite3.Connection, **row: Any) -> None:
             name = excluded.name, kind = excluded.kind,
             calls_in = excluded.calls_in, seen_at = excluded.seen_at
         """,
+        # `in_scope` и `scope_note` намеренно не в списке обновляемых полей:
+        # это решение владельца, ночная синхронизация его не трогает.
         row,
     )
 
