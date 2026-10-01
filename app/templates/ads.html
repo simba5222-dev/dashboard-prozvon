@@ -75,9 +75,14 @@ details.tr .text{padding:0 17px 15px;font-size:13px;line-height:1.6;color:var(--
 .mark button.on{color:var(--surface)}
 .mark button.yes.on{background:var(--ok)} .mark button.no.on{background:var(--stop)}
 .mark button.hm.on{background:var(--warn)}
-.mark input[type=text]{flex:1 1 220px;font:inherit;font-size:13px;padding:6px 10px;
+.mark textarea{flex:1 1 100%;order:10;font:inherit;font-size:14px;line-height:1.5;
+  padding:9px 12px;min-height:72px;resize:vertical;
   border:1px solid var(--line-2);border-radius:2px;background:var(--surface);color:var(--ink)}
-.mark .was{font-size:11.5px;color:var(--ink-3);font-family:ui-monospace,Menlo,monospace}
+/* Порядок в строке: три кнопки оценки → поле на всю ширину → «Сохранить».
+   Без явного order «Сохранить» уезжает выше поля: у флексов по умолчанию
+   нулевой порядок, а поле мы подняли до десятого. */
+.mark button[type=submit]{order:11;border-color:var(--accent);color:var(--accent)}
+.mark .was{order:12;font-size:11.5px;color:var(--ink-3);font-family:ui-monospace,Menlo,monospace}
 .filters{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:18px;font-size:13px}
 .filters a{text-decoration:none;color:var(--ink-2);border:1px solid var(--line);
   background:var(--surface);padding:5px 11px;border-radius:2px}
@@ -175,8 +180,8 @@ details.tr .text{padding:0 17px 15px;font-size:13px;line-height:1.6;color:var(--
       <button class="yes {% if r.verdict == 'верно' %}on{% endif %}" name="verdict" value="верно">Верно</button>
       <button class="no {% if r.verdict == 'неверно' %}on{% endif %}" name="verdict" value="неверно">Неверно</button>
       <button class="hm {% if r.verdict == 'спорно' %}on{% endif %}" name="verdict" value="спорно">Спорно</button>
-      <input type="text" name="note" value="{{ r.verdict_note or '' }}"
-             placeholder="что именно не так — эта строка важнее галочки">
+      <textarea name="note" rows="3"
+                placeholder="Что именно не так и как должно быть. Это важнее галочки: из галочки видно, что ошибка есть, а из пояснения — какая.">{{ r.verdict_note or '' }}</textarea>
       <button type="submit" name="verdict" value="{{ r.verdict or 'спорно' }}">Сохранить</button>
       {% if r.verdict_at %}<span class="was">отмечено {{ r.verdict_at[:16].replace('T', ' ') }}</span>{% endif %}
     </form>
