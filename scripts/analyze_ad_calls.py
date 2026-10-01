@@ -49,8 +49,9 @@ logger = logging.getLogger("ad_calls")
 ЗАДАНИЕ = """Разбери телефонный разговор. Звонок входящий, на рекламную линию «{линия}» —
 человек позвонил по объявлению, значит почти наверняка ему нужна техника.
 
-В расшифровке `operator` — наш менеджер, `client` — позвонивший. Это известно
-из устройства записи, определять по содержанию не нужно.
+В расшифровке `менеджер` — наш сотрудник, `клиент` — позвонивший. Это известно
+из устройства записи, определять по содержанию не нужно и нельзя. В старых
+расшифровках те же роли подписаны `operator` и `client`.
 
 РАСШИФРОВКА:
 {текст}
@@ -135,7 +136,8 @@ def main() -> int:
         FROM calls k
         JOIN lines l ON l.phone10 = substr(replace(replace(replace(
              k.diversion,'+',''),' ',''),'-',''), -10)
-        WHERE l.kind = 'рекламная' AND k.direction = 'in'
+        WHERE l.in_scope = 1 AND (l.is_general = 1 OR l.kind = 'рекламная')
+          AND k.direction = 'in'
           AND k.local_date BETWEEN ? AND ? AND k.duration_sec >= ?
         ORDER BY k.started_at
     """, (args.since, args.until, args.min_sec)).fetchall()
@@ -145,20 +147,28 @@ def main() -> int:
         rows = [r for r in rows if r["uid"] in если_эти]
     записи = Path(settings.records_dir)
     дела = []
+    # Запись нужна только чтобы распознать самим. Если расшифровка уже лежит
+    # в CRM — её туда положил боевой сервер, — разбирать можно и без звука.
+    # 01.10.2026 из сорока звонков у двадцати пяти не оказалось ссылки на
+    # запись в нашей базе, а текст в CRM был у всех: требование записи
+    # отрезало их от разметки на пустом месте.
     нет_записи = 0
     for r in rows:
         путь = записи / f"{r['uid']}.mp3"
-        if not путь.exists():
+        есть_звук = путь.exists()
+        if not есть_звук and args.fresh:
             нет_записи += 1
             continue
         if r["было"] and not args.redo:
             continue
-        дела.append((r, путь))
+        дела.append((r, путь if есть_звук else None))
     if args.limit:
         дела = дела[: args.limit]
 
-    print(f"звонков на рекламные линии за период: {len(rows)}, "
-          f"без записи {нет_записи}, к разбору {len(дела)}")
+    без_звука = sum(1 for _, п in дела if п is None)
+    print(f"звонков с общих номеров за период: {len(rows)}, к разбору {len(дела)}"
+          + (f" (из них без записи, текст из CRM: {без_звука})" if без_звука else "")
+          + (f", пропущено без записи: {нет_записи}" if нет_записи else ""))
     if not args.apply:
         for r, _ in дела[:5]:
             print(f"  {r['started_at'][:16]}  {r['line']:<18} {r['duration_sec']:>4} с  {r['uid']}")
@@ -172,10 +182,12 @@ def main() -> int:
                     r["uid"], r["line"], r["duration_sec"])
         текст = "" if args.fresh else из_crm(client, r["uid"])
         откуда = "CRM"
-        if not текст.strip():
+        if not текст.strip() and путь is not None:
             откуда = "распознали сами"
             текст = yandex.transcribe_dialog(str(путь), api_key=settings.yandex_api_key,
                                              folder=settings.yandex_folder)
+        elif not текст.strip():
+            logger.warning("  текста в CRM нет и записи нет — пропускаем")
         else:
             logger.info("  расшифровка взята из CRM, %s символов", len(текст))
         if not текст.strip():
