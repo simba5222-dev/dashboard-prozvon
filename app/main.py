@@ -200,10 +200,17 @@ async def line_in_scope(request: Request) -> Any:
     Он решает это **до** скачивания записи, поэтому ручка должна быть дешёвой:
     один запрос к справочнику линий, никакой модели и никакой CRM.
 
-    Отвечаем «разбираем» на всё, чего не знаем. Список — это способ убрать
-    лишнее, а не пропускать только разрешённое: номер, которого нет в
-    справочнике, может оказаться новой рекламной линией, и терять по нему
-    звонки клиентов дороже, чем разобрать несколько ненужных.
+    Ответ из трёх значений, и третье здесь главное:
+
+    - `разбирать` — это общий номер компании из утверждённого списка;
+    - `не разбирать` — линия убрана владельцем, либо это прямой номер
+      сотрудника: такие звонки живут в потоке 2, а не в первом;
+    - `не знаю` — номера нет в справочнике или ВАТС не дала ему имени.
+      Тогда спрашивающий решает сам, как раньше.
+
+    Третье значение нужно ради живого случая: номер +7 921 565-32-76 даёт
+    два десятка входящих, CRM считает их рекламными, а имени от ВАТС у него
+    нет. Отвечать «не разбирать» на такое — значит молча терять заявки.
     """
     settings: Settings = request.app.state.settings
     expected = settings.inbound_hook_token
@@ -216,15 +223,29 @@ async def line_in_scope(request: Request) -> Any:
     body = await request.json()
     номер = re.sub(r"\D", "", str((body or {}).get("diversion") or ""))[-10:]
     if not номер:
-        return {"in_scope": True, "name": "", "note": "номер линии не передан"}
+        return {"verdict": "не знаю", "name": "", "note": "номер линии не передан"}
 
     row = request.app.state.db.execute(
-        "SELECT name, kind, in_scope, scope_note FROM lines WHERE phone10 = ?", (номер,)
+        "SELECT name, kind, in_scope, scope_note, is_general, owner_name "
+        "FROM lines WHERE phone10 = ?", (номер,)
     ).fetchone()
     if row is None:
-        return {"in_scope": True, "name": "", "note": "линии нет в справочнике"}
-    return {"in_scope": bool(row["in_scope"]), "name": row["name"] or "",
-            "kind": row["kind"] or "", "note": row["scope_note"] or ""}
+        return {"verdict": "не знаю", "name": "", "note": "линии нет в справочнике"}
+
+    вид = str(row["kind"] or "")
+    имя = str(row["owner_name"] or row["name"] or "")
+    if not row["in_scope"]:
+        вердикт = "не разбирать"
+    elif row["is_general"]:
+        вердикт = "разбирать"          # слово владельца сильнее данных ВАТС
+    elif вид == "рекламная":
+        вердикт = "разбирать"
+    elif вид == "прямой":
+        вердикт = "не разбирать"       # поток 2, его ведёт дашборд
+    else:
+        вердикт = "не знаю"
+    return {"verdict": вердикт, "name": имя, "kind": вид,
+            "note": row["scope_note"] or ""}
 
 
 def _handle_inbound(app_ref: FastAPI, meta: dict[str, Any], audio: bytes) -> None:

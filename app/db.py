@@ -400,6 +400,13 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # решение владельца переписывать нельзя.
     ("lines", "in_scope", "INTEGER NOT NULL DEFAULT 1"),
     ("lines", "scope_note", "TEXT"),
+    # Владелец подтвердил, что это общий номер компании. Нужно для линий,
+    # которым ВАТС имени не дала: по её данным они «неизвестные», а на деле
+    # на них приходят заявки. Ночная синхронизация справочника переписывает
+    # `kind` и `name` из ВАТС, а эти два поля не трогает — слово владельца
+    # сильнее догадки по имени.
+    ("lines", "is_general", "INTEGER NOT NULL DEFAULT 0"),
+    ("lines", "owner_name", "TEXT"),
 )
 
 
@@ -657,8 +664,9 @@ def save_line(conn: sqlite3.Connection, **row: Any) -> None:
             name = excluded.name, kind = excluded.kind,
             calls_in = excluded.calls_in, seen_at = excluded.seen_at
         """,
-        # `in_scope` и `scope_note` намеренно не в списке обновляемых полей:
-        # это решение владельца, ночная синхронизация его не трогает.
+        # `in_scope`, `scope_note`, `is_general` и `owner_name` намеренно не в
+        # списке обновляемых полей: это решения владельца, ночная
+        # синхронизация их не трогает.
         row,
     )
 
