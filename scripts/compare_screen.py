@@ -26,8 +26,19 @@ from app import analyzer  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db import connect  # noqa: E402
 
-ПОЛЯ = ("is_request", "equipment", "asked_by", "other_side",
+ПОЛЯ = ("решение", "equipment", "asked_by", "other_side",
         "work_described_by", "about_existing")
+
+
+def решение(разбор: dict) -> bool:
+    """Заведётся ли заявка. Складывается из двух полей, а не из одного.
+
+    02.10.2026 я сравнивал голоса по сырому `is_request` и назвал разногласием
+    случай, где обе головы на деле решили одинаково — не заводить: одна
+    потому, что разговор про действующую заявку, другая потому, что
+    ошиблась в ролях. Сравнивать надо итог.
+    """
+    return bool(разбор.get("is_request") and not разбор.get("about_existing"))
 
 
 def main() -> int:
@@ -62,15 +73,18 @@ def main() -> int:
             engine="yandex", folder=s.yandex_folder or "", verify=True,
         )
         for поле in ПОЛЯ:
-            a, b = было.get(поле), стало.get(поле)
+            if поле == "решение":
+                a, b = решение(было), решение(стало)
+            else:
+                a, b = было.get(поле), стало.get(поле)
             if isinstance(a, str) or isinstance(b, str):
                 a, b = str(a or "").strip().lower(), str(b or "").strip().lower()
             if a != b:
                 расхождения[поле] += 1
-                if поле == "is_request":
+                if поле == "решение":
                     заявка_разошлась.append((r["call_uid"], a, b))
         print(f"  [{i}/{len(rows)}] {r['call_uid']}: "
-              f"запрос {было.get('is_request')} → {стало.get('is_request')}, "
+              f"заявка {решение(было)} → {решение(стало)}, "
               f"техника «{было.get('equipment') or '—'}» → «{стало.get('equipment') or '—'}»")
 
     print("\nРАСХОЖДЕНИЯ ПО ПОЛЯМ:")
@@ -78,7 +92,7 @@ def main() -> int:
         n = расхождения[поле]
         print(f"   {поле:<20} {n:>3} из {len(rows)}")
     if заявка_разошлась:
-        print(f"\nглавное — «это запрос» разошлось у {len(заявка_разошлась)}:")
+        print(f"\nглавное — «заводить ли заявку» разошлось у {len(заявка_разошлась)}:")
         for uid, a, b in заявка_разошлась[:10]:
             print(f"   {uid}: gpt-4o {a} → Яндекс {b}")
     print("\nСудить по этим цифрам нельзя: кто прав, знает только владелец. "
