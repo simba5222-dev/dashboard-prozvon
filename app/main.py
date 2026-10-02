@@ -41,6 +41,7 @@ from app.stats import (  # noqa: F401
     managers,
     order_detail,
     caught_rows,
+    trial_rows,
     orders_of_period,
     period_summary,
     report_rows,
@@ -573,6 +574,58 @@ async def leads_dismiss(request: Request, uid: str, back: int = 0) -> Any:
     conn.commit()
     base = request.headers.get("x-forwarded-prefix", "").rstrip("/")
     return RedirectResponse(f"{base}/leads", status_code=303)
+
+
+@app.get("/trial", response_class=HTMLResponse)
+async def trial_page(
+    request: Request, since: str = "", until: str = "", show: str = "",
+) -> Any:
+    """Пробный прогон просева рядом с тем, что система решила в тот день.
+
+    Заявки по этому экрану не создаются и боевой просев не трогается: это
+    примерка новой головы и новых правил на прошедшем дне.
+    """
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    until = as_date(until) or (local_now(settings.timezone_offset_hours)
+                               - timedelta(days=1)).strftime("%Y-%m-%d")
+    since = as_date(since) or until
+    if since > until:
+        since, until = until, since
+
+    # «Всё» для счётчиков считаем по полному прогону, а показываем по
+    # умолчанию только те разговоры, где заявка есть хоть с одной стороны.
+    всё = trial_rows(conn, since, until, "все")
+    rows = trial_rows(conn, since, until, show or "есть")
+    ctx = _base_context(request)
+    ctx.update({
+        "since": since, "until": until, "show": show, "calls": rows,
+        "всего": len(всё),
+        "было": sum(1 for r in всё if r["live_lead"]),
+        "стало": sum(1 for r in всё if r["trial_lead"]),
+        "новые": sum(1 for r in всё if r["trial_lead"] and not r["live_lead"]),
+        "пропали": sum(1 for r in всё if r["live_lead"] and not r["trial_lead"]),
+        "размечено": sum(1 for r in всё if r["verdict"]),
+        "голова": всё[0]["engine"] if всё else "",
+    })
+    return TEMPLATES.TemplateResponse("trial.html", ctx)
+
+
+@app.post("/trial/mark")
+async def trial_mark(
+    request: Request, call_uid: str = Form(...), verdict: str = Form(...),
+    note: str = Form(""), back: str = Form(""),
+) -> Any:
+    """Отметка владельца по пробному прогону. В CRM ничего не трогает."""
+    from app.db import save_trial_verdict
+
+    conn = request.app.state.db
+    save_trial_verdict(conn, call_uid, verdict.strip(), note.strip(),
+                       datetime.now(timezone.utc).isoformat())
+    conn.commit()
+    ctx = _base_context(request)
+    адрес = back or f"{ctx['base']}/trial"
+    return RedirectResponse(f"{адрес}#c{call_uid}", status_code=303)
 
 
 @app.get("/caught", response_class=HTMLResponse)

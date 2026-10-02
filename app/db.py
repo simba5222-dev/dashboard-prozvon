@@ -152,6 +152,20 @@ CREATE TABLE IF NOT EXISTS order_reports (
     created_at    TEXT NOT NULL
 );
 
+-- Пробный просев: тот же разговор, прогнанный другой головой или по новым
+-- правилам. Боевой ответ в `screens` при этом не трогается: по нему работает
+-- ловля заявок, и затереть его — значит остаться без точки отсчёта.
+CREATE TABLE IF NOT EXISTS screen_trials (
+    call_uid      TEXT PRIMARY KEY REFERENCES calls (uid),
+    engine        TEXT NOT NULL DEFAULT '',
+    head_text     TEXT NOT NULL DEFAULT '',
+    verdict_json  TEXT NOT NULL DEFAULT '',
+    made_at       TEXT NOT NULL,
+    verdict       TEXT NOT NULL DEFAULT '',
+    verdict_note  TEXT,
+    verdict_at    TEXT
+);
+
 -- Входящие звонки менеджерам: есть ли по клиенту заявка после разговора.
 -- Клиент часто звонит менеджеру напрямую, и если тот не завёл заявку, о
 -- просьбе не знает никто. Эта таблица — след проверки: кого звали, нашёлся ли
@@ -782,6 +796,36 @@ def save_screen(conn: sqlite3.Connection, **row: Any) -> None:
             created_at   = excluded.created_at
         """,
         row,
+    )
+
+
+def save_trial(conn: sqlite3.Connection, **row: Any) -> None:
+    """Пробный просев: тот же разговор, другая голова или другие правила.
+
+    Отдельно от `screens`, потому что боевой ответ затирать нельзя — по нему
+    работает ловля заявок, и сравнивать будет не с чем.
+    """
+    conn.execute(
+        """
+        INSERT INTO screen_trials (call_uid, engine, head_text, verdict_json,
+                                   made_at, verdict, verdict_note, verdict_at)
+        VALUES (:call_uid, :engine, :head_text, :verdict_json, :made_at, '', NULL, NULL)
+        ON CONFLICT (call_uid) DO UPDATE SET
+            engine       = excluded.engine,
+            head_text    = excluded.head_text,
+            verdict_json = excluded.verdict_json,
+            made_at      = excluded.made_at
+        """,
+        row,
+    )
+
+
+def save_trial_verdict(conn: sqlite3.Connection, call_uid: str, verdict: str,
+                       note: str, at: str) -> None:
+    conn.execute(
+        "UPDATE screen_trials SET verdict = ?, verdict_note = ?, verdict_at = ? "
+        "WHERE call_uid = ?",
+        (verdict, note, at, call_uid),
     )
 
 

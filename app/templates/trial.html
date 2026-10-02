@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Пробный прогон просева{% endblock %}
+
+{% block extra_style %}
+<style>
+.wrap{max-width:1180px}
+.call{border:1px solid var(--line);border-radius:6px;margin-bottom:16px;background:var(--surface)}
+.call.diff{border-left:3px solid var(--warn)}
+.call.v-верно{border-left:3px solid var(--ok)}
+.call.v-неверно{border-left:3px solid var(--stop)}
+.head{display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;
+  padding:11px 16px;border-bottom:1px solid var(--line)}
+.head h3{margin:0;font-size:16px;flex:1 1 auto}
+.meta{font-size:12px;color:var(--ink-3);font-family:ui-monospace,Menlo,monospace}
+.tag{font-size:11px;letter-spacing:.05em;text-transform:uppercase;padding:2px 8px;
+  border-radius:2px;background:var(--sunken);color:var(--ink-3);white-space:nowrap}
+.tag.new{background:var(--ok-soft);color:var(--ok)}
+.tag.gone{background:var(--stop-soft);color:var(--stop)}
+.body{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--line)}
+.body > div{padding:13px 16px}
+.body > div + div{border-left:1px solid var(--line)}
+.body h4{margin:0 0 8px;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3)}
+.body p{margin:0 0 6px;font-size:14px}
+.verdict{font-size:16px;font-weight:600;margin:0 0 8px}
+.verdict.yes{color:var(--ok)} .verdict.no{color:var(--ink-3)}
+.audio{padding:9px 16px;border-bottom:1px solid var(--line)}
+.audio audio{height:30px;width:100%;max-width:460px}
+details.tr{padding:9px 16px;border-bottom:1px solid var(--line);font-size:14px}
+details.tr summary{cursor:pointer;color:var(--ink-3);font-size:12px;
+  letter-spacing:.05em;text-transform:uppercase}
+details.tr .line{margin-top:7px;line-height:1.5}
+.mark{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:11px 16px}
+.mark form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%}
+.mark button{font:inherit;font-size:12.5px;padding:6px 14px;border-radius:2px;cursor:pointer;
+  border:1px solid var(--line-2);background:var(--surface);color:var(--ink)}
+.mark button.yes{border-color:var(--ok);color:var(--ok)}
+.mark button.no{border-color:var(--stop);color:var(--stop)}
+.mark button.hm{border-color:var(--warn);color:var(--warn)}
+.mark button.on{color:var(--surface)}
+.mark button.yes.on{background:var(--ok)} .mark button.no.on{background:var(--stop)}
+.mark button.hm.on{background:var(--warn)}
+.mark textarea{flex:1 1 100%;order:10;font:inherit;font-size:14px;line-height:1.5;
+  padding:9px 12px;min-height:66px;resize:vertical;
+  border:1px solid var(--line-2);border-radius:2px;background:var(--surface);color:var(--ink)}
+.mark button[type=submit]{order:11;border-color:var(--accent);color:var(--accent)}
+.mark .was{order:12;font-size:11.5px;color:var(--ink-3);font-family:ui-monospace,Menlo,monospace}
+.filters{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:16px;font-size:13px}
+.filters a{padding:4px 11px;border:1px solid var(--line-2);border-radius:2px;color:var(--ink-2)}
+.filters a.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+.filt-line{display:flex;gap:10px;align-items:center;font-size:13px;margin-bottom:16px}
+.filt-line input{font:inherit;font-size:12px;padding:3px 5px;border:1px solid var(--line-2);
+  border-radius:2px;background:var(--surface);color:var(--ink)}
+.filt-line button{font:inherit;font-size:12px;padding:4px 12px;border:1px solid var(--accent);
+  background:var(--accent);color:#fff;border-radius:2px;cursor:pointer}
+@media (max-width:760px){.body{grid-template-columns:1fr}.body > div + div{border-left:0;border-top:1px solid var(--line)}}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="top">
+  <h1>Пробный прогон просева</h1>
+  <span class="date">{{ since }}{% if until != since %} — {{ until }}{% endif %}</span>
+</div>
+<p class="crumbs">
+  <a href="{{ base }}/">← дашборд</a> ·
+  те же разговоры, прогнанные заново головой «{{ голова or "—" }}» ·
+  <b>заявки не создавались, боевой просев не тронут</b> ·
+  слева что система решила в тот день, справа что решила бы сейчас
+</p>
+
+<div class="card">
+  <div class="tiles">
+    <div class="tile"><div class="n">{{ всего }}</div><div class="l">разговоров прогнано</div></div>
+    <div class="tile"><div class="n">{{ calls|length }}</div><div class="l">показано</div></div>
+    <div class="tile"><div class="n">{{ было }}</div><div class="l">заявок было</div></div>
+    <div class="tile"><div class="n">{{ стало }}</div><div class="l">стало бы</div></div>
+    <div class="tile {% if новые %}good{% endif %}"><div class="n">{{ новые }}</div><div class="l">нашлось сверх прежнего</div></div>
+    <div class="tile {% if пропали %}bad{% endif %}"><div class="n">{{ пропали }}</div><div class="l">перестало находиться</div></div>
+    <div class="tile"><div class="n">{{ размечено }}</div><div class="l">размечено вами</div></div>
+  </div>
+</div>
+
+<form class="filt-line" method="get" action="{{ base }}/trial">
+  <input type="hidden" name="show" value="{{ show }}">
+  с <input type="date" name="since" value="{{ since }}">
+  по <input type="date" name="until" value="{{ until }}">
+  <button type="submit">Показать</button>
+</form>
+
+<div class="filters">
+  {% for key, name in [("", "где есть заявка"), ("разошлось", "где разошлось"),
+                       ("новые", "нашлось сверх прежнего"),
+                       ("пропали", "перестало находиться"),
+                       ("нет", "без отметки"), ("пусто", "где заявки нет"),
+                       ("все", "все подряд")] %}
+  <a href="{{ base }}/trial?since={{ since }}&until={{ until }}{% if key %}&show={{ key }}{% endif %}"
+     class="{% if show == key %}on{% endif %}">{{ name }}</a>
+  {% endfor %}
+</div>
+
+{% if not calls %}
+<div class="card"><div class="card-body dim">Здесь пусто.</div></div>
+{% endif %}
+
+{% for r in calls %}
+<div class="call {% if r.verdict %}v-{{ r.verdict }}{% elif r.разошлось %}diff{% endif %}" id="c{{ r.uid }}">
+  <div class="head">
+    <h3>{{ r.trial.equipment or r.live.equipment or "техника не названа" }}</h3>
+    {% if r.trial_lead and not r.live_lead %}<span class="tag new">нашлось сверх прежнего</span>{% endif %}
+    {% if r.live_lead and not r.trial_lead %}<span class="tag gone">перестало находиться</span>{% endif %}
+    {% if r.created_order_id %}<span class="tag">в тот день завели заявку {{ r.created_order_id }}</span>{% endif %}
+    <span class="meta">{{ r.display_name or r.vats_login }} ·
+      {{ (r.started_at or "")[:16]|replace("T", " ") }} · {{ r.duration_sec }} с ·
+      {{ r.client_phone }}</span>
+  </div>
+
+  <div class="audio">
+    <audio controls preload="none" src="{{ base }}/record/{{ r.uid }}.mp3"></audio>
+  </div>
+
+  <div class="body">
+    <div>
+      <h4>Было в тот день</h4>
+      <p class="verdict {{ 'yes' if r.live_lead else 'no' }}">
+        {{ "заявка" if r.live_lead else "не заявка" }}</p>
+      {% if r.live.request %}<p>{{ r.live.request }}</p>{% endif %}
+      {% if r.live.asked_by %}<p class="dim">спрашивает:
+        {{ "позвонивший" if r.live.asked_by == "caller" else "наш менеджер" }}</p>{% endif %}
+      {% if r.live.about_existing %}<p class="dim">про действующую заявку</p>{% endif %}
+    </div>
+    <div>
+      <h4>Стало бы сейчас</h4>
+      <p class="verdict {{ 'yes' if r.trial_lead else 'no' }}">
+        {{ "заявка" if r.trial_lead else "не заявка" }}</p>
+      {% if r.trial.request %}<p>{{ r.trial.request }}</p>{% endif %}
+      {% if r.trial.asked_by %}<p class="dim">спрашивает:
+        {{ "позвонивший" if r.trial.asked_by == "caller" else "наш менеджер" }}</p>{% endif %}
+      {% if r.trial.about_existing %}<p class="dim">про действующую заявку</p>{% endif %}
+      {% if r.trial.quote %}<p class="dim">«{{ r.trial.quote }}»</p>{% endif %}
+    </div>
+  </div>
+
+  {% if r.head_text %}
+  <details class="tr">
+    <summary>начало разговора</summary>
+    {% for строка in r.head_text.split("\n") %}
+    {% if строка.strip() %}<div class="line">{{ строка }}</div>{% endif %}
+    {% endfor %}
+  </details>
+  {% endif %}
+
+  <div class="mark">
+    <form method="post" action="{{ base }}/trial/mark">
+      <input type="hidden" name="call_uid" value="{{ r.uid }}">
+      <input type="hidden" name="back" value="{{ base }}/trial?since={{ since }}&until={{ until }}{% if show %}&show={{ show }}{% endif %}">
+      <button class="yes {% if r.verdict == 'верно' %}on{% endif %}" name="verdict" value="верно">Справа верно</button>
+      <button class="no {% if r.verdict == 'неверно' %}on{% endif %}" name="verdict" value="неверно">Справа неверно</button>
+      <button class="hm {% if r.verdict == 'спорно' %}on{% endif %}" name="verdict" value="спорно">Спорно</button>
+      <textarea name="note" rows="3"
+                placeholder="Что должно было получиться и почему. Это важнее галочки.">{{ r.verdict_note or '' }}</textarea>
+      <button type="submit" name="verdict" value="{{ r.verdict or 'спорно' }}">Сохранить</button>
+      {% if r.verdict_at %}<span class="was">отмечено {{ r.verdict_at[:16].replace('T', ' ') }}</span>{% endif %}
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

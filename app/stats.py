@@ -467,6 +467,63 @@ def order_detail(conn: sqlite3.Connection, order_id: str) -> dict[str, Any] | No
     return order
 
 
+def trial_rows(conn: sqlite3.Connection, since: str, until: str,
+               показывать: str = "") -> list[dict[str, Any]]:
+    """Пробный просев рядом с тем, что система решила в тот день.
+
+    Два ответа на один разговор: боевой из `screens` и пробный из
+    `screen_trials`. Смотреть надо на разницу — она показывает, что изменится,
+    если довериться новой голове.
+    """
+    rows = conn.execute(
+        """
+        SELECT k.uid, k.started_at, k.client_phone, k.duration_sec, k.vats_login,
+               m.display_name, c.contact_name, c.active_names,
+               t.engine, t.head_text, t.verdict_json AS trial_json,
+               t.verdict, t.verdict_note, t.verdict_at,
+               s.verdict_json AS live_json, s.is_request AS live_request,
+               s.created_order_id
+        FROM screen_trials t
+        JOIN calls k ON k.uid = t.call_uid
+        LEFT JOIN screens s ON s.call_uid = t.call_uid
+        LEFT JOIN managers m ON m.vats_login = k.vats_login
+        LEFT JOIN inbound_checks c ON c.call_uid = k.uid
+        WHERE k.local_date BETWEEN ? AND ?
+        ORDER BY k.started_at DESC
+        """,
+        (since, until),
+    ).fetchall()
+
+    def решение(разбор: dict[str, Any]) -> bool:
+        return bool(разбор.get("is_request") and not разбор.get("about_existing"))
+
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["trial"] = _parsed_analysis(row["trial_json"]) or {}
+        item["live"] = _parsed_analysis(row["live_json"]) or {}
+        item["trial_lead"] = решение(item["trial"])
+        item["live_lead"] = bool(row["live_request"])
+        item["разошлось"] = item["trial_lead"] != item["live_lead"]
+        # По умолчанию показываем только то, где заявка есть хоть с одной
+        # стороны. Разговоры, где её нет ни по-старому, ни по-новому, — это
+        # 126 из 134 за день, и смотреть в них нечего.
+        if показывать in ("", "есть") and not (item["live_lead"] or item["trial_lead"]):
+            continue
+        if показывать == "разошлось" and not item["разошлось"]:
+            continue
+        if показывать == "новые" and not (item["trial_lead"] and not item["live_lead"]):
+            continue
+        if показывать == "пропали" and not (item["live_lead"] and not item["trial_lead"]):
+            continue
+        if показывать == "нет" and item["verdict"]:
+            continue
+        if показывать == "пусто" and (item["live_lead"] or item["trial_lead"]):
+            continue
+        out.append(item)
+    return out
+
+
 def caught_rows(conn: sqlite3.Connection, since: str, until: str,
                 verdict: str | None = None) -> list[dict[str, Any]]:
     """Пойманные запросы потока 2 — для прослушивания и разметки.
