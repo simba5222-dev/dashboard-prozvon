@@ -40,6 +40,7 @@ from app.stats import (  # noqa: F401
     local_now,
     managers,
     order_detail,
+    caught_rows,
     orders_of_period,
     period_summary,
     report_rows,
@@ -572,6 +573,55 @@ async def leads_dismiss(request: Request, uid: str, back: int = 0) -> Any:
     conn.commit()
     base = request.headers.get("x-forwarded-prefix", "").rstrip("/")
     return RedirectResponse(f"{base}/leads", status_code=303)
+
+
+@app.get("/caught", response_class=HTMLResponse)
+async def caught_page(
+    request: Request, since: str = "", until: str = "", verdict: str = "",
+) -> Any:
+    """Пойманные запросы потока 2 — послушать и разметить.
+
+    Экран учебный, а не рабочий: заявки отсюда не создаются. Владелец слушает
+    разговор, смотрит, что из него понял просев, и пишет, в чём тот ошибся.
+    Из пояснений растут правила, которым мы учим модель.
+    """
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    until = as_date(until) or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    since = as_date(since) or (date.fromisoformat(until) - timedelta(days=13)).isoformat()
+    if since > until:
+        since, until = until, since
+
+    всё = caught_rows(conn, since, until, None)
+    rows = [r for r in всё if (not r["verdict"] if verdict == "нет" else r["verdict"] == verdict)] \
+        if verdict else всё
+    ctx = _base_context(request)
+    ctx.update({
+        "since": since, "until": until, "verdict": verdict, "calls": rows,
+        "всего": len(всё),
+        "размечено": sum(1 for r in всё if r["verdict"]),
+        "верно": sum(1 for r in всё if r["verdict"] == "верно"),
+        "неверно": sum(1 for r in всё if r["verdict"] == "неверно"),
+        "спорно": sum(1 for r in всё if r["verdict"] == "спорно"),
+    })
+    return TEMPLATES.TemplateResponse("caught.html", ctx)
+
+
+@app.post("/caught/mark")
+async def caught_mark_post(
+    request: Request, call_uid: str = Form(...), verdict: str = Form(...),
+    note: str = Form(""), back: str = Form(""),
+) -> Any:
+    """Отметка владельца по пойманному запросу. В CRM ничего не трогает."""
+    from app.db import save_screen_verdict
+
+    conn = request.app.state.db
+    save_screen_verdict(conn, call_uid, verdict.strip(), note.strip(),
+                        datetime.now(timezone.utc).isoformat())
+    conn.commit()
+    ctx = _base_context(request)
+    адрес = back or f"{ctx['base']}/caught"
+    return RedirectResponse(f"{адрес}#c{call_uid}", status_code=303)
 
 
 @app.get("/leads/judge/{uid}")

@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Пойманные запросы — разметка{% endblock %}
+
+{% block extra_style %}
+<style>
+.wrap{max-width:1180px}
+.call{border:1px solid var(--line);border-radius:6px;margin-bottom:18px;background:var(--surface)}
+.call.v-верно{border-left:3px solid var(--ok)}
+.call.v-неверно{border-left:3px solid var(--stop)}
+.call.v-спорно{border-left:3px solid var(--warn)}
+.head{display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;
+  padding:12px 16px;border-bottom:1px solid var(--line)}
+.head h3{margin:0;font-size:17px;flex:1 1 auto}
+.meta{font-size:12px;color:var(--ink-3);font-family:ui-monospace,Menlo,monospace}
+.tag{font-size:11px;letter-spacing:.05em;text-transform:uppercase;padding:2px 8px;
+  border-radius:2px;background:var(--sunken);color:var(--ink-3);white-space:nowrap}
+.tag.ord{background:var(--ok-soft);color:var(--ok)}
+.tag.blocked{background:var(--warn-soft);color:var(--warn)}
+.body{display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid var(--line)}
+.body > div{padding:14px 16px}
+.body > div + div{border-left:1px solid var(--line)}
+.body h4{margin:0 0 8px;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3)}
+.body p{margin:0 0 7px;font-size:15px}
+.body .q{color:var(--ink-2);font-style:italic}
+.audio{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;
+  gap:12px;align-items:center;flex-wrap:wrap}
+.audio audio{height:32px;flex:1 1 320px}
+.audio .hint{font-size:12px;color:var(--ink-3)}
+details.tr{padding:10px 16px;border-bottom:1px solid var(--line);font-size:14px}
+details.tr summary{cursor:pointer;color:var(--ink-3);font-size:12px;
+  letter-spacing:.05em;text-transform:uppercase}
+details.tr .line{margin-top:8px;line-height:1.5}
+.mark{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 16px}
+.mark form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%}
+.mark button{font:inherit;font-size:12.5px;padding:6px 14px;border-radius:2px;cursor:pointer;
+  border:1px solid var(--line-2);background:var(--surface);color:var(--ink)}
+.mark button.yes{border-color:var(--ok);color:var(--ok)}
+.mark button.no{border-color:var(--stop);color:var(--stop)}
+.mark button.hm{border-color:var(--warn);color:var(--warn)}
+.mark button.on{color:var(--surface)}
+.mark button.yes.on{background:var(--ok)} .mark button.no.on{background:var(--stop)}
+.mark button.hm.on{background:var(--warn)}
+.mark textarea{flex:1 1 100%;order:10;font:inherit;font-size:14px;line-height:1.5;
+  padding:9px 12px;min-height:72px;resize:vertical;
+  border:1px solid var(--line-2);border-radius:2px;background:var(--surface);color:var(--ink)}
+.mark button[type=submit]{order:11;border-color:var(--accent);color:var(--accent)}
+.mark .was{order:12;font-size:11.5px;color:var(--ink-3);font-family:ui-monospace,Menlo,monospace}
+.filters{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:18px;font-size:13px}
+.filters a{padding:4px 11px;border:1px solid var(--line-2);border-radius:2px;color:var(--ink-2)}
+.filters a.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+.filt-line{display:flex;gap:10px;align-items:center;font-size:13px;margin-bottom:16px}
+.filt-line input{font:inherit;font-size:12px;padding:3px 5px;border:1px solid var(--line-2);
+  border-radius:2px;background:var(--surface);color:var(--ink)}
+.filt-line button{font:inherit;font-size:12px;padding:4px 12px;border:1px solid var(--accent);
+  background:var(--accent);color:#fff;border-radius:2px;cursor:pointer}
+@media (max-width:760px){.body{grid-template-columns:1fr}.body > div + div{border-left:0;border-top:1px solid var(--line)}}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="top">
+  <h1>Пойманные запросы</h1>
+  <span class="date">{{ since }} — {{ until }}</span>
+</div>
+<p class="crumbs">
+  <a href="{{ base }}/">← дашборд</a> ·
+  входящие менеджерам, в которых просев увидел запрос на технику ·
+  <b>экран учебный: заявки отсюда не создаются</b> ·
+  послушайте и напишите, в чём просев ошибся — из этого растут правила
+</p>
+
+<div class="card">
+  <div class="tiles">
+    <div class="tile"><div class="n">{{ всего }}</div><div class="l">пойманных запросов</div></div>
+    <div class="tile"><div class="n">{{ размечено }}</div><div class="l">размечено вами</div></div>
+    <div class="tile {% if верно %}good{% endif %}"><div class="n">{{ верно }}</div><div class="l">верно</div></div>
+    <div class="tile {% if неверно %}bad{% endif %}"><div class="n">{{ неверно }}</div><div class="l">неверно</div></div>
+    <div class="tile"><div class="n">{{ спорно }}</div><div class="l">спорно</div></div>
+  </div>
+</div>
+
+<form class="filt-line" method="get" action="{{ base }}/caught">
+  <input type="hidden" name="verdict" value="{{ verdict }}">
+  с <input type="date" name="since" value="{{ since }}">
+  по <input type="date" name="until" value="{{ until }}">
+  <button type="submit">Показать</button>
+</form>
+
+<div class="filters">
+  {% for key, name in [("", "все"), ("нет", "без отметки"), ("верно", "верно"),
+                       ("неверно", "неверно"), ("спорно", "спорно")] %}
+  <a href="{{ base }}/caught?since={{ since }}&until={{ until }}{% if key %}&verdict={{ key }}{% endif %}"
+     class="{% if verdict == key %}on{% endif %}">{{ name }}</a>
+  {% endfor %}
+</div>
+
+{% if not calls %}
+<div class="card"><div class="card-body dim">За этот период пойманных запросов нет.</div></div>
+{% endif %}
+
+{% for r in calls %}
+{% set s = r.screen %}
+<div class="call v-{{ r.verdict }}" id="c{{ r.uid }}">
+  <div class="head">
+    <h3>{{ s.equipment or "техника не названа" }}</h3>
+    {% if r.created_order_id %}<span class="tag ord">заявка {{ r.created_order_id }}</span>{% endif %}
+    {% if r.active_names %}<span class="tag blocked">уже есть заявка: {{ r.active_names }}</span>{% endif %}
+    {% if s.confidence %}<span class="tag">уверенность {{ s.confidence }}</span>{% endif %}
+    <span class="meta">{{ r.display_name or r.vats_login }} ·
+      {{ (r.started_at or "")[:16]|replace("T", " ") }} ·
+      {{ r.duration_sec }} с · {{ r.client_phone }}</span>
+  </div>
+
+  <div class="audio">
+    <audio controls preload="none" src="{{ base }}/record/{{ r.uid }}.mp3"></audio>
+    <span class="hint">слушайте и правьте отметку внизу — расшифровка машинная, она врёт</span>
+  </div>
+
+  <div class="body">
+    <div>
+      <h4>Что услышал просев</h4>
+      {% if s.request %}<p><b>Просьба:</b> {{ s.request }}</p>{% endif %}
+      {% if s.quote %}<p class="q">«{{ s.quote }}»</p>{% endif %}
+      {% if s.price_from %}<p><b>Цену называет:</b>
+        {{ "мы" if s.price_from == "us" else "собеседник" }}</p>{% endif %}
+    </div>
+    <div>
+      <h4>Кто у кого спрашивает</h4>
+      <p><b>Спрашивает:</b>
+        {{ "позвонивший" if s.asked_by == "caller" else "наш менеджер" }}</p>
+      {% if s.verify_role %}<p><b>Собеседник:</b> {{ s.verify_role }}</p>{% endif %}
+      {% if s.about_existing %}<p>Разговор по <b>действующей</b> заявке</p>{% endif %}
+      {% if s.verify_quote %}<p class="q">«{{ s.verify_quote }}»</p>{% endif %}
+    </div>
+  </div>
+
+  {% if r.head_text %}
+  <details class="tr">
+    <summary>начало разговора ({{ r.head_text|length }} символов)</summary>
+    {% for строка in r.head_text.split("\n") %}
+    {% if строка.strip() %}<div class="line">{{ строка }}</div>{% endif %}
+    {% endfor %}
+  </details>
+  {% endif %}
+
+  <div class="mark">
+    <form method="post" action="{{ base }}/caught/mark">
+      <input type="hidden" name="call_uid" value="{{ r.uid }}">
+      <input type="hidden" name="back" value="{{ base }}/caught?since={{ since }}&until={{ until }}{% if verdict %}&verdict={{ verdict }}{% endif %}">
+      <button class="yes {% if r.verdict == 'верно' %}on{% endif %}" name="verdict" value="верно">Верно</button>
+      <button class="no {% if r.verdict == 'неверно' %}on{% endif %}" name="verdict" value="неверно">Неверно</button>
+      <button class="hm {% if r.verdict == 'спорно' %}on{% endif %}" name="verdict" value="спорно">Спорно</button>
+      <textarea name="note" rows="3"
+                placeholder="Что именно не так и как должно было быть. Это важнее галочки: из галочки видно, что ошибка есть, а из пояснения — какая.">{{ r.verdict_note or '' }}</textarea>
+      <button type="submit" name="verdict" value="{{ r.verdict or 'спорно' }}">Сохранить</button>
+      {% if r.verdict_at %}<span class="was">отмечено {{ r.verdict_at[:16].replace('T', ' ') }}</span>{% endif %}
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

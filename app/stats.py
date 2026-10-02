@@ -467,6 +467,45 @@ def order_detail(conn: sqlite3.Connection, order_id: str) -> dict[str, Any] | No
     return order
 
 
+def caught_rows(conn: sqlite3.Connection, since: str, until: str,
+                verdict: str | None = None) -> list[dict[str, Any]]:
+    """Пойманные запросы потока 2 — для прослушивания и разметки.
+
+    Это не рабочий экран, а учебный: владелец слушает разговор, смотрит, что
+    из него понял просев, и пишет, в чём тот ошибся. Из пояснений растут
+    правила, которым мы учим модель. Заявки отсюда не создаются.
+    """
+    where = ["k.local_date BETWEEN ? AND ?", "s.is_request = 1"]
+    params: list[Any] = [since, until]
+    if verdict == "нет":
+        where.append("COALESCE(s.verdict, '') = ''")
+    elif verdict:
+        where.append("s.verdict = ?")
+        params.append(verdict)
+
+    rows = conn.execute(
+        f"""
+        SELECT k.uid, k.started_at, k.client_phone, k.duration_sec, k.vats_login,
+               m.display_name, c.contact_name, c.company_name, c.active_names,
+               s.head_text, s.verdict_json, s.verdict, s.verdict_note, s.verdict_at,
+               s.created_order_id
+        FROM screens s
+        JOIN calls k ON k.uid = s.call_uid
+        LEFT JOIN managers m ON m.vats_login = k.vats_login
+        LEFT JOIN inbound_checks c ON c.call_uid = k.uid
+        WHERE {' AND '.join(where)}
+        ORDER BY k.started_at DESC
+        """,
+        params,
+    ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["screen"] = _parsed_analysis(row["verdict_json"]) or {}
+        out.append(item)
+    return out
+
+
 def orders_of_period(
     conn: sqlite3.Connection, since: str, until: str, kind: str | None = None,
 ) -> list[dict[str, Any]]:

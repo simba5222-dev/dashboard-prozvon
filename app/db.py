@@ -378,6 +378,9 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("transport_cards", "call_link", "TEXT"),
     ("screens", "verdict", "TEXT NOT NULL DEFAULT ''"),
     ("screens", "verdict_at", "TEXT"),
+    # Чем именно просев ошибся. Пояснение владельца — то, из чего растут
+    # правила: «фронтальник = фронтальный погрузчик», «не придумывать адрес».
+    ("screens", "verdict_note", "TEXT"),
     # Разбор заявок спрашивает разное у проваленных и у живых: у первых —
     # «где сорвалось», у вторых — «где сейчас и нужна ли помощь». Держим
     # ответы в общей таблице, но помечаем, какой вопрос задавали.
@@ -779,6 +782,20 @@ def save_screen(conn: sqlite3.Connection, **row: Any) -> None:
             created_at   = excluded.created_at
         """,
         row,
+    )
+
+
+def save_screen_verdict(conn: sqlite3.Connection, call_uid: str, verdict: str,
+                        note: str, at: str) -> None:
+    """Отметка человека по просеву: верно, неверно, спорно — и чем именно.
+
+    Пояснение важнее галочки: из галочки видно, что ошибка есть, а из
+    пояснения — какая. Из этих пояснений растут правила, которым мы учим
+    модель. Заявку в CRM отметка не трогает.
+    """
+    conn.execute(
+        "UPDATE screens SET verdict = ?, verdict_note = ?, verdict_at = ? WHERE call_uid = ?",
+        (verdict, note, at, call_uid),
     )
 
 
