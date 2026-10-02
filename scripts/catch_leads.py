@@ -175,7 +175,7 @@ def main() -> int:
             # Решение одно на оба пути — быстрый и пакетный. Держать его в
             # одном месте обязательно: разойдутся — и дубли вернутся через ту
             # дверь, которую забыли починить.
-            reason = lead_block_reason(active)
+            reason = lead_block_reason(active, str(screen.get("equipment") or ""))
             conn.execute(
                 """UPDATE inbound_checks
                       SET orders_after = ?, order_names = ?,

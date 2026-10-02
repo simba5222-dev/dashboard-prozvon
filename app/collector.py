@@ -879,7 +879,13 @@ def contact_orders_around(
         except ValueError:
             continue
         # Возвращаем и id: чтобы дописать чужую заявку, одного имени мало.
-        item = {"id": str(row["id"]), "name": name}
+        # И технику: открытая заявка на автокран не должна глушить новый
+        # запрос на экскаватор-погрузчик — решение владельца 02.10.2026.
+        техника = (attrs.get("customs") or {}).get("custom-18621") or []
+        if isinstance(техника, str):
+            техника = [техника]
+        item = {"id": str(row["id"]), "name": name,
+                "equipment": ", ".join(str(t).strip() for t in техника if str(t).strip())}
         if made >= call_time - timedelta(minutes=lookback_minutes):
             after.append(item)
             continue

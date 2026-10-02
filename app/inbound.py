@@ -327,7 +327,7 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
     return create_lead(conn, settings, call, manager, verdict, path, local_date)
 
 
-def lead_block_reason(active: list[dict[str, str]]) -> str:
+def lead_block_reason(active: list[dict[str, str]], equipment: str = "") -> str:
     """Почему звонок вообще не надо трогать. Пустая строка — работаем.
 
     Остался один случай: у клиента **открыта** заявка, заведённая до звонка.
@@ -343,9 +343,30 @@ def lead_block_reason(active: list[dict[str, str]]) -> str:
     `order_active_days`. Иначе брошенный «Новый» двухлетней давности съедал бы
     новый запрос от старого клиента, а это ровно тот заказ, про который
     менеджер и забывает: проконсультировал и не оформил.
+
+    **Техника решает.** Правило владельца от 02.10.2026: открытая заявка на
+    автокран не должна глушить новый запрос на экскаватор-погрузчик. Если
+    просят явно другое — это новая заявка, отказа нет. Замер за две недели:
+    из 21 отказа 8 оказались новыми заявками от клиентов, с которыми мы уже
+    работаем, то есть от самых тёплых.
+
+    Сомневаемся — отказываем. Названия из одного семейства («кран» и
+    «манипулятор», «виброплита» и «вибротрамбовка») и расплывчатые слова
+    вроде «машина» считаем тем же самым: дубль в CRM дороже пропуска, пропуск
+    владелец увидит на экране разметки.
     """
-    if active:
+    if not active:
+        return ""
+    if not equipment:
         return f"у клиента открыта заявка: {order_names(active[:2])}"
+
+    from app.knowledge import одно_семейство
+
+    похожие = [o for o in active if одно_семейство(equipment, o.get("equipment") or "")]
+    if похожие:
+        return f"у клиента открыта заявка: {order_names(похожие[:2])}"
+    было = ", ".join(filter(None, (o.get("equipment") or "" for o in active[:2])))
+    logger.info("заявка не блокирует: просят «%s», а в открытой «%s»", equipment, было)
     return ""
 
 
@@ -464,7 +485,7 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
     after, active = contact_orders_around(
         client, contact["id"], str(call.get("start") or ""), stages,
         fresh_days=settings.order_active_days)
-    reason = lead_block_reason(active)
+    reason = lead_block_reason(active, str(verdict.get("equipment") or ""))
     if reason:
         _remember_orders(conn, uid, after, active)
         logger.info("звонок %s: %s — не трогаем", uid, reason)
