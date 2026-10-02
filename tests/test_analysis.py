@@ -252,8 +252,32 @@ def test_запрос_заказчика_остаётся(monkeypatch):
 def test_подрядчик_снимает_запрос(monkeypatch):
     # Подрядчик предлагает свою машину под наш заказ. Просьба про технику
     # звучит один в один как заказ, но платить будем мы, а не нам.
-    out = _screen_with(monkeypatch, {**BASE_ANSWER, "other_side": "contractor"})
+    # Цитата обязательна: без неё сторона не считается определённой.
+    out = _screen_with(monkeypatch, {
+        **BASE_ANSWER, "other_side": "contractor",
+        "other_side_quote": "нужен экскаватор погрузчик в Шушарах на завтра"})
     assert out["is_request"] is False
+
+
+def test_подрядчик_без_цитаты_запрос_не_снимает(monkeypatch):
+    """Правило куплено ошибкой 02.10.2026.
+
+    Модель трижды назвала заказчика исполнителем и дважды наоборот — всякий
+    раз с уверенностью 100 и без оснований. Три настоящие заявки потерялись.
+    Теперь «кто на том конце» требует дословной цитаты из расшифровки.
+    """
+    out = _screen_with(monkeypatch, {**BASE_ANSWER, "other_side": "contractor",
+                                     "other_side_quote": ""})
+    assert out["is_request"] is True
+    assert out["other_side"] == ""
+
+
+def test_подрядчик_с_выдуманной_цитатой_запрос_не_снимает(monkeypatch):
+    out = _screen_with(monkeypatch, {
+        **BASE_ANSWER, "other_side": "contractor",
+        "other_side_quote": "у меня своя машина, могу поставить на завтра"})
+    assert out["is_request"] is True
+    assert out["other_side"] == ""
 
 
 def test_поиск_нашим_менеджером_снимает_запрос(monkeypatch):
