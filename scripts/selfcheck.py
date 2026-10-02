@@ -185,6 +185,52 @@ def check_orders(conn, rep: Report) -> None:
                  f"(ставит scripts/make_tasks.py --apply)")
 
 
+def check_ad_orders(rep: Report, settings) -> None:
+    """Доходит ли разбор звонков с общих номеров до заявок.
+
+    Сторож для догона. CRM привязывает заявку к контакту позже звонка —
+    02.10.2026 по звонку в 09:17 привязка появилась в 09:45, — и разбор
+    уходил в никуда: из двенадцати заявок того дня наша выжимка была в одной.
+    Догон на питерском сервере дописывает их раз в час.
+
+    Без этой строки поломка догона была бы не видна неделями: заявки
+    создаются, выглядят живыми, просто пустыми.
+    """
+    from datetime import date, timedelta
+
+    from app.collector import SynergyClient
+
+    вчера = (date.today() - timedelta(days=1)).isoformat()
+    try:
+        client = SynergyClient(
+            base_url=settings.synergy_url, token=settings.synergy_api_token,
+            timeout_sec=30.0, min_interval_sec=settings.synergy_min_interval_sec,
+            retries=settings.synergy_retries)
+        payload = client.get("orders", sort="-created-at", **{"page[number]": 1})
+    except Exception as exc:  # noqa: BLE001 — диагностика не должна падать
+        rep.problem(f"заявки за вчера не прочитались: {exc}")
+        return
+
+    всего = с_выжимкой = 0
+    for row in payload.get("data") or []:
+        attrs = row.get("attributes") or {}
+        if str(attrs.get("created-at") or "")[:10] != вчера:
+            continue
+        всего += 1
+        customs = attrs.get("customs") or {}
+        if str(customs.get("custom-30609") or "").strip():
+            с_выжимкой += 1
+
+    if not всего:
+        rep.fact("заявок за вчера не нашлось — проверять нечего")
+        return
+    доля = 100 * с_выжимкой // всего
+    rep.fact(f"заявки за вчера: {всего}, из них с нашей выжимкой {с_выжимкой} ({доля}%)")
+    if доля < 30:
+        rep.problem(f"разбор доходит до заявок редко: {с_выжимкой} из {всего}. "
+                    f"Проверить догон на питерском: systemctl status asr-fill-orders")
+
+
 def check_logs(rep: Report, log_dir: Path, hours: int = 26) -> None:
     """Обрывы в логах за последние сутки."""
     cutoff = datetime.now().timestamp() - hours * 3600
@@ -290,6 +336,7 @@ def main() -> int:
     check_timers(rep)
     stats = check_pipeline(conn, rep, day, args.min_sec, records)
     check_orders(conn, rep)
+    check_ad_orders(rep, settings)
     check_logs(rep, db_path.parent)
     check_running(rep)
     check_asr(rep, settings.asr_url)
