@@ -692,13 +692,63 @@ SCREEN_PROMPT = """Ты просматриваешь начало входяще
 
 Расшифровка черновая: если разобрать нельзя — "is_request": false и
 "confidence" пониже. Выдумывать запрос нельзя, цитата обязана быть из текста.
+
+**Как писать «не знаю».** Там, где сказано «пусто», ставь **пустую строку**
+`""` — не слово «пусто», не «нет», не «неизвестно», не прочерк. Проверено
+02.10.2026: одна из моделей писала в поле техники слово «пусто», и сверка
+с открытой заявкой переставала работать — «пусто» не тип техники.
+
+**Допустимые значения, строго из списка, латиницей:**
+
+    other_side          client | contractor | ""
+    price_from          us | them | none
+    work_described_by   us | them | ""
+    asked_by            caller | our_manager | ""
+    manager_side        менеджер | клиент | ""
+
+Ответ — **только JSON**, без пояснений до и после, без markdown-обрамления.
 """
+
+
+def _спросить_голову(prompt: str, *, engine: str, api_key: str, model: str,
+                     folder: str = "", timeout_sec: float = 60.0,
+                     kind: str = "просев") -> dict[str, Any] | None:
+    """Задать вопрос модели и вернуть разобранный JSON. None — не ответила.
+
+    Голов две, и выбор между ними — настройка, а не правка кода. YandexGPT
+    стоит втрое дешевле и держит текст в России; OpenAI остаётся запасным
+    путём и мерой для сравнения.
+    """
+    if engine == "yandex":
+        from app import yandex
+
+        ответ = yandex.complete(prompt, api_key=api_key, folder=folder,
+                                model=model, max_tokens=1500,
+                                timeout_sec=timeout_sec)
+        return yandex.parse_json(ответ)
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    pace_calls()
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        response_format={"type": "json_object"},
+    )
+    log_usage(response, kind=kind, model=model)
+    try:
+        return json.loads(response.choices[0].message.content or "{}")
+    except ValueError:
+        return None
 
 
 def screen_call(
     transcript: str, active_orders: str, *, api_key: str, model: str,
     own_company: str = "Техно-Ресурс", timeout_sec: float = 60.0,
     verify: bool = True, known: str = "", context: str = "",
+    engine: str = "openai", folder: str = "",
 ) -> dict[str, Any]:
     """Быстрый просев: есть ли в разговоре запрос на технику.
 
@@ -706,28 +756,19 @@ def screen_call(
     всего потока входящих не помещается в сутки, а запрос звучит в первую
     минуту. Дальше в полный разбор уходят только те, где просев нашёл запрос.
     """
-    from openai import OpenAI
-
     if not transcript.strip():
         return {**EMPTY_SCREEN}
-    client = OpenAI(api_key=api_key, timeout=timeout_sec)
-    pace_calls()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": SCREEN_PROMPT.format(
-            own_company=own_company, domain=knowledge.DOMAIN,
-            transcript=name_sides(transcript)[:6000],
-            active=active_orders or "открытых заявок нет",
-            known=known or "номер в базе не числится",
-            context=context or "повод звонка по метаданным не определён",
-        )}],
-        temperature=0.0,
-        response_format={"type": "json_object"},
+
+    prompt = SCREEN_PROMPT.format(
+        own_company=own_company, domain=knowledge.DOMAIN,
+        transcript=name_sides(transcript)[:6000],
+        active=active_orders or "открытых заявок нет",
+        known=known or "номер в базе не числится",
+        context=context or "повод звонка по метаданным не определён",
     )
-    log_usage(response, kind="просев", model=model)
-    try:
-        data = json.loads(response.choices[0].message.content or "{}")
-    except ValueError:
+    data = _спросить_голову(prompt, engine=engine, api_key=api_key, model=model,
+                            folder=folder, timeout_sec=timeout_sec, kind="просев")
+    if data is None:
         return {**EMPTY_SCREEN}
     out = {**EMPTY_SCREEN, **{k: v for k, v in data.items() if k in EMPTY_SCREEN}}
     out["is_request"] = bool(out["is_request"])
@@ -766,7 +807,8 @@ def screen_call(
     # принимая за заказ звонок исполнителя по объявлению менеджера.
     if out["is_request"] and verify:
         check = verify_request(transcript, api_key=api_key, model=model,
-                               own_company=own_company, timeout_sec=timeout_sec)
+                               own_company=own_company, timeout_sec=timeout_sec,
+                               engine=engine, folder=folder)
         out["verify_role"] = check["role"]
         out["verify_quote"] = check["quote"]
         if check["role"] and check["role"] != "customer":
@@ -825,12 +867,15 @@ VERIFY_PROMPT = """Перед тобой начало телефонного р�
 {transcript}
 
 Верни JSON: {{"role": "<один из вариантов>", "quote": "<кусок расшифровки,
-по которому решил>", "sure": 0-100}}"""
+по которому решил>", "sure": 0-100}}
+
+Значение `role` — строго одно слово латиницей из списка вариантов выше.
+Ответ — только JSON, без пояснений вокруг и без markdown-обрамления."""
 
 
 def verify_request(
     transcript: str, *, api_key: str, model: str, own_company: str = "Техно-Ресурс",
-    timeout_sec: float = 60.0,
+    timeout_sec: float = 60.0, engine: str = "openai", folder: str = "",
 ) -> dict[str, Any]:
     """Вторая ступень просева: кто кого нанимает.
 
@@ -842,23 +887,14 @@ def verify_request(
     Идёт только по тем разговорам, где первая ступень нашла запрос: это
     два десятка звонков в день, копейки против цены лишней заявки в CRM.
     """
-    from openai import OpenAI
-
     if not transcript.strip():
         return {"role": "other", "quote": "", "sure": 0}
-    client = OpenAI(api_key=api_key, timeout=timeout_sec)
-    pace_calls()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": VERIFY_PROMPT.format(
-            own_company=own_company, transcript=name_sides(transcript)[:6000])}],
-        temperature=0.0,
-        response_format={"type": "json_object"},
-    )
-    log_usage(response, kind="проверка роли", model=model)
-    try:
-        data = json.loads(response.choices[0].message.content or "{}")
-    except ValueError:
+    data = _спросить_голову(
+        VERIFY_PROMPT.format(own_company=own_company,
+                             transcript=name_sides(transcript)[:6000]),
+        engine=engine, api_key=api_key, model=model, folder=folder,
+        timeout_sec=timeout_sec, kind="проверка роли")
+    if data is None:
         return {"role": "", "quote": "", "sure": 0}
     role = str(data.get("role") or "").strip().lower()
     return {"role": role, "quote": str(data.get("quote") or "")[:200],

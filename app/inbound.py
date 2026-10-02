@@ -308,9 +308,13 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
         "vats_login": manager["vats_login"] if manager else "",
         "diversion": digits(dialed), "started_at": started,
     }))
+    яндексом = settings.screen_engine == "yandex"
     verdict = analyzer.screen_call(
-        head, "", api_key=settings.openai_api_key,
-        model=settings.analysis_model, own_company=settings.own_company,
+        head, "",
+        api_key=(settings.yandex_api_key if яндексом else settings.openai_api_key) or "",
+        model=settings.yandex_model if яндексом else settings.analysis_model,
+        engine=settings.screen_engine, folder=settings.yandex_folder or "",
+        own_company=settings.own_company,
         context=контекст,
     )
     is_request = bool(verdict["is_request"] and not verdict["about_existing"])

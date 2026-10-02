@@ -125,9 +125,13 @@ def main() -> int:
             # наш менеджер, в другой — позвонивший. Проверено на записях.
             # Поэтому стороны обезличиваем, а кто есть кто, решает разбор.
             text = text.replace("operator:", "сторона A:").replace("client:", "сторона B:")
+            яндексом = settings.screen_engine == "yandex"
             verdict = analyzer.screen_call(
                 text, row["active_names"] or "",
-                api_key=settings.openai_api_key, model=settings.analysis_model,
+                api_key=(settings.yandex_api_key if яндексом
+                         else settings.openai_api_key) or "",
+                model=settings.yandex_model if яндексом else settings.analysis_model,
+                engine=settings.screen_engine, folder=settings.yandex_folder or "",
                 own_company=settings.own_company,
                 known=search_calls.number_profile(conn, row["client_phone"], buyers),
             )

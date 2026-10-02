@@ -260,6 +260,13 @@ class Settings(BaseSettings):
     crm_lead_stage: str = Field(
         default="Новый", description="Стадия, в которую кладём пойманную заявку."
     )
+    screen_engine: str = Field(
+        default="openai",
+        description="Чем просеивать входящие: openai или yandex. Переключается "
+        "настройкой, а не правкой кода — чтобы можно было вернуться, если "
+        "вторая голова окажется хуже на живом потоке.",
+    )
+
     crm_task_type: str = Field(
         default="5305",
         description="Тип задачи в CRM для поручений по заявке. Владелец выбрал "
