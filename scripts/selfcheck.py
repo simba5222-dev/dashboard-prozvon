@@ -278,6 +278,44 @@ def check_asr(rep: Report, url: str) -> None:
     rep.fact(f"распознавание: модель {'загружена' if body.get('model_loaded') else 'ещё не загружена'}")
 
 
+def check_yandex(rep: Report, settings) -> None:
+    """Облако Яндекса пускает нас к моделям.
+
+    Спрашиваем бесплатную ручку tokenize: она требует той же роли, что и
+    генерация, но не стоит ничего. 02.10.2026 облако закрылось посреди дня
+    (403 PermissionDenied сразу на каталог, облако и организацию — так
+    выглядит отвязанный платёжный аккаунт), и узнали мы об этом случайно,
+    через полтора часа. Без этой проверки уши и голова молчат, а конвейер
+    снаружи выглядит живым: записи качаются, вебхуки отвечают успехом.
+    """
+    import httpx
+
+    key = settings.yandex_api_key
+    folder = settings.yandex_folder
+    if not key or not folder:
+        rep.problem("доступы Яндекса не заданы — распознавание и разбор работать не будут")
+        return
+    try:
+        r = httpx.post(
+            "https://llm.api.cloud.yandex.net/foundationModels/v1/tokenize",
+            headers={"Authorization": f"Api-Key {key}"},
+            json={"modelUri": f"gpt://{folder}/yandexgpt-lite/latest", "text": "проверка"},
+            timeout=30,
+        )
+    except Exception as exc:  # noqa: BLE001 — любой отказ сети равнозначен
+        rep.problem(f"облако Яндекса не отвечает: {type(exc).__name__}")
+        return
+    if r.status_code == 200:
+        rep.fact("облако Яндекса: доступ есть")
+        return
+    if r.status_code in (401, 403):
+        rep.problem(f"облако Яндекса закрыло доступ ({r.status_code}) — "
+                    "смотреть платёжный аккаунт облака в кабинете; "
+                    "расшифровок и разбора нет совсем")
+        return
+    rep.problem(f"облако Яндекса ответило {r.status_code} на бесплатную проверку")
+
+
 def check_backup(rep: Report) -> None:
     """Свежесть резервной копии. Бэкап без строки завершения не считается."""
     log = Path("/var/backups/projects/backup.log")
@@ -340,6 +378,7 @@ def main() -> int:
     check_logs(rep, db_path.parent)
     check_running(rep)
     check_asr(rep, settings.asr_url)
+    check_yandex(rep, settings)
     check_backup(rep)
     check_disk(rep, db_path, records)
 
