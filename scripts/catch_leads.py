@@ -35,7 +35,8 @@ from app.collector import (SynergyClient, contact_orders_around,  # noqa: E402
                            load_stages, order_names)
 from app.inbound import caught_mark, lead_block_reason  # noqa: E402
 from app.config import get_settings  # noqa: E402
-from app.crm_write import CrmWriter, lead_comment, lead_summary, order_customs  # noqa: E402
+from app.crm_write import (FIELD_MARK, MARK_AI, CrmWriter, lead_comment,
+                           lead_summary, order_customs)  # noqa: E402
 from app.db import connect, init_schema, save_transcript  # noqa: E402
 
 logger = logging.getLogger("leads")
@@ -206,16 +207,19 @@ def main() -> int:
             summary = lead_summary(dict(row), screen, analysis)
             call_meta = {"start": row["started_at"], "duration": row["duration_sec"],
                          "client": row["client_phone"]}
-            customs = order_customs(
+            # Чужую заявку только дописываем — признак «Создано ИИ» на неё
+            # не ставим: это работа менеджера, а не наша.
+            чужие = order_customs(
                 analysis, transcript, summary,
                 caught=caught_mark(uid, call_meta, settings.timezone_offset_hours))
+            customs = {**чужие, FIELD_MARK: [MARK_AI]}
 
             if after:
                 # Заявку завели вокруг звонка — дописываем её, а не заводим
                 # вторую рядом. Стадию, название и ответственного не трогаем:
                 # заявка чужая.
                 target = after[0]["id"]
-                writer.update_customs(target, customs)
+                writer.update_customs(target, чужие)
                 writer.post_comment(target, comment)
                 performer = conn.execute(
                     "SELECT synergy_user FROM managers WHERE vats_login = ?",

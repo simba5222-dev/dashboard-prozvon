@@ -34,7 +34,8 @@ from app.collector import (SynergyClient, contact_orders_around, find_contact,
                            load_stages, order_names)
 from app.config import Settings
 from app import prozvon
-from app.crm_write import CrmWriter, lead_comment, lead_summary, order_customs
+from app.crm_write import (FIELD_MARK, MARK_AI, CrmWriter, lead_comment,
+                           lead_summary, order_customs)
 from app.db import save_call, save_call_order, save_inbound_check, save_screen, save_transcript
 from app.stats import local_parts
 
@@ -510,15 +511,18 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
     writer = CrmWriter(client, apply=True)
     summary = lead_summary(row, verdict, analysis)
     comment = lead_comment(row, verdict, analysis)
-    customs = order_customs(
+    # Чужую заявку только дописываем — признак «Создано ИИ» на неё не ставим:
+    # это работа менеджера, а не наша. См. `order_customs`.
+    чужие = order_customs(
         analysis, transcript, summary,
         caught=caught_mark(uid, call, settings.timezone_offset_hours))
+    customs = {**чужие, FIELD_MARK: [MARK_AI]}
 
     if after:
         # Заявку уже завели — её и дописываем. Ни стадию, ни ответственного,
         # ни название не трогаем: заявка чужая, ведёт её человек.
         target = after[0]["id"]
-        writer.update_customs(target, customs)
+        writer.update_customs(target, чужие)
         writer.post_comment(target, comment)
         if manager is not None and manager["synergy_user"]:
             writer.add_performer(target, manager["synergy_user"])
