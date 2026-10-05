@@ -59,6 +59,10 @@ class Settings(BaseSettings):
 
     # --- Источник: Synergy CRM ---
     synergy_url: str = Field(default="https://app.synergycrm.ru/api/v1")
+    # Ссылка на карточку контакта в веб-интерфейсе Synergy — не угадываем
+    # формат, владелец даёт его сам. {id} заменяется на contact_id из нашей
+    # базы. Пусто — имя поставщика на экране остаётся просто текстом.
+    synergy_contact_url: str = Field(default="")
     synergy_api_token: str | None = Field(
         default=None, description="Токен Synergy. Пусто — проверка карточек выключена."
     )

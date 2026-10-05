@@ -72,7 +72,8 @@
   <ul>
     {% for h in problems.unresolved %}
     <li>
-      <b>{{ h.contact_name or h.client_phone }}</b>,
+      <b>{% if h.contact_name and h.contact_url %}<a href="{{ h.contact_url }}" target="_blank" rel="noopener">{{ h.contact_name }}</a>{% else %}{{ h.contact_name or h.client_phone }}{% endif %}</b>
+      {% if h.contact_name and h.client_phone %}<span class="dim mono">{{ h.client_phone }}</span>{% endif %},
       {% if since != until %}{{ h.started_at[:16].replace('T', ' ') }}{% else %}{{ h.started_at[11:16] }}{% endif %}
       — {{ h.label }}:
       {% if h.offered %}
@@ -148,7 +149,12 @@
       {% for h in heard %}
       <tr>
         <td>{% if since != until %}{{ h.started_at[:16].replace('T', ' ') }}{% else %}{{ h.started_at[11:16] }}{% endif %}</td>
-        <td>{{ h.contact_name or h.client_phone }}</td>
+        <td>
+          {% if h.contact_name and h.contact_url %}<a href="{{ h.contact_url }}" target="_blank" rel="noopener">{{ h.contact_name }}</a>
+          {% elif h.contact_name %}{{ h.contact_name }}
+          {% else %}—{% endif %}
+          {% if h.client_phone %}<br><span class="dim mono">{{ h.client_phone }}</span>{% endif %}
+        </td>
         <td>{{ h.asked_type or '—' }}</td>
         <td>
           {% if h.offered %}

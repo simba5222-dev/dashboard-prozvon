@@ -834,8 +834,11 @@ def heard_checks(conn: sqlite3.Connection, since: str, until: str | None = None,
     order = {"missing": 0, "ask_more": 1, "no_cards": 2, "all_saved": 3, "unclear": 4}
     rows = []
     for row in conn.execute(
-        f"""SELECT c.*, k.started_at, k.duration_sec, k.client_phone
+        f"""SELECT c.*, k.started_at, k.duration_sec, k.client_phone, t.contact_id
              FROM search_checks c JOIN calls k ON k.uid = c.call_uid
+             LEFT JOIN (SELECT phone10, MIN(contact_id) contact_id FROM transport_cards
+                         WHERE phone10 <> '' AND contact_id <> '' GROUP BY phone10) t
+                    ON t.phone10 = c.phone10
             WHERE {' AND '.join(where)} ORDER BY k.started_at DESC""",
         params):
         item = dict(row)

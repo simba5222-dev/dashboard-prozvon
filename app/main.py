@@ -105,6 +105,20 @@ def as_date(value: Any) -> str:
         return ""
 
 
+def _with_contact_links(rows: list[dict[str, Any]], url_template: str) -> list[dict[str, Any]]:
+    """Дописать ссылку на карточку контакта в Synergy — решение владельца 05.10.2026.
+
+    Формат ссылки в `.env` (`SYNERGY_CONTACT_URL`), не в коде: угадывать чужой
+    URL нельзя, а владелец однажды его сменит. Без настройки или без
+    `contact_id` у звонка ссылки просто не будет — имя останется текстом.
+    """
+    if url_template:
+        for row in rows:
+            contact_id = row.get("contact_id")
+            row["contact_url"] = url_template.format(id=contact_id) if contact_id else ""
+    return rows
+
+
 def _base_context(request: Request) -> dict[str, Any]:
     settings: Settings = request.app.state.settings
     return {
@@ -355,7 +369,7 @@ async def search_page(request: Request, day: str | None = None,
     if since > until:
         since, until = until, since
     ctx = _base_context(request)
-    heard = heard_checks(conn, since, until)
+    heard = _with_contact_links(heard_checks(conn, since, until), settings.synergy_contact_url)
     ctx.update({
         "since": since,
         "until": until,
@@ -390,7 +404,8 @@ async def search_manager_page(request: Request, vats_login: str, day: str | None
 
     who = next((m for m in managers(conn, dept="поиск") if m["vats_login"] == vats_login), None)
     ctx = _base_context(request)
-    heard = heard_checks(conn, since, until, vats_login=vats_login)
+    heard = _with_contact_links(
+        heard_checks(conn, since, until, vats_login=vats_login), settings.synergy_contact_url)
     people = search_day(conn, since, until, threshold_sec=settings.talk_threshold_sec)
     ctx.update({
         "since": since,
