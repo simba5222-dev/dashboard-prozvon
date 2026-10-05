@@ -307,6 +307,72 @@ def report_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def digest_rows(
+    conn: sqlite3.Connection, since: str, until: str,
+    vats_login: str | None = None, threshold_sec: int = 15,
+) -> dict[str, list[dict[str, Any]]]:
+    """Выжимка для планёрки — решение владельца 05.10.2026.
+
+    Ничего не разбирает заново: почасовой `analyze_calls.py --group` уже
+    посчитал по каждому звонку оценку, упущенное в карточке и непрозвучавшие
+    вопросы — здесь это только отбирается и подсвечивается. Источник —
+    `report_rows`, те же строки, что в развёрнутом отчёте.
+
+    `underdelivered` — «не дожал»: оценка разговора 1–2 из 5 и при этом
+    реально что-то упущено (иначе низкая оценка ни о чём не говорит для
+    подсветки — у короткого вежливого отказа тоже может быть оценка 2).
+
+    `talked_no_order` — в разговоре прозвучала техника или потребность, а у
+    контакта за всё время ни одной заявки. Самый дешёвый сигнал пропущенного
+    лида: не нужно сравнивать время звонка и время заявки, OK от того, что
+    заявок с момента звонка не прибавилось.
+    """
+    rows = report_rows(conn, since, until, vats_login, threshold_sec)
+    underdelivered = []
+    talked_no_order = []
+    for row in rows:
+        a = row.get("analysis") or {}
+        quality = a.get("call_quality")
+        if quality is not None and quality <= 2 and (a.get("missed") or a.get("questions_missed")):
+            underdelivered.append(row)
+        has_need = bool(a.get("equipment") or a.get("need_stated"))
+        if has_need and not (row.get("orders_count") or 0):
+            talked_no_order.append(row)
+    underdelivered.sort(key=lambda r: (r["analysis"].get("call_quality"), r["started_at"]))
+    talked_no_order.sort(key=lambda r: r["started_at"], reverse=True)
+    return {"rows": rows, "underdelivered": underdelivered, "talked_no_order": talked_no_order}
+
+
+def coaching_picks(rows: list[dict[str, Any]], per_manager: int = 5) -> list[dict[str, Any]]:
+    """3–5 звонков на менеджера — самые поучительные, для разбора на планёрке.
+
+    «Поучительный» — не просто низкая оценка, а сочетание низкой оценки с
+    тем, что реально можно обсудить: упущенное в карточке, незаданные
+    вопросы, непредложенная сопутствующая техника. Звонок без единого из
+    этих пунктов в подборку не попадёт, даже если оценка невысокая — обсуждать
+    было бы нечего.
+    """
+    def score(row: dict[str, Any]) -> int:
+        a = row.get("analysis") or {}
+        quality = a.get("call_quality")
+        quality_part = (3 - quality) * 2 if quality else 0
+        return (quality_part + len(a.get("missed") or [])
+                + len(a.get("questions_missed") or []) + len(a.get("upsell_missed") or []))
+
+    scored = sorted((row for row in rows if row.get("analysis")), key=score, reverse=True)
+    by_manager: dict[str, dict[str, Any]] = {}
+    for row in scored:
+        if score(row) <= 0:
+            continue
+        login = row.get("vats_login") or ""
+        bucket = by_manager.setdefault(login, {
+            "vats_login": login, "display_name": row.get("display_name") or login, "calls": [],
+        })
+        if len(bucket["calls"]) < per_manager:
+            bucket["calls"].append(row)
+    return sorted(by_manager.values(), key=lambda b: b["display_name"] or "")
+
+
 def call_detail(conn: sqlite3.Connection, uid: str) -> dict[str, Any] | None:
     row = conn.execute(
         """

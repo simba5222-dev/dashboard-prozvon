@@ -47,6 +47,8 @@ from app.stats import (  # noqa: F401
     period_summary,
     report_rows,
     report_totals,
+    digest_rows,
+    coaching_picks,
 )
 
 logger = logging.getLogger(__name__)
@@ -534,6 +536,55 @@ async def ads_mark(request: Request, call_uid: str = Form(...), verdict: str = F
     ctx = _base_context(request)
     адрес = back or f"{ctx['base']}/ads"
     return RedirectResponse(f"{адрес}#c{call_uid}", status_code=303)
+
+
+@app.get("/digest", response_class=HTMLResponse)
+async def digest_page(
+    request: Request, since: str = "", until: str = "", manager: str = "",
+) -> Any:
+    """Выжимка для планёрки — решение владельца 05.10.2026.
+
+    Не новый разбор, а подсветка того, что уже посчитал почасовой разбор
+    звонков: где менеджер не дожал разговор, где заявка зависла без движения,
+    где был разговор про технику, а заявки нет вовсе, и три-пять самых
+    поучительных звонков на человека — обсуждать на планёрке.
+
+    «Заявки без движения» — отдельное окно (45 дней), не зависящее от
+    выбранного периода звонков: зависшая заявка интересна сама по себе, а не
+    потому, что по ней вчера звонили.
+    """
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    today = local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    until = as_date(until) or today
+    since = as_date(since) or until
+    if since > until:
+        since, until = until, since
+
+    who = next((m for m in managers(conn) if m["vats_login"] == manager), None)
+    digest = digest_rows(conn, since, until, manager or None, settings.talk_threshold_sec)
+
+    stale_since = (date.fromisoformat(today) - timedelta(days=45)).isoformat()
+    stale_orders = orders_of_period(conn, stale_since, today, kind="rop")
+    if who:
+        stale_orders = [o for o in stale_orders if o.get("responsible") == who["display_name"]]
+
+    ctx = _base_context(request)
+    ctx.update({
+        "since": since,
+        "until": until,
+        "quick": quick_periods(today),
+        "manager_login": manager,
+        "manager": who,
+        "all_managers": managers(conn),
+        "underdelivered": digest["underdelivered"],
+        "talked_no_order": digest["talked_no_order"],
+        "stale_orders": stale_orders,
+        "stale_since": stale_since,
+        "coaching": coaching_picks(digest["rows"]),
+        "total_calls": len(digest["rows"]),
+    })
+    return TEMPLATES.TemplateResponse("digest.html", ctx)
 
 
 @app.get("/report", response_class=HTMLResponse)

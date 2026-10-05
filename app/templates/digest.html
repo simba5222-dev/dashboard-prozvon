@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}Выжимка для планёрки{% endblock %}
+
+{% block extra_style %}
+<style>
+.warn { color: #b45309; }
+.period{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;
+  background:var(--surface);border:1px solid var(--line);border-radius:3px;
+  padding:11px 15px;margin-bottom:18px;font-size:13px}
+.period label{display:flex;align-items:center;gap:6px;color:var(--ink-3)}
+.period input[type=date],.period select{font:inherit;color:var(--ink);
+  background:var(--surface-2);border:1px solid var(--line-2);border-radius:2px;padding:3px 6px}
+.period button{font:inherit;cursor:pointer;color:var(--surface);background:var(--accent);
+  border:1px solid var(--accent);border-radius:2px;padding:4px 14px}
+.period .quick{margin-left:auto;color:var(--ink-3)}
+.period .quick a{margin-left:10px}
+.period .quick a.now{font-weight:600;text-decoration:none}
+.st{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;
+  padding:2px 7px;border-radius:2px;white-space:nowrap;background:var(--stop-soft);color:var(--stop)}
+.call-block{border:1px solid var(--line);border-radius:3px;padding:13px 15px;margin-bottom:12px}
+.call-block:last-child{margin-bottom:0}
+.call-block h4{margin:0 0 6px;font-size:14px}
+.call-block ul{margin:4px 0 0;padding-left:18px}
+.call-block li{margin-bottom:3px}
+</style>
+{% endblock %}
+
+{% block content %}
+<form class="period" method="get" action="{{ base }}/digest">
+  <label>с <input type="date" name="since" value="{{ since }}"></label>
+  <label>по <input type="date" name="until" value="{{ until }}"></label>
+  <label>менеджер
+    <select name="manager">
+      <option value="">все</option>
+      {% for m in all_managers %}
+      <option value="{{ m.vats_login }}" {% if m.vats_login == manager_login %}selected{% endif %}>{{ m.display_name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">Показать</button>
+  <span class="quick">быстро:
+    {% for q in quick %}
+    <a href="{{ base }}/digest?since={{ q.since }}&amp;until={{ q.until }}{% if manager_login %}&amp;manager={{ manager_login }}{% endif %}"
+       class="{% if since == q.since and until == q.until %}now{% endif %}">{{ q.name }}</a>
+    {% endfor %}
+  </span>
+</form>
+
+<p class="dim">Не новый разбор — подсветка того, что уже посчитал почасовой разбор
+  звонков прозвона. Разобрано {{ total_calls }} разговоров за период
+  {{ since }}{% if until != since %}…{{ until }}{% endif %}{% if manager %} по {{ manager.display_name }}{% endif %}.</p>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Не дожал</h2>
+    <span class="sub">оценка разговора 1–2 из 5, и реально есть что упустить · {{ underdelivered|length }}</span>
+  </div>
+  <div class="card-body scroll">
+    {% if not underdelivered %}
+      <p class="dim">За этот период таких разговоров нет.</p>
+    {% else %}
+    <table>
+      <tr><th>Когда</th><th>Менеджер</th><th>Клиент</th><th>Оценка</th><th>Чего не хватило</th></tr>
+      {% for r in underdelivered %}
+      <tr>
+        <td class="mono"><a href="{{ base }}/call/{{ r.uid }}">{{ r.started_at[:16].replace('T', ' ') }}</a></td>
+        <td>{{ r.display_name or r.vats_login }}</td>
+        <td>{{ r.contact_name or r.client_phone }}{% if r.company_name %}<br><span class="dim">{{ r.company_name }}</span>{% endif %}</td>
+        <td class="warn">{{ r.analysis.call_quality }} из 5</td>
+        <td>
+          {% for m in r.analysis.missed %}<div class="dim">упущено: {{ m.value }}</div>{% endfor %}
+          {% for q in r.analysis.questions_missed %}<div class="dim">не спросил: {{ q }}</div>{% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Заявки без движения</h2>
+    <span class="sub">нужна помощь руководителя · окно {{ stale_since }}…{{ until }}, не зависит от периода выше · {{ stale_orders|length }}</span>
+  </div>
+  <div class="card-body scroll">
+    {% if not stale_orders %}
+      <p class="dim">Зависших заявок нет.</p>
+    {% else %}
+    <table>
+      <tr><th>Заявка</th><th>Клиент</th><th>Ответственный</th><th>Этап</th><th>Почему</th></tr>
+      {% for o in stale_orders %}
+      <tr>
+        <td><a href="{{ base }}/order/{{ o.order_id }}">{{ o.name or "без названия" }}</a></td>
+        <td>{{ o.contact_name or "—" }}{% if o.company_name %}<br><span class="dim">{{ o.company_name }}</span>{% endif %}</td>
+        <td>{{ o.responsible or "не назначен" }}</td>
+        <td class="dim">{{ o.stage_now or "—" }}</td>
+        <td><span class="st">РОП</span> {{ o.rop_reason }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Говорили про технику — заявки нет</h2>
+    <span class="sub">в разговоре прозвучала техника или потребность, а у контакта за всё время ни одной заявки · {{ talked_no_order|length }}</span>
+  </div>
+  <div class="card-body scroll">
+    {% if not talked_no_order %}
+      <p class="dim">За этот период таких разговоров нет.</p>
+    {% else %}
+    <table>
+      <tr><th>Когда</th><th>Менеджер</th><th>Клиент</th><th>Что обсуждали</th></tr>
+      {% for r in talked_no_order %}
+      <tr>
+        <td class="mono"><a href="{{ base }}/call/{{ r.uid }}">{{ r.started_at[:16].replace('T', ' ') }}</a></td>
+        <td>{{ r.display_name or r.vats_login }}</td>
+        <td>{{ r.contact_name or r.client_phone }}{% if r.company_name %}<br><span class="dim">{{ r.company_name }}</span>{% endif %}</td>
+        <td>{{ r.analysis.equipment or r.analysis.client_need or "потребность прозвучала неразборчиво" }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Для планёрки</h2>
+    <span class="sub">3–5 самых поучительных разговоров на менеджера, с полным разбором</span>
+  </div>
+  <div class="card-body">
+    {% if not coaching %}
+      <p class="dim">За этот период обсуждать на планёрке нечего — либо разговоров
+      мало, либо везде либо хорошо, либо упустить было нечего.</p>
+    {% endif %}
+    {% for bucket in coaching %}
+    <div class="mgr">
+      <h3>{{ bucket.display_name }}</h3>
+      {% for r in bucket.calls %}
+      <div class="call-block">
+        <h4><a href="{{ base }}/call/{{ r.uid }}">{{ r.started_at[:16].replace('T',' ') }}</a> —
+          {{ r.contact_name or r.client_phone }}{% if r.company_name %}, {{ r.company_name }}{% endif %}
+          {% if r.analysis.call_quality %}<span class="warn">· оценка {{ r.analysis.call_quality }} из 5</span>{% endif %}</h4>
+        {% if r.analysis.summary %}<p class="dim">{{ r.analysis.summary }}</p>{% endif %}
+        {% if r.analysis.quality_notes %}<p>{{ r.analysis.quality_notes }}</p>{% endif %}
+        {% if r.analysis.missed %}
+        <b>Упущено в карточке:</b>
+        <ul>{% for m in r.analysis.missed %}<li>{{ m.value }} <span class="dim">(«{{ m.quote }}»)</span></li>{% endfor %}</ul>
+        {% endif %}
+        {% if r.analysis.questions_missed %}
+        <b>Не спросил, хотя по учебнику должен:</b>
+        <ul>{% for q in r.analysis.questions_missed %}<li>{{ q }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if r.analysis.upsell_missed %}
+        <b>Не предложил в дополнение:</b>
+        <ul>{% for u in r.analysis.upsell_missed %}<li>{{ u }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if r.analysis.recommendations %}
+        <b>На что обратить внимание:</b>
+        <ul>{% for rec in r.analysis.recommendations %}<li>{{ rec }}</li>{% endfor %}</ul>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
