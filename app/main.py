@@ -117,6 +117,11 @@ def _base_context(request: Request) -> dict[str, Any]:
         "settings": settings,
         "demo": settings.demo_mode,
         "sources_ready": settings.vats_configured and settings.synergy_configured,
+        # Личный вход менеджера — 05.10.2026: отдельный nginx-location с его
+        # собственным паролем, видит только свою страницу. Заголовок ставит
+        # только этот location, поэтому шаблоны по нему прячут ссылки на
+        # остальной дашборд — туда у менеджера всё равно нет пароля.
+        "manager_view": request.headers.get("x-dash-scope") == "manager",
     }
 
 

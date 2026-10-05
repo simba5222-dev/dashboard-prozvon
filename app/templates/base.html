@@ -49,9 +49,13 @@ h1{font-size:clamp(24px,5vw,34px);line-height:1.05;letter-spacing:-.02em;margin:
 .card{background:var(--surface);border:1px solid var(--line);border-radius:3px;
   margin-bottom:18px;overflow:hidden}
 .card-head{padding:14px 17px;background:var(--surface-2);border-bottom:1px solid var(--line);
-  display:flex;flex-wrap:wrap;gap:8px 14px;align-items:baseline}
+  display:flex;flex-wrap:wrap;gap:8px 14px;align-items:baseline;cursor:pointer}
 .card-head h2{margin:0;font-size:19px;line-height:1.1;flex:1 1 200px}
 .card-head .sub{font-size:12.5px;color:var(--ink-3)}
+.card-head .chev{flex:0 0 auto;width:14px;text-align:center;color:var(--ink-3);
+  font-family:ui-monospace,Menlo,monospace;font-size:15px;line-height:1}
+.card.collapsed .card-body{display:none}
+.card.collapsed{margin-bottom:10px}
 .card-body{padding:17px}
 
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;
@@ -111,6 +115,9 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0
 
 {% block content %}{% endblock %}
 
+{% if manager_view %}
+<div class="foot">Дашборд прозвона {{ version }} · личная страница</div>
+{% else %}
 <div class="foot">
   Дашборд прозвона {{ version }} ·
   <a href="{{ base }}/">сегодня</a> ·
@@ -124,7 +131,49 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0
   Synergy {% if settings.synergy_configured %}настроена{% else %}не настроена{% endif %},
   разбор разговоров {% if settings.transcribe_enabled %}включён{% else %}выключен{% endif %}
 </div>
+{% endif %}
 
 </div>
+
+<script>
+// Сворачивание разделов — решение владельца 05.10.2026: страницы с большими
+// таблицами читались сплошной простынёй. Работает на всех экранах сразу,
+// потому что трогает только общую разметку .card/.card-head/.card-body —
+// менять каждый шаблон отдельно не нужно. Состояние запоминается в браузере
+// на каждый раздел и адрес отдельно, чтобы не схлопывалось при смене периода.
+(function () {
+  function read(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+  function write(key, value) { try { localStorage.setItem(key, value); } catch (e) {} }
+
+  document.querySelectorAll(".card").forEach(function (card, index) {
+    var head = card.querySelector(".card-head");
+    var body = card.querySelector(".card-body");
+    if (!head || !body) return;
+
+    var chev = document.createElement("span");
+    chev.className = "chev";
+    head.appendChild(chev);
+
+    var heading = head.querySelector("h2");
+    var key = "collapse:" + location.pathname + ":" +
+      (heading ? heading.textContent.trim() : "card" + index);
+
+    function apply(collapsed) {
+      card.classList.toggle("collapsed", collapsed);
+      chev.textContent = collapsed ? "+" : "−";
+    }
+    apply(read(key) === "1");
+
+    head.addEventListener("click", function (e) {
+      // Клик по ссылке или полю внутри заголовка (переключатели периода,
+      // фильтры) должен делать своё дело, а не сворачивать раздел попутно.
+      if (e.target.closest("a,button,input,select,label,form")) return;
+      var collapsed = !card.classList.contains("collapsed");
+      apply(collapsed);
+      write(key, collapsed ? "1" : "0");
+    });
+  });
+})();
+</script>
 </body>
 </html>

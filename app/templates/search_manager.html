@@ -26,7 +26,9 @@
 {% endblock %}
 
 {% block content %}
+{% if not manager_view %}
 <p class="crumbs"><a href="{{ base }}/search">← ко всем поисковикам</a></p>
+{% endif %}
 
 <form class="period" method="get" action="{{ base }}/search/manager/{{ vats_login }}">
   <label>с <input type="date" name="since" value="{{ since }}"></label>
