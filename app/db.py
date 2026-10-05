@@ -430,6 +430,12 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # смотрели».
     ("search_checks", "presented", "TEXT"),
     ("search_checks", "clarified", "TEXT"),
+    # Когда задачу на самом деле тронули — решение владельца 05.10.2026.
+    # Задачи привязываются к звонку по `updated_at`, а не по `created_at`
+    # (см. `load_tasks_index`): команда прозвона не заводит новую задачу на
+    # каждый звонок, а дополняет одну старую на контакте. Без этого поля
+    # здесь виден только момент создания — не тот, что решил привязку.
+    ("call_tasks", "updated_at", "TEXT"),
 )
 
 
@@ -717,14 +723,16 @@ def save_activity(conn: sqlite3.Connection, **row: Any) -> bool:
 
 
 def save_call_task(conn: sqlite3.Connection, **row: Any) -> None:
+    row.setdefault("updated_at", row.get("created_at"))
     conn.execute(
         """
-        INSERT INTO call_tasks (task_id, call_uid, name, created_at, due_date,
-                                status, responsible, completed_at, is_demo)
-        VALUES (:task_id, :call_uid, :name, :created_at, :due_date,
-                :status, :responsible, :completed_at, :is_demo)
+        INSERT INTO call_tasks (task_id, call_uid, name, created_at, updated_at,
+                                due_date, status, responsible, completed_at, is_demo)
+        VALUES (:task_id, :call_uid, :name, :created_at, :updated_at,
+                :due_date, :status, :responsible, :completed_at, :is_demo)
         ON CONFLICT (task_id, call_uid) DO UPDATE SET
             name         = excluded.name,
+            updated_at   = excluded.updated_at,
             due_date     = excluded.due_date,
             status       = excluded.status,
             responsible  = excluded.responsible,

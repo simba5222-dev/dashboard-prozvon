@@ -1031,12 +1031,23 @@ def refresh_tasks(
 def load_tasks_index(
     client: SynergyClient, user_ids: Iterable[str], since: str, max_pages: int = 20,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Задачи менеджеров с даты `since`, разложенные по контактам.
+    """Задачи менеджеров, тронутые с даты `since`, разложенные по контактам.
 
     Отбирать задачи по контакту нельзя: `filter[contact-id]` на `diaries`
     Synergy отвечает 400. Зато фильтр по автору работает, а задач у менеджера
     десятки в месяц — дешевле забрать их разом и разложить здесь. Заодно это
     одно обращение на период вместо одного на каждый звонок.
+
+    **Сортировка и отсечка — по `updated-at`, не по `created-at`.** Найдено
+    05.10.2026 на живом случае: у этой команды в Synergy один раз заведённая
+    задача («ут. акт.» — уточнить актуальность) живёт на контакте месяцами и
+    после каждого звонка просто дополняется — туда уходит факт звонка и что
+    сказал клиент, новую задачу не создают. Старая сортировка по created-at
+    такую задачу никогда не находила: по дате создания она «старая», страница
+    с ней не долистывалась, и по всем звонкам подряд стояло «задача не
+    поставлена», хотя менеджер её только что обновил. Live-проверка задачи
+    3484234 (создана 27.07, обновлена 05.10 в 16:45, через 2 минуты после
+    звонка в 16:43) — ровно этот случай.
     """
     index: dict[str, list[dict[str, Any]]] = {}
     for user_id in user_ids:
@@ -1048,7 +1059,7 @@ def load_tasks_index(
                 # у задачи есть ссылка на контакт, но нет его идентификатора.
                 payload = client.get(
                     "diaries", include="contact,responsible", per_page=100, page=page,
-                    sort="-created-at", **{"filter[user-id]": str(user_id)},
+                    sort="-updated-at", **{"filter[user-id]": str(user_id)},
                 )
             except (httpx.HTTPError, ValueError) as exc:
                 logger.warning("задачи пользователя %s не прочитались: %s", user_id, exc)
@@ -1064,8 +1075,8 @@ def load_tasks_index(
             too_old = False
             for row in rows:
                 attrs = row.get("attributes") or {}
-                created = str(attrs.get("created-at") or "")
-                if created[:10] < since:
+                updated = str(attrs.get("updated-at") or "")
+                if updated[:10] < since:
                     too_old = True
                     continue
                 ref = ((row.get("relationships") or {}).get("contact") or {}).get("data")
@@ -1074,7 +1085,8 @@ def load_tasks_index(
                 index.setdefault(str(ref["id"]), []).append({
                     "task_id": str(row["id"]),
                     "name": str(attrs.get("name") or ""),
-                    "created_at": created,
+                    "created_at": str(attrs.get("created-at") or ""),
+                    "updated_at": updated,
                     "due_date": str(attrs.get("due-date") or ""),
                     "status": str(attrs.get("status") or ""),
                     "completed_at": str(attrs.get("completed-at") or ""),
@@ -1089,7 +1101,12 @@ def load_tasks_index(
 def tasks_after_call(
     index: dict[str, list[dict[str, Any]]], contact_id: str, after_iso: str, window_min: int,
 ) -> list[dict[str, Any]]:
-    """Задачи по контакту, поставленные в окне после звонка."""
+    """Задачи по контакту, тронутые (созданные или обновлённые) в окне после звонка.
+
+    По `updated_at`, не по `created_at` — см. `load_tasks_index`: у новой
+    задачи они совпадают, у старой, которую просто дополнили по итогам
+    звонка, важен именно момент правки.
+    """
     try:
         call_time = datetime.fromisoformat(after_iso.replace("Z", "+00:00"))
     except ValueError:
@@ -1098,12 +1115,13 @@ def tasks_after_call(
     out = []
     for task in index.get(str(contact_id), []):
         try:
-            made = datetime.fromisoformat(task["created_at"].replace("Z", "+00:00"))
+            touched = datetime.fromisoformat(
+                (task.get("updated_at") or task["created_at"]).replace("Z", "+00:00"))
         except ValueError:
             continue
-        if call_time <= made <= limit:
+        if call_time <= touched <= limit:
             out.append(task)
-    return sorted(out, key=lambda t: t["created_at"])
+    return sorted(out, key=lambda t: t.get("updated_at") or t["created_at"])
 
 
 def check_pending_cards(

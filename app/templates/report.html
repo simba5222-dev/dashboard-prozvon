@@ -260,6 +260,7 @@
           <span class="ord">
             <b>{{ t.name or "без названия" }}</b>
             {% if t.due_date %}<br><span class="dim">срок {{ t.due_date[:10] }}</span>{% endif %}
+            {% if t.updated_at %}<br><span class="dim">тронута {{ t.updated_at[11:16] }}</span>{% endif %}
             <span class="st {{ t.status }}">{{ t.status or "без статуса" }}</span>
           </span>
           {% else %}

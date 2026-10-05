@@ -80,7 +80,7 @@
       {% for t in call.tasks %}
       <dt>задача{% if t.due_date %}, срок {{ t.due_date[:10] }}{% endif %}</dt>
       <dd>{{ t.name or "без названия" }}
-        <span class="dim">— {{ t.status or "без статуса" }}{% if t.responsible %}, {{ t.responsible }}{% endif %}</span></dd>
+        <span class="dim">— {{ t.status or "без статуса" }}{% if t.responsible %}, {{ t.responsible }}{% endif %}{% if t.updated_at %}, тронута {{ t.updated_at[:16].replace('T', ' ') }}{% endif %}</span></dd>
       {% endfor %}
       {% for o in call.orders %}
       <dt>заявка</dt>
