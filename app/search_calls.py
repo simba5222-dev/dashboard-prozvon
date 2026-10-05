@@ -53,11 +53,17 @@ OFFER_PROMPT = """Ты разбираешь телефонный разгово�
 спецтехники с владельцем техники (исполнителем, поставщиком). Сотрудник ищет
 технику под заявку и обзванивает базу.
 
-Нужно понять две вещи.
+Нужно понять:
 
 1. О каком типе техники сотрудник спрашивал.
 2. Какая техника есть У СОБЕСЕДНИКА — то есть какую технику он называет своей,
    предлагает, говорит что она свободна, занята, в работе или на объекте.
+3. Представил ли сотрудник компанию собеседнику (назвал её имя, чем занимается,
+   что звонит от компании-арендодателя спецтехники) — это не приветствие и не
+   «алло», а именно представление компании.
+4. Спросил ли сотрудник, какая ЕЩЁ техника есть у собеседника вообще, помимо
+   того конкретного типа, по которому звонил — «а что у вас ещё есть», «какой
+   у вас парк техники».
 
 Правила, от которых зависит всё:
 - Берём только технику собеседника. Технику, которую перечисляет сам сотрудник,
@@ -73,6 +79,7 @@ OFFER_PROMPT = """Ты разбираешь телефонный разгово�
 - Отдельно отметь, если собеседник сказал, что у него есть ЕЩЁ техника, но не
   назвал какая: «у нас много разной техники», «не только погрузчики». Это не
   тип, это повод переспросить.
+- На пункты 3 и 4 тоже нужна цитата. Без неё считай, что не было.
 
 Список типов техники компании:
 {types}
@@ -84,6 +91,8 @@ OFFER_PROMPT = """Ты разбираешь телефонный разгово�
 {{"asked": "<тип из списка, о котором спрашивал сотрудник, или пусто>",
   "has": [{{"type": "<тип из списка>", "quote": "<цитата до 120 знаков>"}}],
   "more_unnamed": {{"yes": true/false, "quote": "<цитата или пусто>"}},
+  "presented": {{"yes": true/false, "quote": "<цитата или пусто>"}},
+  "clarified": {{"yes": true/false, "quote": "<цитата или пусто>"}},
   "sure": 0-100}}"""
 
 
@@ -147,7 +156,7 @@ def heard_types(transcript: str, allowed: list[str], *, api_key: str, model: str
     from openai import OpenAI
 
     if not transcript.strip() or not allowed:
-        return {"asked": "", "has": [], "sure": 0}
+        return {"asked": "", "has": [], "sure": 0, "presented": "", "clarified": ""}
     client = OpenAI(api_key=api_key, timeout=timeout_sec)
     analyzer.pace_calls()
     response = client.chat.completions.create(
@@ -163,7 +172,7 @@ def heard_types(transcript: str, allowed: list[str], *, api_key: str, model: str
     try:
         data = json.loads(response.choices[0].message.content or "{}")
     except ValueError:
-        return {"asked": "", "has": [], "sure": 0}
+        return {"asked": "", "has": [], "sure": 0, "presented": "", "clarified": ""}
 
     known = {name.casefold(): name for name in allowed}
     has: list[dict[str, str]] = []
@@ -186,8 +195,18 @@ def heard_types(transcript: str, allowed: list[str], *, api_key: str, model: str
     more = data.get("more_unnamed") or {}
     quote = str(more.get("quote") or "").strip()[:120]
     unnamed = bool(more.get("yes")) and bool(quote) and analyzer.quote_found(quote, transcript)
+
+    def flag_quote(key: str) -> str:
+        # «Да» засчитываем только с цитатой, которая вправду есть в тексте —
+        # как и у остальных пунктов: придуманное «да» дороже пропущенного.
+        item = data.get(key) or {}
+        text = str(item.get("quote") or "").strip()[:120]
+        ok = bool(item.get("yes")) and bool(text) and analyzer.quote_found(text, transcript)
+        return text if ok else ""
+
     return {"asked": asked, "has": has, "sure": data.get("sure"),
-            "more_unnamed": quote if unnamed else ""}
+            "more_unnamed": quote if unnamed else "",
+            "presented": flag_quote("presented"), "clarified": flag_quote("clarified")}
 
 
 def compare(heard: dict[str, Any], cards: list[dict[str, Any]]) -> dict[str, Any]:
@@ -206,7 +225,9 @@ def compare(heard: dict[str, Any], cards: list[dict[str, Any]]) -> dict[str, Any
     else:
         verdict = ALL_SAVED
     return {"verdict": verdict, "offered": offered, "known": sorted(known),
-            "missing": missing, "more_unnamed": heard.get("more_unnamed") or ""}
+            "missing": missing, "more_unnamed": heard.get("more_unnamed") or "",
+            "presented": heard.get("presented") or "",
+            "clarified": heard.get("clarified") or ""}
 
 
 def check_call(conn: sqlite3.Connection, settings: Settings, uid: str, path: Path,
@@ -272,6 +293,8 @@ def check_call(conn: sqlite3.Connection, settings: Settings, uid: str, path: Pat
         checked_at=now(),
         is_demo=0,
         more_unnamed=result.get("more_unnamed") or "",
+        presented=result.get("presented") or "",
+        clarified=result.get("clarified") or "",
     )
     conn.commit()
     if result["missing"]:

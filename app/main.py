@@ -31,7 +31,8 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from app.stats import _parsed_analysis as parsed_analysis  # noqa: E402
 from app.stats import (  # noqa: F401
-    search_day, search_feed, search_tasks, heard_checks, heard_summary,
+    search_day, search_feed, search_tasks, search_by_type, heard_checks, heard_summary,
+    heard_problems,
     call_detail,
     calls_of_day,
     day_summary,
@@ -328,28 +329,78 @@ async def manager_day(request: Request, vats_login: str, day: str | None = None)
 
 @app.get("/search", response_class=HTMLResponse)
 async def search_page(request: Request, day: str | None = None,
+                      since: str = "", until: str = "",
                       who: str | None = None) -> Any:
-    """День отдела поиска техники: звонки поставщикам и правки в карточках.
+    """Период отдела поиска техники: звонки поставщикам и правки в карточках.
 
     Отдельный экран, а не строка в прозвоне: работа другая и меряется другим.
     Прозвон меряется планом звонков и дисциплиной карточки клиента, поиск —
     обзвоном поставщиков и тем, что после него поменялось в транспорте.
+
+    **Фильтр по датам** — решение владельца 05.10.2026: до этого экран
+    показывал только сегодня, и посмотреть прошлую неделю было нельзя никак.
+    Параметры `since`/`until` и готовые периоды — те же, что в `/report`.
+    `day` оставлен для старых ссылок на один день.
     """
     settings: Settings = request.app.state.settings
     conn = request.app.state.db
-    current = day or local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    today = local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    until = as_date(until) or as_date(day) or today
+    since = as_date(since) or as_date(day) or today
+    if since > until:
+        since, until = until, since
     ctx = _base_context(request)
-    heard = heard_checks(conn, current)
+    heard = heard_checks(conn, since, until)
     ctx.update({
-        "day": current,
-        "people": search_day(conn, current, threshold_sec=settings.talk_threshold_sec),
-        "feed": search_feed(conn, current, who),
+        "since": since,
+        "until": until,
+        "quick": quick_periods(today),
+        "people": search_day(conn, since, until, threshold_sec=settings.talk_threshold_sec),
+        "feed": search_feed(conn, since, until, who),
+        "by_type": search_by_type(conn, since, until),
         "tasks": search_tasks(conn),
         "heard": heard,
         "heard_total": heard_summary(heard),
         "who": who,
     })
     return TEMPLATES.TemplateResponse("search.html", ctx)
+
+
+@app.get("/search/manager/{vats_login}", response_class=HTMLResponse)
+async def search_manager_page(request: Request, vats_login: str, day: str | None = None,
+                              since: str = "", until: str = "") -> Any:
+    """Личная страница поисковика — решение владельца 05.10.2026.
+
+    Чтобы человек мог сам себя контролировать, а не узнавать о проблемах от
+    руководителя: та же сверка, что на `/search`, но по одному человеку и с
+    отдельной подсветкой того, что ещё не доделано (`heard_problems`).
+    """
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    today = local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    until = as_date(until) or as_date(day) or today
+    since = as_date(since) or as_date(day) or today
+    if since > until:
+        since, until = until, since
+
+    who = next((m for m in managers(conn, dept="поиск") if m["vats_login"] == vats_login), None)
+    ctx = _base_context(request)
+    heard = heard_checks(conn, since, until, vats_login=vats_login)
+    people = search_day(conn, since, until, threshold_sec=settings.talk_threshold_sec)
+    ctx.update({
+        "since": since,
+        "until": until,
+        "quick": quick_periods(today),
+        "manager": who,
+        "vats_login": vats_login,
+        "me": next((p for p in people if p["vats_login"] == vats_login), None),
+        "by_type": search_by_type(conn, since, until, vats_login=vats_login),
+        "feed": search_feed(conn, since, until, vats_login),
+        "heard": heard,
+        "heard_total": heard_summary(heard),
+        "problems": heard_problems(heard),
+    })
+    return TEMPLATES.TemplateResponse("search_manager.html", ctx)
 
 
 def split_turns(transcript: str | None) -> list[tuple[str, str]]:

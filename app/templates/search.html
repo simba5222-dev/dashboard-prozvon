@@ -1,15 +1,41 @@
 {% extends "base.html" %}
-{% block title %}Поиск техники — {{ day }}{% endblock %}
+{% block title %}Поиск техники — {{ since }}…{{ until }}{% endblock %}
 
 {% block extra_style %}
-<style>.warn { color: #b45309; }</style>
+<style>
+.warn { color: #b45309; }
+.period{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;
+  background:var(--surface);border:1px solid var(--line);border-radius:3px;
+  padding:11px 15px;margin-bottom:18px;font-size:13px}
+.period label{display:flex;align-items:center;gap:6px;color:var(--ink-3)}
+.period input[type=date]{font:inherit;color:var(--ink);
+  background:var(--surface-2);border:1px solid var(--line-2);border-radius:2px;padding:3px 6px}
+.period button{font:inherit;cursor:pointer;color:var(--surface);background:var(--accent);
+  border:1px solid var(--accent);border-radius:2px;padding:4px 14px}
+.period .quick{margin-left:auto;color:var(--ink-3)}
+.period .quick a{margin-left:10px}
+.period .quick a.now{font-weight:600;text-decoration:none}
+</style>
 {% endblock %}
 
 {% block content %}
+<form class="period" method="get" action="{{ base }}/search">
+  <label>с <input type="date" name="since" value="{{ since }}"></label>
+  <label>по <input type="date" name="until" value="{{ until }}"></label>
+  {% if who %}<input type="hidden" name="who" value="{{ who }}">{% endif %}
+  <button type="submit">Показать</button>
+  <span class="quick">быстро:
+    {% for q in quick %}
+    <a href="{{ base }}/search?since={{ q.since }}&amp;until={{ q.until }}{% if who %}&amp;who={{ who }}{% endif %}"
+       class="{% if since == q.since and until == q.until %}now{% endif %}">{{ q.name }}</a>
+    {% endfor %}
+  </span>
+</form>
+
 <div class="card">
   <div class="card-head">
     <h2>Поиск техники</h2>
-    <span class="sub">{{ day }} · звонки поставщикам и правки в карточках транспорта</span>
+    <span class="sub">{{ since }}{% if until != since %}…{{ until }}{% endif %} · звонки поставщикам и правки в карточках транспорта</span>
   </div>
   <div class="card-body">
     {% if not people %}
@@ -18,7 +44,7 @@
     {% endif %}
     {% for p in people %}
     <div class="mgr">
-      <h3>{{ p.display_name }}{% if p.ext %} <span class="dim">доб. {{ p.ext }}</span>{% endif %}</h3>
+      <h3><a href="{{ base }}/search/manager/{{ p.vats_login }}?since={{ since }}&amp;until={{ until }}">{{ p.display_name }}</a>{% if p.ext %} <span class="dim">доб. {{ p.ext }}</span>{% endif %}</h3>
       <div class="nums">
         <div class="num"><b>{{ p.calls.outgoing or 0 }}</b><span>исходящих</span></div>
         <div class="num"><b>{{ p.calls.incoming or 0 }}</b><span>входящих</span></div>
@@ -39,17 +65,58 @@
 
 <div class="card">
   <div class="card-head">
-    <h2>Заявки в подборе</h2>
-    <span class="sub">с момента, когда продажи перевели их на «Нужен Подбор»</span>
+    <h2>Что занесли, по типам</h2>
+    <span class="sub">каждая карточка транспорта, которую за период правил поисковик руками</span>
+  </div>
+  <div class="card-body scroll">
+    <p class="dim">Одна строка — одна карточка транспорта. «Правок» — сколько раз её
+    меняли за период; «Правили последний раз» — когда правили в последний раз.</p>
+    {% if not by_type %}
+      <p class="dim">За этот период никто ничего в карточки не заносил.</p>
+    {% else %}
+    <table>
+      <tr><th>Менеджер</th><th>Тип техники</th><th>Карточка</th><th>Поставщик</th>
+          <th class="num">Правок</th><th>Правили последний раз</th></tr>
+      {% for r in by_type %}
+      <tr>
+        <td>{{ r.display_name }}</td>
+        <td>{{ r.type_name }}</td>
+        <td>{{ r.card_name }}</td>
+        <td>{{ r.contact_name or '—' }}</td>
+        <td class="num">{{ r.edits }}</td>
+        <td class="num">{% if since != until %}{{ r.last_edit[:16].replace('T', ' ') }}{% else %}{{ r.last_edit[11:16] }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Заявки клиентов, которые сейчас в подборе техники</h2>
+    <span class="sub">последние 14 дней, независимо от периода выше</span>
   </div>
   <div class="card-body">
+    <p class="dim">Как заявка попадает сюда: клиент уже согласился на аренду,
+    продавец перевёл его заявку на этап «Нужен Подбор» в CRM — значит, под неё
+    нет своей техники, и поисковик должен найти её у поставщиков, обзвонив
+    базу. Это не то же самое, что звонки выше: звонок поставщику не привязан
+    в CRM к конкретной заявке клиента, прямой связи «звонок → заявка» там нет.
+    Поэтому колонки справа — не факт, а оценка: «сколько раз подборщик за это
+    время трогал карточки такого же типа техники, как в заявке, с момента,
+    когда её отдали в подбор». Если он ведёт две заявки на один тип техники
+    разом, эта оценка разъедется между ними — показывает общую движуху по
+    заявке, а не отчёт по каждому звонку.</p>
     {% if not tasks %}
       <p class="dim">Заявок в подборе пока нет. Они появятся здесь, как только
       менеджер отдела продаж переведёт заявку на этап «Нужен Подбор».</p>
     {% else %}
     <table>
-      <tr><th>Заявка</th><th>Техника</th><th>Отдали</th>
-          <th class="num">Карточек</th><th class="num">Правок</th></tr>
+      <tr><th>Заявка клиента</th><th>Какая техника нужна</th>
+          <th>В подборе с</th>
+          <th class="num" title="Сколько разных карточек транспорта такого же типа техники, как в заявке, поисковик менял после того, как заявку отдали в подбор">Поставщиков тронуто</th>
+          <th class="num" title="Сколько раз всего правил эти карточки">Правок в них</th></tr>
       {% for t in tasks %}
       <tr>
         <td>{{ t.title or t.order_id }}</td>
@@ -68,11 +135,6 @@
       </tr>
       {% endfor %}
     </table>
-    {# Границы применимости важнее самой цифры: по ней будут судить о человеке. #}
-    <p class="dim">Счёт приблизительный: карточка транспорта в CRM связана с
-    поставщиком, а не с заявкой, поэтому сопоставляем по типу техники и
-    времени. Если подборщик ведёт две заявки на один тип разом, работа
-    разделится между ними неверно.</p>
     {% endif %}
   </div>
 </div>
@@ -80,18 +142,21 @@
 <div class="card">
   <div class="card-head">
     <h2>Что услышали в разговорах</h2>
-<p class="dim">Разбор исходящих: какую технику поставщик назвал своей и есть ли
-  она в его карточках. Разговоров разобрано {{ heard_total['всего'] }} ·
+<p class="dim">Разбор исходящих: какую технику поставщик назвал своей, есть ли
+  она в его карточках, и как прошёл сам звонок. Разобрано {{ heard_total['всего'] }} ·
   не занесено {{ heard_total['не занесено'] }} ·
   спросить ещё {{ heard_total['спросить ещё'] }} ·
-  всё занесено {{ heard_total['всё занесено'] }}.</p>
+  всё занесено {{ heard_total['всё занесено'] }} ·
+  представил компанию {{ heard_total['представил компанию'] }} ·
+  уточнил ещё технику {{ heard_total['уточнил ещё технику'] }} ·
+  карточка поправлена после {{ heard_total['карточка поправлена после'] }}.</p>
 {% if heard %}
 <table>
   <tr><th>Когда</th><th>Поставщик</th><th>Спрашивал</th>
-      <th>Что у него есть</th><th>Отметка</th></tr>
+      <th>Что у него есть</th><th>Отметка</th><th>Выжимка по звонку</th></tr>
   {% for h in heard %}
   <tr>
-    <td>{{ h.started_at[11:16] }}</td>
+    <td>{% if since != until %}{{ h.started_at[:16].replace('T', ' ') }}{% else %}{{ h.started_at[11:16] }}{% endif %}</td>
     <td>{{ h.contact_name or h.client_phone }}</td>
     <td>{{ h.asked_type or '—' }}</td>
     <td>
@@ -107,28 +172,34 @@
       {% else %}—{% endif %}
     </td>
     <td{% if h.verdict in ('missing', 'ask_more') %} class="warn"{% endif %}>{{ h.label }}</td>
+    <td>
+      <div>презентация компании: {% if h.presented %}да <span class="dim">«{{ h.presented }}»</span>{% else %}<span class="warn">нет</span>{% endif %}</div>
+      <div>уточнил, что есть ещё: {% if h.clarified %}да <span class="dim">«{{ h.clarified }}»</span>{% else %}<span class="warn">нет</span>{% endif %}</div>
+      <div>карточка после звонка: {% if h.card_touched %}поправлена <span class="dim">«{{ h.card_touched }}»</span>{% else %}не трогали{% endif %}</div>
+    </td>
   </tr>
   {% endfor %}
 </table>
 {% else %}
-<p class="dim">За этот день разговоры ещё не разобраны.</p>
+<p class="dim">За этот период разговоры ещё не разобраны.</p>
 {% endif %}
 
 <h2>Что менял</h2>
-    <span class="sub">только правки руками · {{ feed|length }} за день</span>
+    <span class="sub">только правки руками · {{ feed|length }} за период</span>
   </div>
   <div class="card-body scroll">
     {% if not feed %}
-      <p class="dim">За этот день правок нет.</p>
+      <p class="dim">За этот период правок нет.</p>
     {% else %}
     <table>
-      <tr><th>Когда</th><th>Кто</th><th>Карточка</th><th>Что изменил</th></tr>
+      <tr><th>Когда</th><th>Кто</th><th>Карточка</th><th>Поставщик</th><th>Что изменил</th></tr>
       {% for r in feed %}
       <tr>
-        <td class="num">{{ r.created_at[11:16] }}</td>
+        <td class="num">{% if since != until %}{{ r.created_at[:16].replace('T', ' ') }}{% else %}{{ r.created_at[11:16] }}{% endif %}</td>
         <td>{{ r.vats_login }}</td>
         <td>{{ r.entity_type }} {{ r.entity_id }}<br>
             <span class="dim">{{ (r.entity_title or '')[:40] }}</span></td>
+        <td>{{ r.contact_name or '—' }}</td>
         <td>{{ r.summary }}</td>
       </tr>
       {% endfor %}

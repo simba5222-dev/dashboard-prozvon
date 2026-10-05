@@ -650,13 +650,18 @@ def period_summary(
     return out
 
 
-def search_day(conn: sqlite3.Connection, day: str, *, threshold_sec: int) -> list[dict[str, Any]]:
-    """День менеджера по поиску техники: звонки и правки в карточках.
+def search_day(conn: sqlite3.Connection, since: str, until: str | None = None,
+              *, threshold_sec: int) -> list[dict[str, Any]]:
+    """Период менеджера по поиску техники: звонки и правки в карточках.
 
     Его работу не видно по заявкам — заявки заводят другие. Видно по двум
     вещам: сколько он звонил поставщикам и что после этого поменялось в
     карточках транспорта. Поэтому здесь и то, и другое.
+
+    Без `until` — один день, как и раньше: владелец 05.10.2026 попросил
+    смотреть периодами, но ежедневный вид должен остаться прежним.
     """
+    until = until or since
     out: list[dict[str, Any]] = []
     for person in managers(conn, dept="поиск"):
         calls = conn.execute(
@@ -664,8 +669,8 @@ def search_day(conn: sqlite3.Connection, day: str, *, threshold_sec: int) -> lis
                       SUM(CASE WHEN direction = 'out' THEN 1 ELSE 0 END) outgoing,
                       SUM(CASE WHEN direction = 'in' THEN 1 ELSE 0 END) incoming,
                       SUM(CASE WHEN duration_sec >= ? THEN 1 ELSE 0 END) talked
-                 FROM calls WHERE local_date = ? AND vats_login = ?""",
-            (threshold_sec, day, person["vats_login"]),
+                 FROM calls WHERE local_date BETWEEN ? AND ? AND vats_login = ?""",
+            (threshold_sec, since, until, person["vats_login"]),
         ).fetchone()
         # Правки сценариев считаем отдельно: это работа робота, а не человека,
         # и засчитывать её сотруднику нельзя.
@@ -674,8 +679,8 @@ def search_day(conn: sqlite3.Connection, day: str, *, threshold_sec: int) -> lis
                       SUM(CASE WHEN scenario = '' THEN 1 ELSE 0 END) by_hand,
                       COUNT(DISTINCT CASE WHEN scenario = '' AND entity_type = 'Transport'
                                           THEN entity_id END) cards
-                 FROM activities WHERE local_date = ? AND vats_login = ?""",
-            (day, person["vats_login"]),
+                 FROM activities WHERE local_date BETWEEN ? AND ? AND vats_login = ?""",
+            (since, until, person["vats_login"]),
         ).fetchone()
         out.append({
             "vats_login": person["vats_login"],
@@ -687,29 +692,87 @@ def search_day(conn: sqlite3.Connection, day: str, *, threshold_sec: int) -> lis
     return out
 
 
-def search_feed(conn: sqlite3.Connection, day: str, vats_login: str | None = None,
-                limit: int = 200, dept: str = "поиск") -> list[dict[str, Any]]:
-    """Лента правок за день: что именно менял человек, без правок сценариев.
+def search_feed(conn: sqlite3.Connection, since: str, until: str | None = None,
+                vats_login: str | None = None, limit: int = 200,
+                dept: str = "поиск") -> list[dict[str, Any]]:
+    """Лента правок за период: что именно менял человек, без правок сценариев.
 
     По умолчанию — только отдел поиска техники. Без этого в ленту попадают
     все, чью работу мы собираем, и экран отдела перестаёт быть про отдел.
+
+    К каждой правке карточки транспорта подмешан её поставщик (`contact_name`,
+    `contact_id`) — решение владельца 05.10.2026: до этого строка ленты не
+    говорила, чья это карточка, и связь с контактом была не видна вовсе.
     """
-    where = ["local_date = ?", "scenario = ''", "summary <> ''"]
-    params: list[Any] = [day]
+    until = until or since
+    where = ["a.local_date BETWEEN ? AND ?", "a.scenario = ''", "a.summary <> ''"]
+    params: list[Any] = [since, until]
     if vats_login:
-        where.append("vats_login = ?")
+        where.append("a.vats_login = ?")
         params.append(vats_login)
     else:
-        where.append("vats_login IN (SELECT vats_login FROM managers WHERE dept = ?)")
+        where.append("a.vats_login IN (SELECT vats_login FROM managers WHERE dept = ?)")
         params.append(dept)
     rows = conn.execute(
-        f"""SELECT created_at, vats_login, entity_type, entity_id, entity_title,
-                   action, summary
-              FROM activities WHERE {' AND '.join(where)}
-             ORDER BY created_at DESC LIMIT ?""",
+        f"""SELECT a.created_at, a.vats_login, a.entity_type, a.entity_id,
+                   a.entity_title, a.action, a.summary,
+                   t.contact_name, t.contact_id
+              FROM activities a
+              LEFT JOIN transport_cards t
+                     ON a.entity_type = 'Transport' AND t.id = a.entity_id
+             WHERE {' AND '.join(where)}
+             ORDER BY a.created_at DESC LIMIT ?""",
         params + [limit],
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def search_by_type(conn: sqlite3.Connection, since: str, until: str | None = None,
+                   dept: str = "поиск", vats_login: str | None = None) -> list[dict[str, Any]]:
+    """Что именно каждый менеджер занёс в карточки транспорта, по типам техники.
+
+    Заведена 05.10.2026: владельцу было видно только число карточек, но не
+    какую технику они покрывают и у кого — для контроля отдела этого мало.
+    Источник — та же лента правок, сверенная с `transport_cards` по id
+    карточки: так в придачу видна и связь с поставщиком (`contact_name`).
+
+    Отдаёт плоский список — строка на карточку транспорта, а не дерево
+    менеджер→тип→карточки: владелец 05.10.2026 попросил обычную таблицу,
+    которую можно смотреть и сортировать глазами, а не читать абзацем.
+    """
+    until = until or since
+    where = ["a.entity_type = 'Transport'", "a.scenario = ''", "a.local_date BETWEEN ? AND ?"]
+    params: list[Any] = [since, until]
+    if vats_login:
+        where.append("a.vats_login = ?")
+        params.append(vats_login)
+    else:
+        where.append("a.vats_login IN (SELECT vats_login FROM managers WHERE dept = ?)")
+        params.append(dept)
+    rows = conn.execute(
+        f"""SELECT a.vats_login, a.entity_id, a.entity_title,
+                  MIN(a.created_at) first_edit, MAX(a.created_at) last_edit,
+                  COUNT(*) edits, t.type_name, t.contact_name, t.contact_id
+             FROM activities a
+             LEFT JOIN transport_cards t ON t.id = a.entity_id
+            WHERE {' AND '.join(where)}
+            GROUP BY a.vats_login, a.entity_id""",
+        params,
+    ).fetchall()
+
+    who_by_login = {p["vats_login"]: p["display_name"] for p in managers(conn, dept=dept)}
+    out = [{
+        "vats_login": row["vats_login"] or "",
+        "display_name": who_by_login.get(row["vats_login"]) or row["vats_login"] or "",
+        "type_name": row["type_name"] or "тип не определён",
+        "card_name": row["entity_title"] or row["entity_id"],
+        "contact_name": row["contact_name"] or "",
+        "contact_id": row["contact_id"] or "",
+        "edits": row["edits"],
+        "last_edit": row["last_edit"],
+    } for row in rows]
+    out.sort(key=lambda r: (r["display_name"], r["type_name"], r["card_name"]))
+    return out
 
 
 def _norm(text: str) -> str:
@@ -717,26 +780,71 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").replace("\xa0", " ")).strip().lower()
 
 
-def heard_checks(conn: sqlite3.Connection, day: str,
-                 limit: int = 100) -> list[dict[str, Any]]:
-    """Разговоры поисковика за день: что поставщик назвал и что из этого в CRM.
+def _card_touched_after(conn: sqlite3.Connection, phone10: str | None,
+                        vats_login: str | None, started_at: str | None,
+                        window_hours: int = 24) -> str:
+    """Правили ли карточку этого поставщика после звонка — и что именно.
+
+    Живой подсчёт, а не поле в `search_checks`: карточку могут поправить и
+    через час, и на следующий день, а переразбирать звонок ради этого не
+    нужно — пересчитывается при каждом открытии экрана, как и сам вердикт.
+    """
+    if not phone10 or not started_at:
+        return ""
+    try:
+        start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    until = (start + timedelta(hours=window_hours)).isoformat()
+    row = conn.execute(
+        """SELECT a.summary FROM activities a
+             JOIN transport_cards t ON t.id = a.entity_id
+            WHERE a.entity_type = 'Transport' AND a.scenario = ''
+              AND t.phone10 = ? AND a.vats_login = ?
+              AND a.created_at BETWEEN ? AND ?
+            ORDER BY a.created_at LIMIT 1""",
+        (phone10, vats_login, started_at, until),
+    ).fetchone()
+    return row["summary"] if row else ""
+
+
+def heard_checks(conn: sqlite3.Connection, since: str, until: str | None = None,
+                 limit: int = 100, vats_login: str | None = None) -> list[dict[str, Any]]:
+    """Разговоры поисковика за период: выжимка по каждому.
+
+    Выжимка — решение владельца 05.10.2026: не только что занесено в
+    карточку, но и как прошёл сам звонок — представил ли компанию, уточнил
+    ли, что есть у поставщика вообще, и поправили ли карточку после.
 
     Порядок намеренный: сначала то, где есть работа для человека — техника
     не занесена или поставщик сказал «есть ещё». Разговоры, где ничего не
     прозвучало, идут в конец: их большинство, и если ставить их подряд,
     до полезного никто не долистает.
+
+    `vats_login` — для личной страницы менеджера (05.10.2026): без него
+    фильтр по человеку приходилось бы делать в шаблоне, где легко забыть
+    применить его к какой-нибудь из таблиц.
     """
+    until = until or since
+    where = ["c.local_date BETWEEN ? AND ?"]
+    params: list[Any] = [since, until]
+    if vats_login:
+        where.append("c.vats_login = ?")
+        params.append(vats_login)
     order = {"missing": 0, "ask_more": 1, "no_cards": 2, "all_saved": 3, "unclear": 4}
     rows = []
     for row in conn.execute(
-        """SELECT c.*, k.started_at, k.duration_sec, k.client_phone
+        f"""SELECT c.*, k.started_at, k.duration_sec, k.client_phone
              FROM search_checks c JOIN calls k ON k.uid = c.call_uid
-            WHERE c.local_date = ? ORDER BY k.started_at DESC""", (day,)):
+            WHERE {' AND '.join(where)} ORDER BY k.started_at DESC""",
+        params):
         item = dict(row)
         item["offered"] = json.loads(item.get("offered") or "[]")
         item["known"] = json.loads(item.get("known") or "[]")
         item["missing"] = json.loads(item.get("missing") or "[]")
         item["label"] = VERDICT_LABEL.get(item.get("verdict"), item.get("verdict"))
+        item["card_touched"] = _card_touched_after(
+            conn, item.get("phone10"), item.get("vats_login"), item.get("started_at"))
         rows.append(item)
     rows.sort(key=lambda item: (order.get(item.get("verdict"), 9),
                                 item.get("started_at") or ""), reverse=False)
@@ -744,13 +852,43 @@ def heard_checks(conn: sqlite3.Connection, day: str,
 
 
 def heard_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
-    """Итог по дню: сколько разговоров разобрано и сколько из них с работой."""
+    """Итог по периоду: сколько разговоров разобрано и сколько из них с работой."""
     return {
         "всего": len(rows),
         "не занесено": sum(1 for r in rows if r.get("verdict") == "missing"),
         "спросить ещё": sum(1 for r in rows if r.get("verdict") == "ask_more"),
         "всё занесено": sum(1 for r in rows if r.get("verdict") == "all_saved"),
         "нет в базе": sum(1 for r in rows if r.get("verdict") == "no_cards"),
+        "представил компанию": sum(1 for r in rows if r.get("presented")),
+        "уточнил ещё технику": sum(1 for r in rows if r.get("clarified")),
+        "карточка поправлена после": sum(1 for r in rows if r.get("card_touched")),
+    }
+
+
+def heard_problems(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Подсветка проблемных мест — для личной страницы менеджера.
+
+    Заведена 05.10.2026 по требованию владельца: менеджер должен сам видеть,
+    что у него ещё недоделано, а не искать это по таблице со всеми звонками.
+
+    `unresolved` — самое важное: разговоры, где поставщик назвал технику или
+    сказал «есть ещё», а карточку после звонка никто не поправил. Это не
+    вчерашний упрёк, а то, что можно пойти и исправить прямо сейчас.
+    """
+    unresolved = [r for r in rows
+                  if r.get("verdict") in ("missing", "ask_more") and not r.get("card_touched")]
+    # Знаменатель — не все разговоры, а только те, где пункт применим (был
+    # предметный разговор о технике). Иначе доля сравнивает яблоки с общим
+    # числом фруктов и читается нечестно.
+    applicable = [r for r in rows if r.get("asked_type")]
+    no_presented = [r for r in applicable if not r.get("presented")]
+    no_clarified = [r for r in applicable if not r.get("clarified")]
+    return {
+        "unresolved": unresolved,
+        "no_presented": no_presented,
+        "no_clarified": no_clarified,
+        "no_presented_share": f"{len(no_presented)} из {len(applicable)}" if applicable else "0 из 0",
+        "no_clarified_share": f"{len(no_clarified)} из {len(applicable)}" if applicable else "0 из 0",
     }
 
 

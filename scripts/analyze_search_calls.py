@@ -47,8 +47,12 @@ def recheck(conn, settings) -> int:
         except ValueError:
             continue
         cards = search_calls.supplier_cards(conn, row["phone10"])
+        # presented/clarified не пересчитываются: это из самого разговора,
+        # не из карточек, и без модели их не узнать заново. Переносим как есть.
         result = search_calls.compare(
-            {"has": has, "more_unnamed": row["more_unnamed"] or ""}, cards)
+            {"has": has, "more_unnamed": row["more_unnamed"] or "",
+             "presented": row["presented"] or "", "clarified": row["clarified"] or ""},
+            cards)
         if result["verdict"] == row["verdict"] and \
                 json.dumps(result["missing"], ensure_ascii=False) == (row["missing"] or "[]"):
             continue
@@ -62,6 +66,7 @@ def recheck(conn, settings) -> int:
             verdict=result["verdict"],
             checked_at=datetime.now(timezone.utc).isoformat(), is_demo=0,
             more_unnamed=row["more_unnamed"] or "",
+            presented=row["presented"] or "", clarified=row["clarified"] or "",
         )
         changed += 1
     conn.commit()

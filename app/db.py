@@ -424,6 +424,12 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # сильнее догадки по имени.
     ("lines", "is_general", "INTEGER NOT NULL DEFAULT 0"),
     ("lines", "owner_name", "TEXT"),
+    # Выжимка по разговору поисковика — решение владельца 05.10.2026: видеть
+    # не только что занесено в карточку, но и как прошёл сам звонок. Цитата —
+    # то же правило, что у `more_unnamed`: пусто значит «не было», не «не
+    # смотрели».
+    ("search_checks", "presented", "TEXT"),
+    ("search_checks", "clarified", "TEXT"),
 )
 
 
@@ -614,16 +620,17 @@ def save_search_check(conn: sqlite3.Connection, **row: Any) -> None:
         INSERT INTO search_checks (call_uid, local_date, vats_login, phone10,
                                    contact_name, asked_type, offered, known,
                                    missing, verdict, checked_at, is_demo,
-                                   more_unnamed)
+                                   more_unnamed, presented, clarified)
         VALUES (:call_uid, :local_date, :vats_login, :phone10, :contact_name,
                 :asked_type, :offered, :known, :missing, :verdict, :checked_at,
-                :is_demo, :more_unnamed)
+                :is_demo, :more_unnamed, :presented, :clarified)
         ON CONFLICT (call_uid) DO UPDATE SET
             phone10 = excluded.phone10, contact_name = excluded.contact_name,
             asked_type = excluded.asked_type, offered = excluded.offered,
             known = excluded.known, missing = excluded.missing,
             verdict = excluded.verdict, checked_at = excluded.checked_at,
-            more_unnamed = excluded.more_unnamed
+            more_unnamed = excluded.more_unnamed,
+            presented = excluded.presented, clarified = excluded.clarified
         """,
         row,
     )
