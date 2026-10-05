@@ -865,6 +865,10 @@ def heard_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
         "представил компанию": sum(1 for r in rows if r.get("presented")),
         "уточнил ещё технику": sum(1 for r in rows if r.get("clarified")),
         "карточка поправлена после": sum(1 for r in rows if r.get("card_touched")),
+        # Разобраны до того, как в check_call появились эти два поля —
+        # не «нет», а «не спрашивали». Без этой строки ноль по ним читается
+        # как провал, хотя на деле это просто старые звонки.
+        "не проверено (старый разбор)": sum(1 for r in rows if r.get("presented") is None),
     }
 
 
@@ -881,13 +885,19 @@ def heard_problems(rows: list[dict[str, Any]]) -> dict[str, Any]:
     unresolved = [r for r in rows
                   if r.get("verdict") in ("missing", "ask_more") and not r.get("card_touched")]
     # Знаменатель — не все разговоры, а только те, где пункт применим (был
-    # предметный разговор о технике). Иначе доля сравнивает яблоки с общим
-    # числом фруктов и читается нечестно.
-    applicable = [r for r in rows if r.get("asked_type")]
+    # предметный разговор о технике) И разбирался уже с этими полями.
+    # `presented is None` — звонок разобран до 05.10.2026, когда этих полей
+    # в разборе ещё не было: там не «нет», а «не спрашивали вовсе», и считать
+    # это промахом менеджера нечестно. `""` — честный результат: разбирали,
+    # не нашли. Разница держится на типе значения, поэтому `is not None`,
+    # а не `or ""` — иначе отличить их в Python одинаково нельзя.
+    applicable = [r for r in rows if r.get("asked_type") and r.get("presented") is not None]
+    not_reviewed = [r for r in rows if r.get("asked_type") and r.get("presented") is None]
     no_presented = [r for r in applicable if not r.get("presented")]
     no_clarified = [r for r in applicable if not r.get("clarified")]
     return {
         "unresolved": unresolved,
+        "not_reviewed": len(not_reviewed),
         "no_presented": no_presented,
         "no_clarified": no_clarified,
         "no_presented_share": f"{len(no_presented)} из {len(applicable)}" if applicable else "0 из 0",

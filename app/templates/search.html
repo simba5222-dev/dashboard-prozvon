@@ -150,7 +150,9 @@
   всё занесено {{ heard_total['всё занесено'] }} ·
   представил компанию {{ heard_total['представил компанию'] }} ·
   уточнил ещё технику {{ heard_total['уточнил ещё технику'] }} ·
-  карточка поправлена после {{ heard_total['карточка поправлена после'] }}.</p>
+  карточка поправлена после {{ heard_total['карточка поправлена после'] }}
+  {%- if heard_total['не проверено (старый разбор)'] %} ·
+  не проверено, старый разбор {{ heard_total['не проверено (старый разбор)'] }}{% endif %}.</p>
 {% if heard %}
 <table>
   <tr><th>Когда</th><th>Поставщик</th><th>Спрашивал</th>
@@ -179,8 +181,14 @@
     </td>
     <td{% if h.verdict in ('missing', 'ask_more') %} class="warn"{% endif %}>{{ h.label }}</td>
     <td>
-      <div>презентация компании: {% if h.presented %}да <span class="dim">«{{ h.presented }}»</span>{% else %}<span class="warn">нет</span>{% endif %}</div>
-      <div>уточнил, что есть ещё: {% if h.clarified %}да <span class="dim">«{{ h.clarified }}»</span>{% else %}<span class="warn">нет</span>{% endif %}</div>
+      <div>презентация компании:
+        {% if h.presented %}да <span class="dim">«{{ h.presented }}»</span>
+        {% elif h.presented is none %}<span class="dim">не проверялось — старый разбор</span>
+        {% else %}<span class="warn">нет</span>{% endif %}</div>
+      <div>уточнил, что есть ещё:
+        {% if h.clarified %}да <span class="dim">«{{ h.clarified }}»</span>
+        {% elif h.clarified is none %}<span class="dim">не проверялось — старый разбор</span>
+        {% else %}<span class="warn">нет</span>{% endif %}</div>
       <div>карточка после звонка: {% if h.card_touched %}поправлена <span class="dim">«{{ h.card_touched }}»</span>{% else %}не трогали{% endif %}</div>
     </td>
   </tr>

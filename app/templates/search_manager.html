@@ -104,7 +104,10 @@
       </tr>
     </table>
     <p class="dim">Считается по разговорам, где он о чём-то спрашивал поставщика —
-    пустые и нерелевантные звонки сюда не попадают.</p>
+    пустые и нерелевантные звонки сюда не попадают.
+    {% if problems.not_reviewed %}Ещё {{ problems.not_reviewed }} разобраны до того, как
+    в разбор добавили эти два пункта, — туда не входят, это не «нет», а «не
+    спрашивали».{% endif %}</p>
   </div>
 </div>
 
@@ -170,8 +173,14 @@
         </td>
         <td{% if h.verdict in ('missing', 'ask_more') %} class="warn"{% endif %}>{{ h.label }}</td>
         <td>
-          <div>презентация компании: {% if h.presented %}да <span class="dim">«{{ h.presented }}»</span>{% else %}<span class="warn">нет</span>{% endif %}</div>
-          <div>уточнил, что есть ещё: {% if h.clarified %}да <span class="dim">«{{ h.clarified }}»</span>{% else %}<span class="warn">нет</span>{% endif %}</div>
+          <div>презентация компании:
+            {% if h.presented %}да <span class="dim">«{{ h.presented }}»</span>
+            {% elif h.presented is none %}<span class="dim">не проверялось — старый разбор</span>
+            {% else %}<span class="warn">нет</span>{% endif %}</div>
+          <div>уточнил, что есть ещё:
+            {% if h.clarified %}да <span class="dim">«{{ h.clarified }}»</span>
+            {% elif h.clarified is none %}<span class="dim">не проверялось — старый разбор</span>
+            {% else %}<span class="warn">нет</span>{% endif %}</div>
           <div>карточка после звонка: {% if h.card_touched %}поправлена <span class="dim">«{{ h.card_touched }}»</span>{% else %}не трогали{% endif %}</div>
         </td>
       </tr>
