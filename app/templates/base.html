@@ -98,11 +98,47 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0
 
 .foot{margin-top:34px;font-size:12.5px;color:var(--ink-3);border-top:1px solid var(--line);
   padding-top:14px}
+
+.topnav{display:flex;flex-wrap:wrap;gap:8px 26px;margin-bottom:22px;padding-bottom:15px;
+  border-bottom:1px solid var(--line)}
+.topnav-group{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 11px}
+.topnav-group b{color:var(--ink-3);font-weight:600;font-size:10.5px;letter-spacing:.07em;
+  text-transform:uppercase;margin-right:1px}
+.topnav-group a{text-decoration:none;color:var(--ink-2);font-size:13.5px;
+  padding-bottom:2px;border-bottom:2px solid transparent}
+.topnav-group a:hover{color:var(--accent)}
+.topnav-group a.now{color:var(--accent);font-weight:700;border-bottom-color:var(--accent)}
 </style>
 {% block extra_style %}{% endblock %}
 </head>
 <body>
 <div class="wrap">
+
+{% if not manager_view %}
+{# Навигация наверху, по разделам — решение владельца 05.10.2026: ссылки
+   внизу страницы было неудобно искать, особенно на длинных экранах. #}
+<nav class="topnav">
+  <div class="topnav-group">
+    <b>Тёплый прозвон</b>
+    <a href="{{ base }}/"{% if request.url.path == '/' %} class="now"{% endif %}>сегодня</a>
+    <a href="{{ base }}/report"{% if request.url.path == '/report' %} class="now"{% endif %}>отчёт</a>
+    <a href="{{ base }}/orders"{% if request.url.path == '/orders' %} class="now"{% endif %}>заявки</a>
+  </div>
+  <div class="topnav-group">
+    <b>Работа с исполнителями</b>
+    <a href="{{ base }}/search"{% if request.url.path == '/search' %} class="now"{% endif %}>поиск техники</a>
+    <a href="{{ base }}/search/plan"{% if request.url.path == '/search/plan' %} class="now"{% endif %}>план обзвона</a>
+  </div>
+  <div class="topnav-group">
+    <b>Звонки</b>
+    <a href="{{ base }}/ads"{% if request.url.path == '/ads' %} class="now"{% endif %}>с рекламы</a>
+    <a href="{{ base }}/leads"{% if request.url.path == '/leads' %} class="now"{% endif %}>возможные заявки</a>
+    <a href="{{ base }}/quality"{% if request.url.path == '/quality' %} class="now"{% endif %}>качество просева</a>
+    <a href="{{ base }}/caught"{% if request.url.path == '/caught' %} class="now"{% endif %}>пойманные</a>
+    <a href="{{ base }}/trial"{% if request.url.path == '/trial' %} class="now"{% endif %}>пробный просев</a>
+  </div>
+</nav>
+{% endif %}
 
 {% if demo %}
 <div class="banner">
@@ -120,13 +156,6 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0
 {% else %}
 <div class="foot">
   Дашборд прозвона {{ version }} ·
-  <a href="{{ base }}/">сегодня</a> ·
-  <a href="{{ base }}/report">развёрнутый отчёт</a> ·
-  <a href="{{ base }}/search">поиск техники</a> ·
-  <a href="{{ base }}/orders">заявки</a> ·
-  <a href="{{ base }}/leads">возможные заявки</a> ·
-  <a href="{{ base }}/ads">звонки с рекламы</a> ·
-  <a href="{{ base }}/quality">качество просева</a> ·
   источники: ВАТС {% if settings.vats_configured %}настроена{% else %}не настроена{% endif %},
   Synergy {% if settings.synergy_configured %}настроена{% else %}не настроена{% endif %},
   разбор разговоров {% if settings.transcribe_enabled %}включён{% else %}выключен{% endif %}
