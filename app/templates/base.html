@@ -31,7 +31,11 @@ html,body{margin:0}
 body{background:var(--bg);color:var(--ink);
   font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
   -webkit-font-smoothing:antialiased}
-.wrap{max-width:1060px;margin:0 auto;padding-inline:18px;padding-block:28px 60px}
+/* Одна ширина на все экраны — решение владельца 05.10.2026: у каждой
+   страницы была своя (1060–1760px), и при переходе между вкладками дашборд
+   заметно «прыгал». Где колонок много (развёрнутый отчёт), таблица внутри
+   своя прокрутка (`.scroll`), так что сама страница может быть уже. */
+.wrap{max-width:1400px;margin:0 auto;padding-inline:18px;padding-block:28px 60px}
 a{color:var(--accent)}
 .mono,code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
 code{background:var(--sunken);padding:1px 5px;border-radius:2px;color:var(--ink-2)}
