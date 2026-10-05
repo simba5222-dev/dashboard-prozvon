@@ -34,7 +34,7 @@ from app.collector import (SynergyClient, contact_orders_around, find_contact,
                            load_stages, order_names)
 from app.config import Settings
 from app import prozvon
-from app.crm_write import (FIELD_MARK, MARK_AI, CrmWriter, lead_comment,
+from app.crm_write import (FIELD_MARK, MARK_AI, CrmWriter, call_result_text, lead_comment,
                            lead_summary, order_customs)
 from app.db import save_call, save_call_order, save_inbound_check, save_screen, save_transcript
 from app.stats import local_parts
@@ -285,6 +285,14 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
     path = records / f"{uid}.mp3"
     path.write_bytes(audio)
 
+    # Один писатель на весь разбор звонка: результат («Результат__» на самой
+    # записи, решение владельца 05.10.2026) заполняется независимо от того,
+    # станет разговор заявкой или нет — по каждому разобранному звонку.
+    writer = CrmWriter(
+        SynergyClient(base_url=settings.synergy_url, token=settings.synergy_api_token),
+        apply=True,
+    )
+
     tries = callback_to_our_search(conn, str(call.get("client") or ""), started)
     if tries >= CALLBACK_MIN_TRIES:
         # Это перезвон на наш собственный поиск техники. Распознавать незачем:
@@ -297,6 +305,8 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
                                             ensure_ascii=False),
                     is_request=0, created_at=datetime.now(timezone.utc).isoformat())
         conn.commit()
+        writer.set_call_result(
+            uid, f"Не заявка — перезвон на наш поиск техники ({tries} недозвона до этого)")
         return {"uid": uid, "skipped": f"перезвон на наш поиск ({tries} недозвона)"}
 
     head = transcribe(settings, f"{uid}.mp3", audio, seconds=75)
@@ -326,10 +336,11 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
     conn.commit()
     refresh_hint(conn, settings, str(call.get("client") or ""))
     if not is_request:
+        writer.set_call_result(uid, call_result_text(verdict, False))
         return {"uid": uid, "manager": manager["display_name"] if manager else "—",
                 "request": False}
 
-    return create_lead(conn, settings, call, manager, verdict, path, local_date)
+    return create_lead(conn, settings, call, manager, verdict, path, local_date, writer)
 
 
 def lead_block_reason(active: list[dict[str, str]], equipment: str = "") -> str:
@@ -467,7 +478,7 @@ def refresh_hint(conn: sqlite3.Connection, settings: Settings, phone: str) -> No
 
 def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
                 manager: sqlite3.Row | None, verdict: dict[str, Any], path: Path,
-                local_date: str) -> dict[str, Any]:
+                local_date: str, writer: CrmWriter | None = None) -> dict[str, Any]:
     """Полный разбор и заявка в CRM.
 
     Свою заявку заводим **только если её нет**. Synergy на входящий звонок
@@ -478,13 +489,19 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
     Поэтому: нашлась заявка вокруг звонка — **дописываем её**, а не создаём
     рядом. Метка `custom-30614` ставится в обоих случаях: по ней владелец
     находит нашу работу, что бы ни было написано в названии.
+
+    `writer` — передаётся из `process()`, чтобы результат звонка («Результат__»)
+    писался тем же клиентом; вызов напрямую (скрипты, тесты) заведёт свой.
     """
     uid = str(call["uid"])
     client = SynergyClient(base_url=settings.synergy_url, token=settings.synergy_api_token)
+    if writer is None:
+        writer = CrmWriter(client, apply=True)
     contact = find_contact(client, str(call.get("client") or ""))
     if contact is None:
-        return {"uid": uid, "request": True, "order": None,
-                "note": "контакта с таким телефоном в CRM нет"}
+        note = "контакта с таким телефоном в CRM нет"
+        writer.set_call_result(uid, call_result_text(verdict, True, note=note))
+        return {"uid": uid, "request": True, "order": None, "note": note}
 
     stages = load_stages(client)
     after, active = contact_orders_around(
@@ -494,6 +511,7 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
     if reason:
         _remember_orders(conn, uid, after, active)
         logger.info("звонок %s: %s — не трогаем", uid, reason)
+        writer.set_call_result(uid, call_result_text(verdict, True, note=reason))
         return {"uid": uid, "request": True, "order": None, "note": reason}
 
     transcript = transcribe(settings, path.name, path.read_bytes())
@@ -508,7 +526,6 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
            "vats_login": manager["vats_login"] if manager else "неизвестно"}
     stage_id = next((sid for sid, (name, _kind) in stages.items()
                      if name.strip().lower() == settings.crm_lead_stage.lower()), None)
-    writer = CrmWriter(client, apply=True)
     summary = lead_summary(row, verdict, analysis)
     comment = lead_comment(row, verdict, analysis)
     # Чужую заявку только дописываем — признак «Создано ИИ» на неё не ставим:
@@ -527,6 +544,7 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
         if manager is not None and manager["synergy_user"]:
             writer.add_performer(target, manager["synergy_user"])
         writer.mark_call(uid, f"заявка {target} — «{after[0]['name']}»")
+        writer.set_call_result(uid, call_result_text(verdict, True, order_id=target))
         _remember_orders(conn, uid, after, active)
         conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?", (target, uid))
         _mirror_order(conn, uid, target, after[0].get("name") or "")
@@ -545,6 +563,7 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
         writer.add_performer(order_id, manager["synergy_user"])
     if order_id:
         writer.mark_call(uid, f"заявка {order_id} — «{settings.crm_lead_order_name}»")
+        writer.set_call_result(uid, call_result_text(verdict, True, order_id=order_id))
         conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?", (order_id, uid))
         _mirror_order(conn, uid, order_id, settings.crm_lead_order_name)
         conn.commit()

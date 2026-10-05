@@ -29,7 +29,9 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import analyzer, search_calls  # noqa: E402
+from app.collector import SynergyClient  # noqa: E402
 from app.config import get_settings  # noqa: E402
+from app.crm_write import CrmWriter, call_result_text  # noqa: E402
 from app.db import connect, init_schema, save_screen  # noqa: E402
 
 logger = logging.getLogger("screen")
@@ -59,6 +61,13 @@ def main() -> int:
     since = (date.fromisoformat(until) - timedelta(days=max(args.days - 1, 0))).isoformat()
 
     conn = connect(settings.db_path)
+    # «Результат__» на звонках, где просев решил «не заявка» — решение
+    # владельца 05.10.2026. Звонки с запросом результат получат позже, в
+    # catch_leads.py: там видно, завелась заявка или нет, а здесь — нет.
+    writer = CrmWriter(
+        SynergyClient(base_url=settings.synergy_url, token=settings.synergy_api_token),
+        apply=True,
+    )
     # Кто из контактов бывал заказчиком — список собирает classify_contacts.py.
     # Нет файла — просев просто не получит эту часть подсказки.
     buyers = search_calls.contacts_with_orders(
@@ -135,13 +144,16 @@ def main() -> int:
                 own_company=settings.own_company,
                 known=search_calls.number_profile(conn, row["client_phone"], buyers),
             )
+            is_lead = bool(verdict["is_request"] and not verdict["about_existing"])
             save_screen(
                 conn, call_uid=uid, head_text=text,
                 verdict_json=json.dumps(verdict, ensure_ascii=False),
-                is_request=int(verdict["is_request"] and not verdict["about_existing"]),
+                is_request=int(is_lead),
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
             conn.commit()
+            if not is_lead:
+                writer.set_call_result(uid, call_result_text(verdict, False))
             if verdict["is_request"]:
                 found += 1
                 logger.info("%s %s: запрос — %s (%s%%)", row["started_at"][11:16],

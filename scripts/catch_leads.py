@@ -35,7 +35,7 @@ from app.collector import (SynergyClient, contact_orders_around,  # noqa: E402
                            load_stages, order_names)
 from app.inbound import caught_mark, lead_block_reason  # noqa: E402
 from app.config import get_settings  # noqa: E402
-from app.crm_write import (FIELD_MARK, MARK_AI, CrmWriter, lead_comment,
+from app.crm_write import (FIELD_MARK, MARK_AI, CrmWriter, call_result_text, lead_comment,
                            lead_summary, order_customs)  # noqa: E402
 from app.db import connect, init_schema, save_transcript  # noqa: E402
 
@@ -187,6 +187,7 @@ def main() -> int:
             conn.commit()
             if reason:
                 logger.info("%s: %s — пропускаем", uid, reason)
+                writer.set_call_result(uid, call_result_text(screen, True, note=reason))
                 skipped += 1
                 continue
 
@@ -228,6 +229,7 @@ def main() -> int:
                 if performer and performer["synergy_user"]:
                     writer.add_performer(target, performer["synergy_user"])
                 writer.mark_call(uid, f"заявка {target} — «{after[0]['name']}»")
+                writer.set_call_result(uid, call_result_text(screen, True, order_id=target))
                 conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?",
                              (target, uid))
                 inbound._mirror_order(conn, uid, target, after[0].get("name") or "")
@@ -258,6 +260,7 @@ def main() -> int:
                 # умеет возвращать владельца контакта обратно.
                 writer.set_responsible(order_id, settings.crm_lead_responsible)
                 writer.mark_call(uid, f"заявка {order_id} — «{settings.crm_lead_order_name}»")
+                writer.set_call_result(uid, call_result_text(screen, True, order_id=order_id))
                 conn.execute("UPDATE screens SET created_order_id = ? WHERE call_uid = ?",
                              (order_id, uid))
                 inbound._mirror_order(conn, uid, order_id, settings.crm_lead_order_name)

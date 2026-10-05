@@ -60,6 +60,15 @@ MARK_AI = "Создано ИИ"
 # помечен, и слушать можно сразу его, а не все подряд.
 FIELD_CALL_ORDER = "custom-30615"
 
+# «Результат__» — основное поле на карточке звонка, решение владельца
+# 05.10.2026: заполнять после каждого разобранного разговора потока 2,
+# независимо от того, стала заявка или нет. Найдено среди семи полей со
+# словом «результат» в Synergy — остальные шесть либо на другой сущности
+# (orders, contacts, diaries), либо вовсе чужие (одно из полей на звонках
+# оказалось отдела кадров: варианты вроде «Нет ВУ», «Патента нет»).
+# Владелец подтвердил именно это, custom-17265, resource-name telephony-calls.
+FIELD_RESULT = "custom-17265"
+
 
 class CrmWriter:
     """Тонкая надстройка над клиентом Synergy: только то, что пишет."""
@@ -205,6 +214,28 @@ class CrmWriter:
             return call_id
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("звонок %s пометить не вышло: %s", call_id, exc)
+            return None
+
+    def set_call_result(self, call_uid: str, text: str) -> str | None:
+        """«Результат__» — основное поле карточки звонка. Решение владельца
+        05.10.2026: заполнять по каждому разобранному разговору потока 2,
+        независимо от того, заведена заявка или нет. Тот же поиск id, что
+        у `mark_call` — поле живёт на той же сущности `telephony-calls`.
+        """
+        if self.dry_run or not text.strip():
+            return None
+        call_id = self.find_call(call_uid)
+        if not call_id:
+            return None
+        try:
+            self._client.patch(f"telephony-calls/{call_id}", {"data": {
+                "type": "telephony-calls", "id": call_id,
+                "attributes": {"customs": {FIELD_RESULT: text[:1000]}},
+            }})
+            logger.info("звонок %s: результат записан — %s", call_id, text[:60])
+            return call_id
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("звонок %s: результат не записан: %s", call_id, exc)
             return None
 
     def update_customs(self, order_id: str, customs: dict[str, Any]) -> bool:
@@ -395,3 +426,37 @@ def lead_comment(call: dict[str, Any], screen: dict[str, Any], analysis: dict[st
         lines.append("")
         lines.append(analysis["summary"])
     return "\n".join(lines)
+
+
+def call_result_text(verdict: dict[str, Any], is_lead: bool, *,
+                     order_id: str = "", note: str = "") -> str:
+    """Короткая строка для «Результат__» — что выяснилось по звонку.
+
+    Не оценка разговора и не полный разбор — факт: заявка или нет, и почему.
+    `is_lead` — уже посчитанное решение (`is_request and not about_existing`),
+    не пересчитываем его здесь заново, чтобы текст не разошёлся с тем, что
+    реально произошло со звонком.
+
+    `note` — готовая причина отказа (блокировка по открытой заявке, контакт
+    не нашёлся) — если она есть, остальная логика не нужна, пишем её как есть.
+    """
+    if note.strip():
+        return note.strip()[:500]
+
+    request = str(verdict.get("request") or "").strip()
+    if not is_lead:
+        if verdict.get("about_existing"):
+            return "Не заявка — звонок по действующей аренде или заявке" + (
+                f": {request}" if request else "")
+        role = str(verdict.get("verify_role") or verdict.get("other_side") or "")
+        if role in ("contractor", "ad_responder", "supplier", "our_search"):
+            return "Не заявка — звонил исполнитель/подрядчик, не заказчик"
+        if verdict.get("work_described_by") == "us" or verdict.get("asked_by") == "our_manager":
+            return "Не заявка — наш менеджер искал технику у подрядчика"
+        return ("Не заявка на технику" + (f": {request}" if request else "")
+                if request or verdict.get("equipment")
+                else "Не заявка на технику — запроса в разговоре не было")
+
+    if order_id:
+        return f"Заявка {order_id}" + (f": {request}" if request else "")
+    return f"Запрос на технику: {request}" if request else "Запрос на технику, заявка не заведена"
