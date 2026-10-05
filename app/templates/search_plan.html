@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}План обзвона — поиск техники{% endblock %}
+
+{% block extra_style %}
+<style>
+.warn { color: #b45309; }
+.plan-head{background:var(--surface);border:1px solid var(--line);border-radius:3px;
+  padding:14px 17px;margin-bottom:18px;font-size:13.5px}
+.plan-head b{font-size:19px}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="top">
+  <h1>План обзвона поставщиков</h1>
+</div>
+<p class="crumbs"><a href="{{ base }}/search">← поиск техники</a></p>
+
+<div class="plan-head">
+  В пуле — <b>{{ pool_total }}</b> поставщиков, которых ещё ни разу не
+  прозванивали (ни у одной их карточки транспорта нет статуса). По
+  <b>{{ per_day }}</b> в день это <b>{{ days|length }}</b>
+  {% if days|length % 10 == 1 and days|length % 100 != 11 %}день
+  {% elif days|length % 10 in [2,3,4] and not (days|length % 100 in [12,13,14]) %}дня
+  {% else %}дней{% endif %}.
+  Список живой: как только в карточке поставщика появится статус, он сам
+  пропадёт отсюда при следующем открытии — делить дни руками не нужно.
+</div>
+
+{% if not days %}
+<p class="dim">Пул пуст: прозвонены все поставщики с телефоном в базе.</p>
+{% endif %}
+
+{% for day in days %}
+<div class="card"{% if not loop.first %} data-collapsed="1"{% endif %}>
+  <div class="card-head">
+    <h2>День {{ loop.index }}</h2>
+    <span class="sub">{{ day|length }} поставщиков</span>
+  </div>
+  <div class="card-body scroll">
+    <table>
+      <tr><th class="num">#</th><th>Поставщик</th><th>Типы техники</th>
+          <th class="num">Карточек</th></tr>
+      {% for s in day %}
+      <tr>
+        <td class="num">{{ loop.index }}</td>
+        <td>
+          {% if s.contact_name and s.contact_url %}<a href="{{ s.contact_url }}" target="_blank" rel="noopener">{{ s.contact_name }}</a>
+          {% elif s.contact_name %}{{ s.contact_name }}
+          {% else %}—{% endif %}
+          <br><span class="dim mono">{{ s.phone_pretty }}</span>
+        </td>
+        <td>{{ s.types|join(', ') if s.types else '—' }}</td>
+        <td class="num">{{ s.cards }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

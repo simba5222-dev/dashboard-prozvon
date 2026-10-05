@@ -19,6 +19,7 @@
 {% endblock %}
 
 {% block content %}
+<p class="crumbs"><a href="{{ base }}/search/plan">план обзвона поставщиков →</a></p>
 <form class="period" method="get" action="{{ base }}/search">
   <label>с <input type="date" name="since" value="{{ since }}"></label>
   <label>по <input type="date" name="until" value="{{ until }}"></label>

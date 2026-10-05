@@ -895,6 +895,48 @@ def heard_problems(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def search_cold_suppliers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Поставщики, которых ещё ни разу не прозванивали — пул для плана обзвона.
+
+    Заведена 05.10.2026 по заявке владельца: план на 120 звонков в день,
+    без уже отработанных. «Отработан» — хотя бы у одной его карточки
+    транспорта стоит статус: статус ставится только по итогам разговора
+    (человеком или сценарием), и пустой статус у ВСЕХ карточек разом значит
+    «с этим поставщиком вообще ещё не говорили». Один поставщик — один
+    телефон, не карточка: звонок один, а техники на нём может быть десятки
+    видов, цель звонка — узнать про всё сразу.
+
+    Список живой: это не выгрузка на сегодня, а весь оставшийся пул. Как
+    только менеджер проставит статус в CRM, при следующем открытии страницы
+    поставщик из списка пропадёт сам — делить его на дни руками не нужно.
+    """
+    rows = conn.execute(
+        """SELECT phone10, MIN(contact_id) contact_id,
+                  GROUP_CONCAT(DISTINCT contact_name) contact_names,
+                  GROUP_CONCAT(DISTINCT type_name) type_names,
+                  COUNT(*) cards
+             FROM transport_cards WHERE phone10 <> ''
+            GROUP BY phone10
+           HAVING SUM(CASE WHEN status <> '' THEN 1 ELSE 0 END) = 0
+            ORDER BY contact_names"""
+    ).fetchall()
+    out = []
+    for row in rows:
+        name = next((n for n in (row["contact_names"] or "").split(",") if n), "")
+        types = sorted({t for t in (row["type_names"] or "").split(",") if t})
+        p = row["phone10"] or ""
+        phone_pretty = f"+7 {p[:3]} {p[3:6]}-{p[6:8]}-{p[8:]}" if len(p) == 10 else p
+        out.append({
+            "phone10": p,
+            "contact_id": row["contact_id"] or "",
+            "contact_name": name,
+            "phone_pretty": phone_pretty,
+            "types": types,
+            "cards": row["cards"],
+        })
+    return out
+
+
 def search_tasks(conn: sqlite3.Connection, days: int = 14) -> list[dict[str, Any]]:
     """Заявки в подборе и сколько по ним сделано — приблизительно.
 

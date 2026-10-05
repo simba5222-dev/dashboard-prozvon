@@ -32,7 +32,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from app.stats import _parsed_analysis as parsed_analysis  # noqa: E402
 from app.stats import (  # noqa: F401
     search_day, search_feed, search_tasks, search_by_type, heard_checks, heard_summary,
-    heard_problems,
+    heard_problems, search_cold_suppliers,
     call_detail,
     calls_of_day,
     day_summary,
@@ -421,6 +421,30 @@ async def search_manager_page(request: Request, vats_login: str, day: str | None
         "problems": heard_problems(heard),
     })
     return TEMPLATES.TemplateResponse("search_manager.html", ctx)
+
+
+@app.get("/search/plan", response_class=HTMLResponse)
+async def search_plan_page(request: Request, per_day: int = 120) -> Any:
+    """План обзвона поставщиков, которых ещё ни разу не прозванивали.
+
+    Решение владельца 05.10.2026: 120 звонков в день, уже отработанные
+    (у кого хоть одна карточка со статусом) в план не идут. Список живой —
+    разбивка по дням пересчитывается из текущего состояния карточек при
+    каждом открытии, а не хранится отдельной выгрузкой. Логика отбора —
+    `search_cold_suppliers`.
+    """
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    ctx = _base_context(request)
+    per_day = per_day if per_day > 0 else 120
+    pool = _with_contact_links(search_cold_suppliers(conn), settings.synergy_contact_url)
+    days = [pool[i:i + per_day] for i in range(0, len(pool), per_day)]
+    ctx.update({
+        "pool_total": len(pool),
+        "per_day": per_day,
+        "days": days,
+    })
+    return TEMPLATES.TemplateResponse("search_plan.html", ctx)
 
 
 def split_turns(transcript: str | None) -> list[tuple[str, str]]:

@@ -162,7 +162,12 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0
       card.classList.toggle("collapsed", collapsed);
       chev.textContent = collapsed ? "+" : "−";
     }
-    apply(read(key) === "1");
+    // Пока человек сам ничего не решил (в хранилище пусто), страница может
+    // попросить начать свёрнутым через data-collapsed="1" — нужно для
+    // длинных списков вроде плана обзвона, где открытым по умолчанию
+    // должен быть только первый раздел.
+    var stored = read(key);
+    apply(stored === null ? card.dataset.collapsed === "1" : stored === "1");
 
     head.addEventListener("click", function (e) {
       // Клик по ссылке или полю внутри заголовка (переключатели периода,
