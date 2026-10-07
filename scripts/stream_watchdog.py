@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Сторож потоков 2, 3 и 4 — проверка за последние полчаса, не за сутки.
+"""Сторож потоков 2, 3 и 4 — проверка с задержкой, не «прямо сейчас».
 
     sudo -u claude .venv/bin/python scripts/stream_watchdog.py            # сухой прогон
     sudo -u claude .venv/bin/python scripts/stream_watchdog.py --apply    # слать алерты
@@ -8,9 +8,13 @@
 то, что `systemctl is-active` не видит в принципе (см. историю 21.09 и 23.09:
 сервис был «active», а работа молча стояла).
 
-Окно с задержкой: берём звонки в возрасте 30–45 минут, а не последние 15 —
-конвейеру нужно время на распознавание и разбор, иначе сторож будет слать
-ложную тревогу на каждый живой звонок, который просто ещё не досчитался.
+Окно с задержкой, и у потоков оно разное — по их реальному циклу, а не
+единое число. Поток 2 досчитывается таймером раз в минуту — ему хватает
+30–45 минут. Потоки 3 и 4 досчитываются батчем `dashboard-prozvon.timer`
+раз в час (плюс до 5 минут случайной задержки) — поймано на себе же
+07.10.2026: с окном в 30–45 минут сторож слал бы ложную тревогу на каждый
+звонок, который просто ждёт своей часовой волны, а не стоит. Для них
+окно — 80–100 минут.
 
 Три проверки:
 1. Вспышка однотипных ошибок в своём же журнале (`journalctl -u dashboard`) —
@@ -47,12 +51,44 @@ logger = logging.getLogger("stream_watchdog")
 ОКНО_ШИРИНА_МИН = 15       # ширина проверяемого окна
 ПОВТОР_ЧЕРЕЗ_ЧАСОВ = 2     # не долбить одним и тем же алертом чаще
 
+# Потоки 3 и 4 досчитываются не по минутному таймеру, как поток 2, а батчем
+# раз в час (`dashboard-prozvon.timer`, OnUnitActiveSec=1h, плюс до 5 минут
+# случайной задержки). Окно в 30–45 минут для них не задержка, а гарантированный
+# ложный алерт на каждый звонок, который просто ждёт своей часовой волны —
+# поймано на себе же 07.10.2026 сразу после первой проверки «сторож молчит».
+ОКНО_ЗАДЕРЖКИ_ЧАСОВОЙ_МИН = 80
+ОКНО_ШИРИНА_ЧАСОВАЯ_МИН = 20
 
-def _window() -> tuple[str, str]:
+
+def _window(delay_min: int = ОКНО_ЗАДЕРЖКИ_МИН,
+           width_min: int = ОКНО_ШИРИНА_МИН) -> tuple[datetime, datetime]:
     now = datetime.now(timezone.utc)
-    until = now - timedelta(minutes=ОКНО_ЗАДЕРЖКИ_МИН)
-    since = until - timedelta(minutes=ОКНО_ШИРИНА_МИН)
-    return since.isoformat(timespec="seconds"), until.isoformat(timespec="seconds")
+    until = now - timedelta(minutes=delay_min)
+    since = until - timedelta(minutes=width_min)
+    return since, until
+
+
+def _fmt(dt: datetime) -> str:
+    return dt.isoformat(timespec="seconds")
+
+
+def _parse_started(ts: str) -> datetime:
+    """`calls.started_at` хранится то в UTC, то в +03:00 (смотря по источнику —
+    вебхук ВАТС или опрос Synergy). Сравнивать такие строки оператором BETWEEN
+    молча неверно: "09:44...+03:00" лексикографически может попасть между
+    двумя UTC-метками, хотя по факту это другое время. Поймано на себе же
+    07.10.2026 — через fromisoformat сравнение честное."""
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _recent_local_dates(days: int = 2) -> tuple[str, str]:
+    """Грубый SQL-предфильтр по local_date — он не зависит от смешанных поясов
+    started_at, сужает выборку перед точным фильтром в Python."""
+    today = datetime.now(timezone.utc).date()
+    return (today - timedelta(days=days - 1)).isoformat(), today.isoformat()
 
 
 def _ensure_state_table(conn: sqlite3.Connection) -> None:
@@ -120,27 +156,31 @@ def check_error_spike(conn: sqlite3.Connection) -> str | None:
 
 def check_stream2_inbound(conn: sqlite3.Connection) -> str | None:
     since, until = _window()
-    calls = conn.execute(
-        "SELECT COUNT(*) FROM calls WHERE direction='in' AND is_demo=0 "
-        "AND started_at BETWEEN ? AND ? AND duration_sec>0", (since, until)).fetchone()[0]
-    if calls == 0:
+    day_from, day_to = _recent_local_dates()
+    rows = conn.execute(
+        "SELECT uid, started_at FROM calls WHERE direction='in' AND is_demo=0 "
+        "AND duration_sec>0 AND local_date BETWEEN ? AND ?", (day_from, day_to)).fetchall()
+    uids = [r[0] for r in rows if since <= _parse_started(r[1]) <= until]
+    if not uids:
         _mark_ok(conn, "stream2"); return None
+    placeholders = ",".join("?" * len(uids))
     screened = conn.execute(
-        "SELECT COUNT(*) FROM screens WHERE created_at BETWEEN ? AND ?",
-        (since, until)).fetchone()[0]
+        f"SELECT COUNT(*) FROM screens WHERE call_uid IN ({placeholders})", uids).fetchone()[0]
     if screened > 0:
         _mark_ok(conn, "stream2"); return None
-    return (f"🔴 Поток 2 (входящие, ловля потерянных): за {since[11:16]}–{until[11:16]} "
-            f"было {calls} состоявшихся входящих, просеяно — 0. Похоже, просев встал.")
+    return (f"🔴 Поток 2 (входящие, ловля потерянных): за {_fmt(since)[11:16]}–"
+            f"{_fmt(until)[11:16]} было {len(uids)} состоявшихся входящих, "
+            f"просеяно — 0. Похоже, просев встал.")
 
 
 def check_stream3_prozvon(conn: sqlite3.Connection) -> str | None:
-    since, until = _window()
-    cur = conn.execute(
-        """SELECT c.uid FROM calls c WHERE c.direction='out' AND c.in_group=1
-           AND c.is_demo=0 AND c.duration_sec>15 AND c.started_at BETWEEN ? AND ?""",
-        (since, until))
-    uids = [r[0] for r in cur.fetchall()]
+    since, until = _window(ОКНО_ЗАДЕРЖКИ_ЧАСОВОЙ_МИН, ОКНО_ШИРИНА_ЧАСОВАЯ_МИН)
+    day_from, day_to = _recent_local_dates()
+    rows = conn.execute(
+        """SELECT uid, started_at FROM calls WHERE direction='out' AND in_group=1
+           AND is_demo=0 AND duration_sec>15 AND local_date BETWEEN ? AND ?""",
+        (day_from, day_to)).fetchall()
+    uids = [r[0] for r in rows if since <= _parse_started(r[1]) <= until]
     if not uids:
         _mark_ok(conn, "stream3"); return None
     placeholders = ",".join("?" * len(uids))
@@ -149,28 +189,32 @@ def check_stream3_prozvon(conn: sqlite3.Connection) -> str | None:
         f"AND analysis_json IS NOT NULL AND analysis_json != ''", uids).fetchone()[0]
     if with_analysis > 0:
         _mark_ok(conn, "stream3"); return None
-    return (f"🔴 Поток 3 (прозвон): за {since[11:16]}–{until[11:16]} было {len(uids)} "
-            f"звонков, у 0 из них есть разбор содержания (оценка, рекомендации). "
-            f"Расшифровка может идти, а анализ — нет.")
+    return (f"🔴 Поток 3 (прозвон): за {_fmt(since)[11:16]}–{_fmt(until)[11:16]} было "
+            f"{len(uids)} звонков, у 0 из них есть разбор содержания (оценка, "
+            f"рекомендации). Расшифровка может идти, а анализ — нет.")
 
 
 def check_stream4_search(conn: sqlite3.Connection) -> str | None:
-    since, until = _window()
-    calls = conn.execute(
-        """SELECT COUNT(*) FROM calls c
+    since, until = _window(ОКНО_ЗАДЕРЖКИ_ЧАСОВОЙ_МИН, ОКНО_ШИРИНА_ЧАСОВАЯ_МИН)
+    day_from, day_to = _recent_local_dates()
+    rows = conn.execute(
+        """SELECT c.uid, c.started_at FROM calls c
            JOIN numbers n ON n.phone10 = substr(c.client_phone,-10)
            WHERE c.direction='out' AND n.category IN ('исполнитель','оба')
-           AND c.duration_sec>15 AND c.is_demo=0 AND c.started_at BETWEEN ? AND ?""",
-        (since, until)).fetchone()[0]
-    if calls == 0:
+           AND c.duration_sec>15 AND c.is_demo=0 AND c.local_date BETWEEN ? AND ?""",
+        (day_from, day_to)).fetchall()
+    calls = [r for r in rows if since <= _parse_started(r[1]) <= until]
+    if not calls:
         _mark_ok(conn, "stream4"); return None
+    uids = [r[0] for r in calls]
+    placeholders = ",".join("?" * len(uids))
     checked = conn.execute(
-        "SELECT COUNT(*) FROM search_checks WHERE checked_at BETWEEN ? AND ?",
-        (since, until)).fetchone()[0]
+        f"SELECT COUNT(*) FROM search_checks WHERE call_uid IN ({placeholders})",
+        uids).fetchone()[0]
     if checked > 0:
         _mark_ok(conn, "stream4"); return None
-    return (f"🔴 Поток 4 (поиск техники): за {since[11:16]}–{until[11:16]} было {calls} "
-            f"звонков поставщикам, разобрано — 0.")
+    return (f"🔴 Поток 4 (поиск техники): за {_fmt(since)[11:16]}–{_fmt(until)[11:16]} "
+            f"было {len(calls)} звонков поставщикам, разобрано — 0.")
 
 
 def send_telegram(token: str, chat_id: int, text: str) -> None:
