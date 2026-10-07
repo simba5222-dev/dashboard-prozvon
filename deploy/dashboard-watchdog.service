@@ -1,0 +1,12 @@
+[Unit]
+Description=Дашборд: сторож потоков 2/3/4 — алерты в Telegram за полчаса, не за сутки
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/stream_watchdog.py --apply
+TimeoutStartSec=2min

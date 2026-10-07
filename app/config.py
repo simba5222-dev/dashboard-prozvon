@@ -318,6 +318,17 @@ class Settings(BaseSettings):
 
     # --- Прочее ---
     db_path: str = Field(default="data/dashboard.db")
+
+    watchdog_bot_token: str | None = Field(
+        default=None,
+        description="Токен отдельного бота @technores_storozh_bot — только для "
+        "алертов сторожа потоков, в один канал с владельцем. Не путать с ботами "
+        "в telegram/ispolniteli — у сторожа своя задача и свой токен.",
+    )
+    watchdog_chat_id: int | None = Field(
+        default=None, description="Канал «Сторож звонков», куда уходят алерты."
+    )
+
     demo_mode: bool = Field(
         default=True,
         description="Наполнять базу показательными данными, если настоящих "
@@ -328,7 +339,7 @@ class Settings(BaseSettings):
     # Пустая строка в .env означает «не задано», иначе /health врёт о настройках.
     @field_validator(
         "vats_api_token", "synergy_api_token", "openai_api_key",
-        "asr_analysis_token", "crm_lead_responsible",
+        "asr_analysis_token", "crm_lead_responsible", "watchdog_bot_token",
         "yandex_api_key", "yandex_folder", "yandex_sa_id", "yandex_assistant_id",
         "record_ssh_host", "record_ssh_key",
         "field_need", "field_objects", "field_objects_extra", "field_inn",
