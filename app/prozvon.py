@@ -86,13 +86,21 @@ def analyze_call(conn: sqlite3.Connection, settings: Settings, uid: str,
         logger.info("разговор %s: в записи нет речи", uid)
         return {"uid": uid, "transcribed": True, "analyzed": False,
                 "note": "в записи нет речи"}
-    if not settings.analysis_configured:
+    yandex_engine = settings.prozvon_engine == "yandex"
+    if yandex_engine:
+        if not settings.yandex_stt_configured:
+            return {"uid": uid, "transcribed": True, "analyzed": False,
+                    "note": "ключ Яндекса не задан"}
+    elif not settings.analysis_configured:
         return {"uid": uid, "transcribed": True, "analyzed": False,
                 "note": "ключ OpenAI не задан"}
 
     analysis = analyzer.analyze(
-        text, card_of(conn, uid), api_key=settings.openai_api_key,
-        model=settings.analysis_model, own_company=settings.own_company,
+        text, card_of(conn, uid),
+        api_key=(settings.yandex_api_key if yandex_engine else settings.openai_api_key) or "",
+        model=settings.yandex_model if yandex_engine else settings.analysis_model,
+        engine=settings.prozvon_engine, folder=settings.yandex_folder or "",
+        own_company=settings.own_company,
     )
     save_transcript(conn, call_uid=uid, text=text,
                     analysis_json=json.dumps(analysis, ensure_ascii=False),

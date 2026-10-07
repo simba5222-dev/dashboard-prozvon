@@ -1050,11 +1050,15 @@ def dialog_text(turns: list[dict[str, Any]], limit: int = 12000) -> str:
 def analyze(
     transcript: str, call: dict[str, Any], *, api_key: str, model: str,
     own_company: str = "Техно-Ресурс", timeout_sec: float = 120.0,
+    engine: str = "openai", folder: str = "",
 ) -> dict[str, Any]:
-    """Разобрать один разговор. Возвращает словарь по образцу EMPTY_ANALYSIS."""
-    from openai import OpenAI
+    """Разобрать один разговор. Возвращает словарь по образцу EMPTY_ANALYSIS.
 
-    client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    Голова выбирается тем же диспетчером, что у просева (`_спросить_голову`) —
+    настройкой, не правкой кода. 07.10.2026 переведено на Яндекс: OpenAI в тот
+    день стоял без денег на счету, а разбор прозвона от этого вставал молча —
+    расшифровка есть, а оценки и рекомендаций РОПу нет.
+    """
     # Чек-лист подбираем по словам самого разговора и по потребности из
     # карточки: весь учебник в запрос не влезет, да и не нужен — вопросы к
     # автовышке ничего не говорят о разборе заявки на самосвал.
@@ -1073,19 +1077,10 @@ def analyze(
         domain=knowledge.DOMAIN,
         checklist=checklist,
     )
-    pace_calls()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-        response_format={"type": "json_object"},
-    )
-    log_usage(response, kind="разбор звонка", model=model)
-    raw = response.choices[0].message.content or "{}"
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        logger.warning("разбор вернул не JSON: %s", raw[:200])
+    data = _спросить_голову(prompt, engine=engine, api_key=api_key, model=model,
+                            folder=folder, timeout_sec=timeout_sec, kind="разбор звонка")
+    if data is None:
+        logger.warning("разбор не ответил или вернул не JSON (engine=%s)", engine)
         return {**EMPTY_ANALYSIS, "unusable": True}
     return normalize(data, transcript, call)
 

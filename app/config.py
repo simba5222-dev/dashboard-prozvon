@@ -270,6 +270,12 @@ class Settings(BaseSettings):
         "настройкой, а не правкой кода — чтобы можно было вернуться, если "
         "вторая голова окажется хуже на живом потоке.",
     )
+    prozvon_engine: str = Field(
+        default="openai",
+        description="Чем разбирать содержание звонков прозвона: openai или yandex. "
+        "Отдельно от screen_engine — у потоков разные задачи и разная история "
+        "точности, переключаются порознь.",
+    )
 
     crm_task_type: str = Field(
         default="5305",
