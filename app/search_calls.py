@@ -151,27 +151,25 @@ def contacts_with_orders(path: Path) -> set[str]:
 
 
 def heard_types(transcript: str, allowed: list[str], *, api_key: str, model: str,
-                timeout_sec: float = 60.0) -> dict[str, Any]:
-    """Что собеседник назвал своим. Только из справочника, только с цитатой."""
-    from openai import OpenAI
+                timeout_sec: float = 60.0, engine: str = "openai",
+                folder: str = "") -> dict[str, Any]:
+    """Что собеседник назвал своим. Только из справочника, только с цитатой.
 
+    Голова — через общий диспетчер `_спросить_голову`, как у потока 3.
+    Переведено на Яндекс 07.10.2026: расшифровка здесь и так уже идёт через
+    общий сервис (на Яндексе с 29.09.2026), а этот последний кусок зависел
+    от OpenAI отдельно и падал молча при его недоступности.
+    """
     if not transcript.strip() or not allowed:
         return {"asked": "", "has": [], "sure": 0, "presented": "", "clarified": ""}
-    client = OpenAI(api_key=api_key, timeout=timeout_sec)
-    analyzer.pace_calls()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": OFFER_PROMPT.format(
-            types="\n".join(f"- {name}" for name in allowed),
-            transcript=transcript[:6000],
-        )}],
-        temperature=0.0,
-        response_format={"type": "json_object"},
+    prompt = OFFER_PROMPT.format(
+        types="\n".join(f"- {name}" for name in allowed),
+        transcript=transcript[:6000],
     )
-    analyzer.log_usage(response, kind="техника поставщика", model=model)
-    try:
-        data = json.loads(response.choices[0].message.content or "{}")
-    except ValueError:
+    data = analyzer._спросить_голову(prompt, engine=engine, api_key=api_key, model=model,
+                                      folder=folder, timeout_sec=timeout_sec,
+                                      kind="техника поставщика")
+    if data is None:
         return {"asked": "", "has": [], "sure": 0, "presented": "", "clarified": ""}
 
     known = {name.casefold(): name for name in allowed}
@@ -266,12 +264,21 @@ def check_call(conn: sqlite3.Connection, settings: Settings, uid: str, path: Pat
     if not (text or "").strip():
         return {"uid": uid, "transcribed": True, "checked": False,
                 "note": "в записи нет речи"}
-    if not settings.analysis_configured:
+    yandex_engine = settings.search_engine == "yandex"
+    if yandex_engine:
+        if not settings.yandex_stt_configured:
+            return {"uid": uid, "transcribed": True, "checked": False,
+                    "note": "ключ Яндекса не задан"}
+    elif not settings.analysis_configured:
         return {"uid": uid, "transcribed": True, "checked": False,
                 "note": "ключ OpenAI не задан"}
 
-    heard = heard_types(text, vocabulary(conn), api_key=settings.openai_api_key,
-                        model=settings.analysis_model)
+    heard = heard_types(
+        text, vocabulary(conn),
+        api_key=(settings.yandex_api_key if yandex_engine else settings.openai_api_key) or "",
+        model=settings.yandex_model if yandex_engine else settings.analysis_model,
+        engine=settings.search_engine, folder=settings.yandex_folder or "",
+    )
     cards = supplier_cards(conn, call.get("client_phone"))
     result = compare(heard, cards)
 
