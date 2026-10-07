@@ -283,6 +283,12 @@ class Settings(BaseSettings):
         "Яндексе с 29.09.2026 через общий сервис — эта настройка касается только "
         "последнего шага, сверки услышанного со справочником.",
     )
+    order_analysis_engine: str = Field(
+        default="openai",
+        description="Чем разбирать судьбу заявки (проваленные/живые, "
+        "dashboard-order-analysis.timer, 06:30 МСК): openai или yandex. "
+        "Отдельная настройка — у этого разбора свой промпт и своя цена ошибки.",
+    )
 
     crm_task_type: str = Field(
         default="5305",

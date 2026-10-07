@@ -314,11 +314,9 @@ def calls_summary(calls: list[dict[str, Any]], limit: int = 14000) -> str:
 def analyze_order(
     order: dict[str, Any], calls: list[dict[str, Any]], *, api_key: str, model: str,
     own_company: str = "Техно-Ресурс", timeout_sec: float = 180.0,
+    engine: str = "openai", folder: str = "",
 ) -> dict[str, Any]:
     """Разобрать судьбу заявки по звонкам после её создания."""
-    from openai import OpenAI
-
-    client = OpenAI(api_key=api_key, timeout=timeout_sec)
     prompt = ORDER_PROMPT.format(
         own_company=own_company,
         domain=knowledge.DOMAIN,
@@ -326,17 +324,9 @@ def analyze_order(
         order=order_summary(order),
         calls=calls_summary(calls),
     )
-    pace_calls()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-        response_format={"type": "json_object"},
-    )
-    log_usage(response, kind="разбор заявки", model=model)
-    try:
-        data = json.loads(response.choices[0].message.content or "{}")
-    except ValueError:
+    data = _спросить_голову(prompt, engine=engine, api_key=api_key, model=model,
+                            folder=folder, timeout_sec=timeout_sec, kind="разбор заявки")
+    if data is None:
         return {**EMPTY_VERDICT, "no_calls": not calls}
     return normalize_verdict(data)
 
@@ -437,12 +427,9 @@ LIVE_ORDER_PROMPT = """Ты смотришь на живую заявку на �
 def analyze_live_order(
     order: dict[str, Any], calls: list[dict[str, Any]], *, api_key: str, model: str,
     own_company: str = "Техно-Ресурс", silence_days: int | None = None,
-    timeout_sec: float = 180.0,
+    timeout_sec: float = 180.0, engine: str = "openai", folder: str = "",
 ) -> dict[str, Any]:
     """Живая заявка: где она сейчас, о чём договорились, нужен ли руководитель."""
-    from openai import OpenAI
-
-    client = OpenAI(api_key=api_key, timeout=timeout_sec)
     silence = ""
     if silence_days is not None:
         silence = (f"\nПоследний разговор с клиентом был {silence_days} дн. назад."
@@ -457,17 +444,10 @@ def analyze_live_order(
         silence=silence,
         calls=calls_summary(calls),
     )
-    pace_calls()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-        response_format={"type": "json_object"},
-    )
-    log_usage(response, kind="разбор живой заявки", model=model)
-    try:
-        data = json.loads(response.choices[0].message.content or "{}")
-    except ValueError:
+    data = _спросить_голову(prompt, engine=engine, api_key=api_key, model=model,
+                            folder=folder, timeout_sec=timeout_sec,
+                            kind="разбор живой заявки")
+    if data is None:
         return {**EMPTY_LIVE, "no_calls": not calls}
     return normalize_live(data)
 

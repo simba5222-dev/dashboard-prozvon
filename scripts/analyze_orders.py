@@ -160,6 +160,8 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     settings = get_settings()
+    yandex_engine = settings.order_analysis_engine == "yandex"
+    head_ready = settings.yandex_stt_configured if yandex_engine else settings.analysis_configured
     conn = connect(settings.db_path)
     init_schema(conn)
     client = SynergyClient(
@@ -257,19 +259,22 @@ def main() -> int:
             continue
 
         verdict = None
-        if not args.collect_only and settings.analysis_configured:
+        if not args.collect_only and head_ready:
+            key = (settings.yandex_api_key if yandex_engine else settings.openai_api_key) or ""
+            model = settings.yandex_model if yandex_engine else settings.analysis_model
+            folder = settings.yandex_folder or ""
             if live:
                 verdict = analyzer.analyze_live_order(
                     {**order, "order_id": order_id}, calls,
-                    api_key=settings.openai_api_key, model=settings.analysis_model,
-                    own_company=settings.own_company,
+                    api_key=key, model=model, own_company=settings.own_company,
                     silence_days=silence_days(calls),
+                    engine=settings.order_analysis_engine, folder=folder,
                 )
             else:
                 verdict = analyzer.analyze_order(
                     {**order, "order_id": order_id}, calls,
-                    api_key=settings.openai_api_key, model=settings.analysis_model,
-                    own_company=settings.own_company,
+                    api_key=key, model=model, own_company=settings.own_company,
+                    engine=settings.order_analysis_engine, folder=folder,
                 )
         v = verdict or {}
         save_order_report(
