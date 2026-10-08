@@ -41,6 +41,12 @@ PROD_KEY = "/home/agent/.ssh/ru-proxy_ed25519"
 
 TRANSCRIBED_RE = re.compile(r"звонок (\S+) обработан:")
 ANALYZED_RE = re.compile(r"(?:звонок (\S+) — .*заявку не трогаем|звонок (\S+) -> контакт)")
+# 08.10.2026: звонок без разговора (бросили трубку, не дозвонились) или без
+# ссылки на запись пропускается навсегда — это не очередь, а конец пути.
+# Без этого «в разборе» показывало бы такие звонки вечно висящими, хотя
+# транскрибировать там нечего. Живой случай — OTLJFHSQQG00004A, 10:12:37:
+# CANCELLED, ВАТС не выдала запись, «пропущен» в тот же момент.
+SKIPPED_RE = re.compile(r"звонок (\S+) пропущен:")
 
 
 def _line_names(conn) -> dict[str, str]:
@@ -71,7 +77,7 @@ def _fetch_journal(since_utc: str, until_utc: str) -> str | None:
     script = (
         f"journalctl -u asr --no-pager --since '{since_utc} UTC' "
         f"--until '{until_utc} UTC' 2>/dev/null | grep -E "
-        "'обработан:|заявку не трогаем|-> контакт'"
+        "'обработан:|заявку не трогаем|-> контакт|пропущен:'"
     )
     try:
         out = subprocess.run(
@@ -96,9 +102,11 @@ def build_text(conn, settings, hours: int) -> str | None:
 
     transcribed_uids = set(TRANSCRIBED_RE.findall(log))
     analyzed_uids = {u for pair in ANALYZED_RE.findall(log) for u in pair if u}
+    skipped_uids = set(SKIPPED_RE.findall(log))
 
     names = _line_names(conn)
-    per_line = {phone10: {"calls": 0, "transcribed": 0, "analyzed": 0} for phone10 in names}
+    per_line = {phone10: {"calls": 0, "transcribed": 0, "analyzed": 0, "skipped": 0}
+               for phone10 in names}
     for row in rows:
         phone10 = (row.get("via") or "")[-10:]
         if phone10 not in per_line:
@@ -110,19 +118,25 @@ def build_text(conn, settings, hours: int) -> str | None:
             d["transcribed"] += 1
         if uid in analyzed_uids:
             d["analyzed"] += 1
+        if uid in skipped_uids:
+            d["skipped"] += 1
 
     out = [f"📡 Поток 1 по каналам за {hours} ч (до {now.strftime('%H:%M')} UTC)"]
-    total_calls = total_transcribed = total_pending = 0
+    total_calls = total_transcribed = total_pending = total_skipped = 0
     for phone10, name in sorted(names.items(), key=lambda kv: kv[1] or "я"):
         d = per_line[phone10]
-        pending = max(d["calls"] - d["transcribed"], 0)
+        # Пропущенный навсегда (нет записи, разговора не было) — не очередь,
+        # вычитаем из «в разборе» отдельно, иначе он висит там бесконечно.
+        pending = max(d["calls"] - d["transcribed"] - d["skipped"], 0)
         total_calls += d["calls"]
+        total_skipped += d["skipped"]
         total_transcribed += d["transcribed"]
         total_pending += pending
         out.append(f"  {name or phone10}: звонков {d['calls']}, "
-                  f"транскрибировано {d['transcribed']}, в разборе {pending}")
+                  f"транскрибировано {d['transcribed']}, в разборе {pending}, "
+                  f"без разговора/записи {d['skipped']}")
     out.append(f"\nВсего: звонков {total_calls}, транскрибировано {total_transcribed}, "
-              f"в разборе {total_pending}")
+              f"в разборе {total_pending}, без разговора/записи {total_skipped}")
     return "\n".join(out)
 
 
