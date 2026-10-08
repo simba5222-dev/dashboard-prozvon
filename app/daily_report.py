@@ -13,6 +13,8 @@ from __future__ import annotations
 import subprocess
 from datetime import datetime, timedelta, timezone
 
+import httpx
+
 from app.config import Settings
 
 # 10 с — реальный порог dashboard-prozvon-fast.service (--min-sec 10), а не
@@ -37,12 +39,63 @@ def _msk_day_bounds_utc(day: str) -> tuple[str, str]:
     return start.astimezone(timezone.utc).strftime(fmt), end.astimezone(timezone.utc).strftime(fmt)
 
 
-def _stream1_counts(day: str) -> tuple[int, int, int] | None:
-    """(звонков, транскрибировано, разобрано) потока 1 — боевой сервер."""
+def _ad_line_numbers(conn) -> set[str]:
+    """Список общих номеров (10 цифр) — решение владельца, живёт в `lines`.
+
+    `kind='рекламная'` одно не годится: это вообще все линии, которые ВАТС
+    когда-либо подписал как рекламные, а владелец 01.10.2026 сузил список до
+    семи. Настоящий фильтр — `in_scope` (и `is_general` для линий без имени
+    от ВАТС, см. `/api/line-in-scope`)."""
+    rows = conn.execute(
+        "SELECT phone10 FROM lines WHERE in_scope = 1 AND (is_general = 1 OR kind = 'рекламная')"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def _stream1_calls(conn, day: str, settings: Settings) -> int | None:
+    """Звонков на рекламных линиях за день — напрямую из истории ВАТС.
+
+    08.10.2026: первая версия считала «звонков» = все входящие по серверу
+    (373), владелец справедливо не поверил. Вторая версия вычитала по логу
+    «линия не в списке», тоже неверно: причина пропуска short-circuit —
+    короткие и безzаписные звонки отсеиваются раньше проверки линии и в этот
+    лог не попадают, так что вычитание давало заниженный «не рекламный»
+    остаток и завышало «рекламный». Верно — спросить саму историю ВАТС:
+    она отдаёт номер линии (`via`) на каждую строку, сверяем со своим
+    справочником. Проверено на 07.10 целиком: 26 на линиях, 16 обработано —
+    обработанных не может быть больше кандидатов, сходится."""
+    if not settings.prod_lookup_url or not settings.prod_lookup_token:
+        return None
+    numbers = _ad_line_numbers(conn)
+    if not numbers:
+        return None
+    since, until = _msk_day_bounds_utc(day)
+    since_iso = datetime.strptime(since, "%Y-%m-%d %H:%M:%S").replace(
+        tzinfo=timezone.utc).isoformat()
+    until_iso = datetime.strptime(until, "%Y-%m-%d %H:%M:%S").replace(
+        tzinfo=timezone.utc).isoformat()
+    try:
+        r = httpx.get(
+            f"{settings.prod_lookup_url}/lookup-records",
+            params={"start": since_iso, "end": until_iso, "with_record_only": "false"},
+            headers={"X-Lookup-Token": settings.prod_lookup_token}, timeout=30,
+        )
+        r.raise_for_status()
+        rows = r.json()["rows"]
+    except (httpx.HTTPError, KeyError, ValueError):
+        return None
+    return sum(1 for row in rows if (row.get("via") or "")[-10:] in numbers)
+
+
+def _stream1_processed(day: str) -> tuple[int, int] | None:
+    """(транскрибировано, разобрано) потока 1 — по журналу боевого сервера.
+
+    Эти строки пишутся уже ПОСЛЕ проверки линии (см. `pipeline.py`,
+    `synergy.py`), поэтому log-based подсчёт для них надёжен — в отличие
+    от «звонков», здесь не нужна история ВАТС."""
     since, until = _msk_day_bounds_utc(day)
     script = (
         f"LOG=$(journalctl -u asr --no-pager --since '{since} UTC' --until '{until} UTC' 2>/dev/null); "
-        "echo \"$LOG\" | grep -c 'вебхук history:.*входящий'; "
         "echo \"$LOG\" | grep -c 'звонок .* обработан:'; "
         "echo \"$LOG\" | grep -cE 'заявку не трогаем|-> контакт .*, заказ'"
     )
@@ -55,7 +108,7 @@ def _stream1_counts(day: str) -> tuple[int, int, int] | None:
     except (subprocess.TimeoutExpired, OSError):
         return None
     lines = out.stdout.strip().splitlines()
-    if out.returncode != 0 or len(lines) != 3:
+    if out.returncode != 0 or len(lines) != 2:
         return None
     try:
         return tuple(int(x) for x in lines)  # type: ignore[return-value]
@@ -121,19 +174,16 @@ def build_report(conn, settings: Settings, day: str | None = None) -> str:
     day = day or today_msk()
     lines = [f"📊 Отчёт по звонкам за {day} (МСК)"]
 
-    c1 = _stream1_counts(day)
-    if c1 is None:
-        lines.append("\nПоток 1 (реклама): боевой сервер не ответил, данных нет")
+    calls1 = _stream1_calls(conn, day, settings)
+    processed1 = _stream1_processed(day)
+    if calls1 is None or processed1 is None:
+        lines.append("\nПоток 1 (реклама): боевой сервер или справочник линий не ответил, данных нет")
     else:
-        calls, transcribed, analyzed = c1
-        # «Звонков» здесь — вообще все входящие на сервере, а не только с
-        # рекламных линий (это дешевле журнала, точный список линий решает
-        # сервис на лету). Разрыв со следующими цифрами в основном не очередь,
-        # а звонки на линиях вне списка общих номеров — так и было в отчёте
-        # за неделю от 08.10.2026, там это не стоит на месте, а отфильтровано.
+        transcribed, analyzed = processed1
+        pending = max(calls1 - transcribed, 0)
         lines.append(
-            f"\nПоток 1 (реклама):\n  входящих всего {calls} (включая линии вне разбора), "
-            f"транскрибировано {transcribed}, разобрано {analyzed}"
+            f"\nПоток 1 (реклама):\n  звонков {calls1}, транскрибировано {transcribed}, "
+            f"разобрано {analyzed}, в очереди {pending}"
         )
 
     calls2, screened2 = _stream2_counts(conn, day, settings)
