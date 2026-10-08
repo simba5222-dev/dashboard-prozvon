@@ -188,3 +188,31 @@ def test_alert_repeats_after_two_hours():
     conn.execute("INSERT INTO watchdog_state (check_key, last_alert_at) VALUES (?,?)",
                 ("stream2", old))
     assert wd._should_alert(conn, "stream2") is True
+
+
+# ---------- контрольное сообщение раз в сутки ------------------------------
+
+def test_heartbeat_due_at_the_right_hour_if_not_sent_today():
+    conn = fresh_conn()
+    now = datetime(2026, 10, 8, wd.HEARTBEAT_ЧАС_UTC, 5, tzinfo=timezone.utc)
+    assert wd._heartbeat_due(conn, now) is True
+
+
+def test_heartbeat_not_due_at_other_hours():
+    conn = fresh_conn()
+    now = datetime(2026, 10, 8, wd.HEARTBEAT_ЧАС_UTC + 1, 5, tzinfo=timezone.utc)
+    assert wd._heartbeat_due(conn, now) is False
+
+
+def test_heartbeat_not_repeated_same_day():
+    """08.10.2026: канал молчал с вечера, владелец решил, что сторож умер,
+    хотя тот исправно отрабатывал каждые 10 минут. Контрольное сообщение раз
+    в сутки — но не на каждом из шести прогонов внутри одного часа."""
+    conn = fresh_conn()
+    now = datetime(2026, 10, 8, wd.HEARTBEAT_ЧАС_UTC, 5, tzinfo=timezone.utc)
+    assert wd._heartbeat_due(conn, now) is True
+    wd._mark_alerted(conn, "heartbeat")
+    later_same_hour = datetime(2026, 10, 8, wd.HEARTBEAT_ЧАС_UTC, 45, tzinfo=timezone.utc)
+    assert wd._heartbeat_due(conn, later_same_hour) is False
+    next_day = datetime(2026, 10, 9, wd.HEARTBEAT_ЧАС_UTC, 5, tzinfo=timezone.utc)
+    assert wd._heartbeat_due(conn, next_day) is True

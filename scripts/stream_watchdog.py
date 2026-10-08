@@ -27,6 +27,11 @@
 
 Повтор не спамит: один и тот же алерт не шлётся чаще, чем раз в 2 часа,
 пока причина не исчезла (таблица `watchdog_state`).
+
+Раз в сутки, утром — контрольное сообщение, даже если сказать нечего.
+08.10.2026: владелец открыл канал, увидел тишину с вечера и решил, что
+сторож умер — хотя он исправно отрабатывал каждые 10 минут. Тишина при
+молчаливом «всё хорошо» неотличима снаружи от тишины мёртвого сервиса.
 """
 
 from __future__ import annotations
@@ -58,6 +63,8 @@ logger = logging.getLogger("stream_watchdog")
 # поймано на себе же 07.10.2026 сразу после первой проверки «сторож молчит».
 ОКНО_ЗАДЕРЖКИ_ЧАСОВОЙ_МИН = 80
 ОКНО_ШИРИНА_ЧАСОВАЯ_МИН = 20
+
+HEARTBEAT_ЧАС_UTC = 4     # 07:00 по Москве — контрольное сообщение раз в сутки
 
 
 def _window(delay_min: int = ОКНО_ЗАДЕРЖКИ_МИН,
@@ -223,6 +230,18 @@ def send_telegram(token: str, chat_id: int, text: str) -> None:
     r.raise_for_status()
 
 
+def _heartbeat_due(conn: sqlite3.Connection, now: datetime) -> bool:
+    """Раз в сутки, не чаще. Час проверяем прямо здесь — таймер срабатывает
+    каждые 10 минут, и в нужный час это сработает один раз, дата в
+    watchdog_state не даст повторить."""
+    if now.hour != HEARTBEAT_ЧАС_UTC:
+        return False
+    row = conn.execute(
+        "SELECT last_alert_at FROM watchdog_state WHERE check_key='heartbeat'").fetchone()
+    sent_today = row and row[0] and row[0][:10] == now.date().isoformat()
+    return not sent_today
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -241,24 +260,28 @@ def main() -> int:
         ("stream4", check_stream4_search),
     ]
 
-    alerts = []
+    problems = []   # все найденные проблемы — и для контрольного сообщения тоже
+    alerts = []     # то, что реально шлём сейчас — антиспам мог часть придержать
     for key, fn in checks:
         msg = fn(conn)
         if msg is None:
             continue
+        problems.append((key, msg))
         if not _should_alert(conn, key):
             print(f"[{key}] проблема есть, но алерт недавно уже был — молчу")
             continue
         alerts.append((key, msg))
 
     if not alerts:
-        print("всё в порядке, алертов нет")
-        return 0
+        print("всё в порядке, алертов нет" if not problems else
+              "проблемы есть, но уже сообщены — молчу")
+
+    bot_ready = bool(settings.watchdog_bot_token and settings.watchdog_chat_id)
 
     for key, msg in alerts:
         print(msg)
         if args.apply:
-            if not (settings.watchdog_bot_token and settings.watchdog_chat_id):
+            if not bot_ready:
                 logger.error("нет токена/chat_id сторожа — .env читается только под claude")
                 return 1
             try:
@@ -267,6 +290,18 @@ def main() -> int:
                 logger.error("не отправилось: %s", exc)
                 continue
             _mark_alerted(conn, key)
+
+    now = datetime.now(timezone.utc)
+    if _heartbeat_due(conn, now):
+        text = ("✅ Сторож на связи, все потоки в порядке." if not problems else
+                "🟡 Сторож на связи. Есть нерешённое:\n" + "\n".join(m for _, m in problems))
+        print("heartbeat:", text.splitlines()[0])
+        if args.apply and bot_ready:
+            try:
+                send_telegram(settings.watchdog_bot_token, settings.watchdog_chat_id, text)
+                _mark_alerted(conn, "heartbeat")
+            except httpx.HTTPError as exc:
+                logger.error("контрольное сообщение не отправилось: %s", exc)
 
     return 0
 
