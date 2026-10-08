@@ -114,21 +114,21 @@ def test_stream2_ignores_calls_still_in_lag_window():
     assert wd.check_stream2_inbound(conn) is None
 
 
-def test_stream3_ignores_calls_still_waiting_for_hourly_batch():
-    """07.10.2026: с окном в 30-45 минут здесь был ложный алерт — поток 3
-    досчитывается раз в час, а не раз в минуту, как поток 2. Звонок 40 минут
-    назад ещё законно ждёт своей волны."""
+def test_stream3_ignores_calls_still_in_lag_window():
+    """08.10.2026: поток 3 теперь досчитывается раз в 10 минут
+    (dashboard-prozvon-fast.timer, не часовым батчем) — окно сузилось обратно
+    до уровня потока 2. Звонок 5 минут назад ещё законно ждёт своей волны."""
     conn = fresh_conn()
-    add_call(conn, "p1", minutes_ago=40, direction="out", duration=60, in_group=1)
+    add_call(conn, "p1", minutes_ago=5, direction="out", duration=60, in_group=1)
     assert wd.check_stream3_prozvon(conn) is None
 
 
-def test_stream4_ignores_calls_still_waiting_for_hourly_batch():
+def test_stream4_ignores_calls_still_in_lag_window():
     conn = fresh_conn()
     save_number(conn, phone10="9101234567", name="Поставщик", contact_id="1",
                category="исполнитель", cards=1, orders=0, types="Экскаватор",
                resolved_at=ts(100))
-    add_call(conn, "s1", minutes_ago=40, direction="out", duration=60,
+    add_call(conn, "s1", minutes_ago=5, direction="out", duration=60,
              client_phone="+79101234567")
     assert wd.check_stream4_search(conn) is None
 
@@ -137,18 +137,18 @@ def test_stream4_ignores_calls_still_waiting_for_hourly_batch():
 
 def test_stream3_alerts_when_transcribed_but_not_analyzed():
     conn = fresh_conn()
-    add_call(conn, "p1", minutes_ago=90, direction="out", duration=60, in_group=1)
+    add_call(conn, "p1", minutes_ago=40, direction="out", duration=60, in_group=1)
     save_transcript(conn, call_uid="p1", text="разговор", analysis_json=None,
-                    created_at=ts(88), is_demo=0)
+                    created_at=ts(38), is_demo=0)
     msg = wd.check_stream3_prozvon(conn)
     assert msg is not None and "Поток 3" in msg
 
 
 def test_stream3_quiet_when_analysis_present():
     conn = fresh_conn()
-    add_call(conn, "p1", minutes_ago=90, direction="out", duration=60, in_group=1)
+    add_call(conn, "p1", minutes_ago=40, direction="out", duration=60, in_group=1)
     save_transcript(conn, call_uid="p1", text="разговор", analysis_json='{"ok":1}',
-                    created_at=ts(88), is_demo=0)
+                    created_at=ts(38), is_demo=0)
     assert wd.check_stream3_prozvon(conn) is None
 
 
@@ -159,7 +159,7 @@ def test_stream4_alerts_when_supplier_call_not_checked():
     save_number(conn, phone10="9101234567", name="Поставщик", contact_id="1",
                category="исполнитель", cards=1, orders=0, types="Экскаватор",
                resolved_at=ts(100))
-    add_call(conn, "s1", minutes_ago=90, direction="out", duration=60,
+    add_call(conn, "s1", minutes_ago=40, direction="out", duration=60,
              client_phone="+79101234567")
     msg = wd.check_stream4_search(conn)
     assert msg is not None and "Поток 4" in msg
@@ -170,12 +170,12 @@ def test_stream4_quiet_when_checked():
     save_number(conn, phone10="9101234567", name="Поставщик", contact_id="1",
                category="исполнитель", cards=1, orders=0, types="Экскаватор",
                resolved_at=ts(100))
-    add_call(conn, "s1", minutes_ago=90, direction="out", duration=60,
+    add_call(conn, "s1", minutes_ago=40, direction="out", duration=60,
              client_phone="+79101234567")
     save_search_check(conn, call_uid="s1", local_date="2026-10-07", vats_login="andy",
                       phone10="9101234567", contact_name="П", asked_type="Экскаватор",
                       offered="", known=1, missing="", verdict="занесено",
-                      checked_at=ts(88), is_demo=0, more_unnamed=0, presented=1,
+                      checked_at=ts(38), is_demo=0, more_unnamed=0, presented=1,
                       clarified=1)
     assert wd.check_stream4_search(conn) is None
 

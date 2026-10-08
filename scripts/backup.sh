@@ -24,6 +24,7 @@ PROD_HOST=root@91.220.109.49
 PROD_KEY=/home/agent/.ssh/ru-proxy_ed25519
 SSH="ssh -o ConnectTimeout=15 -o BatchMode=yes -i $PROD_KEY"
 KEEP_DAYS=30
+RECORD_KEEP_DAYS=60
 STAMP=$(date +%Y%m%d-%H%M%S)
 LOG="$LOCAL/backup.log"
 

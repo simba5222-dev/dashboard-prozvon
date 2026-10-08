@@ -209,6 +209,17 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:8080",
         description="Сервис распознавания на этом же сервере.",
     )
+    prod_lookup_url: str | None = Field(
+        default=None,
+        description="Ручка /lookup-records на боевом сервере (91-220-109-49.nip.io) — "
+        "ссылки на запись из истории ВАТС напрямую, для звонков, которые до нас "
+        "дошли только через опрос Synergy. 08.10.2026.",
+    )
+    prod_lookup_token: str | None = Field(
+        default=None,
+        description="Секрет к /lookup-records — тот же, что ASR_LOOKUP_RECORDS_TOKEN "
+        "в .env боевого сервера.",
+    )
     transcribe_min_duration_sec: int = Field(
         default=60,
         description="Не распознавать звонки короче. Короткие почти не несут "
@@ -359,6 +370,7 @@ class Settings(BaseSettings):
     @field_validator(
         "vats_api_token", "synergy_api_token", "openai_api_key",
         "asr_analysis_token", "crm_lead_responsible", "watchdog_bot_token",
+        "prod_lookup_url", "prod_lookup_token",
         "yandex_api_key", "yandex_folder", "yandex_sa_id", "yandex_assistant_id",
         "record_ssh_host", "record_ssh_key",
         "field_need", "field_objects", "field_objects_extra", "field_inn",
