@@ -38,6 +38,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sqlite3
 import subprocess
@@ -229,9 +230,19 @@ def check_stream4_search(conn: sqlite3.Connection) -> str | None:
             f"было {len(calls)} звонков поставщикам, разобрано — 0.")
 
 
+# Кнопка под каждым сообщением сторожа — нажатие ловит report_bot.py
+# (отдельный процесс, слушает getUpdates) и в ответ шлёт сводку по
+# всем четырём потокам за сегодня. 08.10.2026, просьба владельца.
+ОТЧЁТ_КНОПКА = json.dumps(
+    {"inline_keyboard": [[{"text": "📊 Отчёт", "callback_data": "report"}]]},
+    ensure_ascii=False,
+)
+
+
 def send_telegram(token: str, chat_id: int, text: str) -> None:
     r = httpx.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                   data={"chat_id": chat_id, "text": text}, timeout=15)
+                   data={"chat_id": chat_id, "text": text,
+                         "reply_markup": ОТЧЁТ_КНОПКА}, timeout=15)
     r.raise_for_status()
 
 
