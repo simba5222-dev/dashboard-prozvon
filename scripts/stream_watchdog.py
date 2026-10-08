@@ -161,12 +161,18 @@ def check_error_spike(conn: sqlite3.Connection) -> str | None:
     return f"⚠️ В журнале дашборда за 15 минут: {детали}. Похоже на отказ внешнего сервиса."
 
 
-def check_stream2_inbound(conn: sqlite3.Connection) -> str | None:
+def check_stream2_inbound(conn: sqlite3.Connection, min_duration_sec: int = 10) -> str | None:
+    """`min_duration_sec` — тот же порог, что у самого потока
+    (`settings.inbound_min_duration_sec`, сейчас 10с). Звонок короче него
+    поток и не пытается просеивать — звать его «зависшим» нечестно.
+    Поймано на себе же 08.10.2026: 3-секундный звонок без записи ВАТС
+    посчитался «зависшим просевом», хотя поток его и не должен был трогать."""
     since, until = _window()
     day_from, day_to = _recent_local_dates()
     rows = conn.execute(
         "SELECT uid, started_at FROM calls WHERE direction='in' AND is_demo=0 "
-        "AND duration_sec>0 AND local_date BETWEEN ? AND ?", (day_from, day_to)).fetchall()
+        "AND duration_sec>=? AND local_date BETWEEN ? AND ?",
+        (min_duration_sec, day_from, day_to)).fetchall()
     uids = [r[0] for r in rows if since <= _parse_started(r[1]) <= until]
     if not uids:
         _mark_ok(conn, "stream2"); return None
@@ -255,7 +261,7 @@ def main() -> int:
 
     checks = [
         ("error_spike", check_error_spike),
-        ("stream2", check_stream2_inbound),
+        ("stream2", lambda c: check_stream2_inbound(c, settings.inbound_min_duration_sec)),
         ("stream3", check_stream3_prozvon),
         ("stream4", check_stream4_search),
     ]

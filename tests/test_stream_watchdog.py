@@ -66,6 +66,15 @@ def test_stream2_alerts_when_calls_but_no_screening():
     assert msg is not None and "Поток 2" in msg
 
 
+def test_stream2_ignores_calls_shorter_than_the_streams_own_threshold():
+    """08.10.2026: 3-секундный звонок без записи ВАТС поймался как «просев
+    встал», хотя сам поток такие короткие звонки даже не пытается просеивать
+    (settings.inbound_min_duration_sec = 10 по решению от 29.09.2026)."""
+    conn = fresh_conn()
+    add_call(conn, "c1", minutes_ago=40, direction="in", duration=3)
+    assert wd.check_stream2_inbound(conn, min_duration_sec=10) is None
+
+
 def test_parse_started_handles_mixed_timezones():
     """07.10.2026: calls.started_at хранится то в UTC, то в +03:00 (вебхук ВАТС
     против опроса Synergy). Разница в 3 часа должна остаться разницей в 3 часа
