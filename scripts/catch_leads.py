@@ -33,7 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import analyzer, inbound  # noqa: E402
 from app.collector import (SynergyClient, contact_orders_around,  # noqa: E402
                            load_stages, order_names)
-from app.inbound import caught_mark, lead_block_reason  # noqa: E402
+from app.inbound import (caught_mark, lead_block_reason,  # noqa: E402
+                         manager_duplicate_reason, orders_today_by_manager)
 from app.config import get_settings  # noqa: E402
 from app.crm_write import (FIELD_MARK, MARK_AI, CrmWriter, call_result_text, lead_comment,
                            lead_summary, order_customs)  # noqa: E402
@@ -120,7 +121,7 @@ def main() -> int:
     approved = "AND s.approved = 1" if args.only_approved else ""
     rows = conn.execute(
         f"""
-        SELECT k.uid, k.started_at, k.duration_sec, k.client_phone, k.vats_login,
+        SELECT k.uid, k.started_at, k.local_date, k.duration_sec, k.client_phone, k.vats_login,
                m.display_name, c.contact_id, c.contact_name, c.company_name,
                s.verdict_json, s.created_order_id, t.text AS transcript_text
         FROM screens s
@@ -177,6 +178,9 @@ def main() -> int:
             # одном месте обязательно: разойдутся — и дубли вернутся через ту
             # дверь, которую забыли починить.
             reason = lead_block_reason(active, str(screen.get("equipment") or ""))
+            if not reason:
+                todays = orders_today_by_manager(conn, row["vats_login"], row["local_date"])
+                reason = manager_duplicate_reason(todays, str(screen.get("equipment") or ""))
             conn.execute(
                 """UPDATE inbound_checks
                       SET orders_after = ?, order_names = ?,

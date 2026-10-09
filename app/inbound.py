@@ -386,6 +386,45 @@ def lead_block_reason(active: list[dict[str, str]], equipment: str = "") -> str:
     return ""
 
 
+def orders_today_by_manager(conn: sqlite3.Connection, vats_login: str,
+                            local_date: str) -> list[dict[str, str]]:
+    """Заявки, которые этот менеджер уже завёл сегодня по пойманным звонкам."""
+    rows = conn.execute(
+        """SELECT s.created_order_id AS id, s.verdict_json
+             FROM screens s JOIN calls k ON k.uid = s.call_uid
+            WHERE k.vats_login = ? AND k.local_date = ?
+              AND s.created_order_id IS NOT NULL""",
+        (vats_login, local_date)).fetchall()
+    out = []
+    for r in rows:
+        verdict = json.loads(r["verdict_json"] or "{}")
+        out.append({"id": r["id"], "equipment": str(verdict.get("equipment") or "")})
+    return out
+
+
+def manager_duplicate_reason(todays_orders: list[dict[str, str]], equipment: str) -> str:
+    """Не заводить менеджеру вторую заявку за день на ту же технику.
+
+    Решение владельца от 09.10.2026 — отдельно от `lead_block_reason`: там
+    смотрим на заявки самого клиента, здесь — на заявки, которые сегодня уже
+    завёл этот менеджер, независимо от того, кто звонил. Другой тип техники —
+    не дубль, заводим. Сомневаемся — отказываем, как и там: дубль в CRM
+    дороже пропуска.
+    """
+    if not todays_orders:
+        return ""
+    if not equipment:
+        return f"у менеджера уже есть сегодняшняя заявка: {order_names(todays_orders[:2])}"
+
+    from app.knowledge import одно_семейство
+
+    похожие = [o for o in todays_orders if одно_семейство(equipment, o.get("equipment") or "")]
+    if похожие:
+        return (f"у менеджера уже есть сегодняшняя заявка на такую же технику: "
+                f"{order_names(похожие[:2])}")
+    return ""
+
+
 def _remember_orders(conn: sqlite3.Connection, uid: str,
                      after: list[dict[str, str]], active: list[dict[str, str]]) -> None:
     """Запомнить, какие заявки нашлись у контакта, — чтобы отказ был виден.
@@ -508,6 +547,10 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
         client, contact["id"], str(call.get("start") or ""), stages,
         fresh_days=settings.order_active_days)
     reason = lead_block_reason(active, str(verdict.get("equipment") or ""))
+    if not reason:
+        mgr_login = manager["vats_login"] if manager else "неизвестно"
+        todays = orders_today_by_manager(conn, mgr_login, local_date)
+        reason = manager_duplicate_reason(todays, str(verdict.get("equipment") or ""))
     if reason:
         _remember_orders(conn, uid, after, active)
         logger.info("звонок %s: %s — не трогаем", uid, reason)
