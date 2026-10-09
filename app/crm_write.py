@@ -19,6 +19,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -106,10 +108,60 @@ class CrmWriter:
         if self.dry_run:
             logger.info("сухой прогон: завели бы заявку «%s» по контакту %s", name, contact_id)
             return None
-        data = self._client.post("orders", payload)
-        order_id = str(((data or {}).get("data") or {}).get("id") or "")
-        logger.info("заявка %s заведена по контакту %s", order_id or "?", contact_id)
-        return order_id or None
+
+        # Защита от дублей: живой случай 09.10.2026 — Synergy отдала 429,
+        # общий post() с повтором отправил запрос второй раз, а первая
+        # попытка, похоже, заявку всё-таки завела — получили две на одну
+        # находку (три пары за один прогон). create_order не идемпотентен,
+        # поэтому здесь свой, короткий повтор — не больше одного — и перед
+        # каждой попыткой (в том числе перед повтором) проверяем, не
+        # появилась ли заявка с тем же названием у контакта только что.
+        for попытка in (1, 2):
+            existing = self._recent_duplicate(contact_id, name)
+            if existing:
+                logger.warning(
+                    "заявка «%s» по контакту %s уже есть (%s, создана только что) — "
+                    "вторую не завожу", name, contact_id, existing,
+                )
+                return existing
+            try:
+                data = self._client.post_once("orders", payload)
+                order_id = str(((data or {}).get("data") or {}).get("id") or "")
+                logger.info("заявка %s заведена по контакту %s", order_id or "?", contact_id)
+                return order_id or None
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 429 or попытка == 2:
+                    raise
+                pause = float(exc.response.headers.get("Retry-After") or 3)
+                logger.info("Synergy ответила 429 на создание заявки, жду %.1f с, "
+                           "перед повтором проверю на дубль", pause)
+                time.sleep(min(pause, 20.0))
+        return None  # недостижимо
+
+    def _recent_duplicate(self, contact_id: str, name: str,
+                          within_minutes: int = 3) -> str | None:
+        """Самая свежая заявка контакта с тем же названием, если её завели
+        только что. Не настоящая проверка на дубль по смыслу — узкий щит
+        именно от повторной отправки одного и того же create_order (ретраи
+        на 429 и подобное), поэтому окно короткое и сверяем точное название."""
+        try:
+            data = self._client.get(f"contacts/{contact_id}/orders",
+                                    sort="-created-at", per_page=5)
+        except (httpx.HTTPError, ValueError):
+            return None
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=within_minutes)
+        for row in (data or {}).get("data") or []:
+            attrs = row.get("attributes") or {}
+            if str(attrs.get("name") or "") != name:
+                continue
+            try:
+                created = datetime.fromisoformat(
+                    str(attrs.get("created-at") or "").replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if created >= cutoff:
+                return str(row["id"])
+        return None
 
     def add_performer(self, order_id: str, user_id: str) -> bool:
         """Добавить соисполнителя — менеджера, который говорил с клиентом.

@@ -106,11 +106,27 @@ class SynergyClient:
         last.raise_for_status()
         return {}
 
+    def post_once(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Один POST, без повтора на 429.
+
+        Для операций, которые нельзя слепо повторять: создание заявки — не
+        идемпотентно, а 429 не всегда значит «не записалось» — 09.10.2026
+        похоже, что Synergy создала заявку и всё равно ответила 429, и
+        повтор из post() наплодил три дубля подряд. Здесь решение, повторять
+        ли и с какой проверкой — на вызывающей стороне (см. CrmWriter.create_order)."""
+        url = f"{self._base}/{path.lstrip('/')}"
+        headers = {**self._headers, "Content-Type": "application/vnd.api+json"}
+        self._wait()
+        response = httpx.post(url, json=payload, headers=headers, timeout=self._timeout)
+        response.raise_for_status()
+        return response.json() if response.content else {}
+
     def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Запись в Synergy. Тот же тормоз и те же повторы, что у чтения.
 
         Раньше повторы были только у чтения, и записи молча терялись при 429 —
-        в сервисе распознавания это уже проходили.
+        в сервисе распознавания это уже проходили. Для создания заявок не
+        годится — см. post_once и CrmWriter.create_order.
         """
         url = f"{self._base}/{path.lstrip('/')}"
         headers = {**self._headers, "Content-Type": "application/vnd.api+json"}
