@@ -117,11 +117,11 @@ def _should_alert(conn: sqlite3.Connection, key: str) -> bool:
     return datetime.now(timezone.utc) - last > timedelta(hours=ПОВТОР_ЧЕРЕЗ_ЧАСОВ)
 
 
-def _mark_alerted(conn: sqlite3.Connection, key: str) -> None:
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+def _mark_alerted(conn: sqlite3.Connection, key: str, now: datetime | None = None) -> None:
+    ts = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
     conn.execute("INSERT INTO watchdog_state (check_key, last_alert_at) VALUES (?,?) "
                  "ON CONFLICT(check_key) DO UPDATE SET last_alert_at=excluded.last_alert_at",
-                 (key, now))
+                 (key, ts))
     conn.commit()
 
 
@@ -315,7 +315,7 @@ def main() -> int:
         if args.apply and bot_ready:
             try:
                 send_telegram(settings.watchdog_bot_token, settings.watchdog_chat_id, text)
-                _mark_alerted(conn, "heartbeat")
+                _mark_alerted(conn, "heartbeat", now)
             except httpx.HTTPError as exc:
                 logger.error("контрольное сообщение не отправилось: %s", exc)
 

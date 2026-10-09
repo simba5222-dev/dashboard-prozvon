@@ -220,7 +220,7 @@ def test_heartbeat_not_repeated_same_day():
     conn = fresh_conn()
     now = datetime(2026, 10, 8, wd.HEARTBEAT_ЧАС_UTC, 5, tzinfo=timezone.utc)
     assert wd._heartbeat_due(conn, now) is True
-    wd._mark_alerted(conn, "heartbeat")
+    wd._mark_alerted(conn, "heartbeat", now)
     later_same_hour = datetime(2026, 10, 8, wd.HEARTBEAT_ЧАС_UTC, 45, tzinfo=timezone.utc)
     assert wd._heartbeat_due(conn, later_same_hour) is False
     next_day = datetime(2026, 10, 9, wd.HEARTBEAT_ЧАС_UTC, 5, tzinfo=timezone.utc)
