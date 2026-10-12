@@ -50,6 +50,7 @@ from app.stats import (  # noqa: F401
     digest_rows,
     coaching_picks,
     messenger_sends_by_day,
+    messenger_sends_overview,
 )
 
 logger = logging.getLogger(__name__)
@@ -347,6 +348,23 @@ async def manager_day(request: Request, vats_login: str, day: str | None = None)
         "threshold": settings.talk_threshold_sec,
     })
     return TEMPLATES.TemplateResponse("manager.html", ctx)
+
+
+@app.get("/messenger-sends", response_class=HTMLResponse)
+async def messenger_sends_page(request: Request) -> Any:
+    """Все менеджеры с разобранной перепиской — точка входа из общего меню.
+
+    Раньше ссылка была только на персональной странице менеджера, и найти
+    отчёт можно было только зная прямой адрес — владелец его не нашёл ни
+    на «сегодня», ни в развёрнутом отчёте (12.10.2026). Этот экран и общая
+    ссылка в меню — исправление именно этого.
+    """
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    today = local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    ctx = _base_context(request)
+    ctx.update({"rows": messenger_sends_overview(conn, today), "today": today})
+    return TEMPLATES.TemplateResponse("messenger_sends_overview.html", ctx)
 
 
 @app.get("/manager/{vats_login}/messenger-sends", response_class=HTMLResponse)

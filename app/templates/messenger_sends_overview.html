@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Рассылка в мессенджерах — дашборд{% endblock %}
+
+{% block content %}
+<div class="top">
+  <h1>Рассылка в мессенджерах</h1>
+  <span class="date">{{ today }}</span>
+</div>
+<p class="dim" style="font-size:13px">
+  Разовый разбор личной переписки менеджеров (Telegram/MAX) — не часть
+  звонкового конвейера, обновляется не автоматически, а когда владелец
+  заново прочитает аккаунты через VNC. Список — только те, по кому разбор
+  уже делали.
+</p>
+
+<div class="card">
+  <div class="card-body scroll">
+    {% if not rows %}
+    <p class="dim" style="margin:0">Разбора переписки пока ни по кому нет.</p>
+    {% else %}
+    <table>
+      <tr>
+        <th>Менеджер</th>
+        <th class="num">Сегодня</th>
+        <th class="num">Telegram, всего</th>
+        <th class="num">MAX, всего</th>
+        <th class="num">Всего</th>
+        <th>Последняя отправка</th>
+      </tr>
+      {% for r in rows %}
+      <tr data-href="{{ base }}/manager/{{ r.vats_login }}/messenger-sends">
+        <td><a href="{{ base }}/manager/{{ r.vats_login }}/messenger-sends">{{ r.display_name }}</a></td>
+        <td class="num mono">{% if r.today_total %}{{ r.today_total }}{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td class="num mono">{{ r.telegram_total }}</td>
+        <td class="num mono">{{ r.max_total }}</td>
+        <td class="num mono"><b>{{ r.total }}</b></td>
+        <td class="mono">{{ r.last_date }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

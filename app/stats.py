@@ -1149,6 +1149,48 @@ def openai_balance(data_dir: str, topup_usd: float, topup_at: str | None) -> dic
     return out
 
 
+def messenger_sends_overview(conn: sqlite3.Connection, today: str) -> list[dict[str, Any]]:
+    """Все менеджеры, по которым есть хоть один разбор переписки — не только
+    отдел прозвона: рассылку в мессенджерах ведут и продажники (см.
+    messenger_sends_by_day). Поэтому имя берём прямым JOIN с managers, а не
+    через managers() — та фильтрует по dept='прозвон' и Ткачевина потеряет.
+    """
+    logins = [r["manager_login"] for r in conn.execute(
+        "SELECT DISTINCT manager_login FROM messenger_file_sends"
+    ).fetchall()]
+    out = []
+    for login in logins:
+        name_row = conn.execute(
+            "SELECT display_name FROM managers WHERE vats_login = ?", (login,)
+        ).fetchone()
+        totals = {"telegram": 0, "max": 0}
+        for r in conn.execute(
+            "SELECT platform, COUNT(*) AS n FROM messenger_file_sends "
+            "WHERE manager_login = ? GROUP BY platform", (login,),
+        ).fetchall():
+            totals[r["platform"]] = r["n"]
+        today_totals = {"telegram": 0, "max": 0}
+        for r in conn.execute(
+            "SELECT platform, COUNT(*) AS n FROM messenger_file_sends "
+            "WHERE manager_login = ? AND sent_date = ? GROUP BY platform",
+            (login, today),
+        ).fetchall():
+            today_totals[r["platform"]] = r["n"]
+        last_date = conn.execute(
+            "SELECT MAX(sent_date) FROM messenger_file_sends WHERE manager_login = ?", (login,)
+        ).fetchone()[0]
+        out.append({
+            "vats_login": login,
+            "display_name": name_row["display_name"] if name_row else login,
+            "telegram_total": totals["telegram"], "max_total": totals["max"],
+            "total": totals["telegram"] + totals["max"],
+            "today_total": today_totals["telegram"] + today_totals["max"],
+            "last_date": last_date,
+        })
+    out.sort(key=lambda r: r["total"], reverse=True)
+    return out
+
+
 def messenger_sends_by_day(conn: sqlite3.Connection, manager_login: str) -> dict[str, Any]:
     """Отправки файла по дням — отдельно Telegram и MAX, по одному менеджеру.
 
