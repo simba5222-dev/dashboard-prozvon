@@ -49,6 +49,7 @@ from app.stats import (  # noqa: F401
     report_totals,
     digest_rows,
     coaching_picks,
+    messenger_sends_by_day,
 )
 
 logger = logging.getLogger(__name__)
@@ -346,6 +347,26 @@ async def manager_day(request: Request, vats_login: str, day: str | None = None)
         "threshold": settings.talk_threshold_sec,
     })
     return TEMPLATES.TemplateResponse("manager.html", ctx)
+
+
+@app.get("/manager/{vats_login}/messenger-sends", response_class=HTMLResponse)
+async def manager_messenger_sends(request: Request, vats_login: str) -> Any:
+    """Отправки презентации/списка техники через личные Telegram/MAX менеджера.
+
+    Не часть звонкового конвейера — разовый разбор переписки владельцем
+    (см. scripts/import_messenger_sends_tkachevin.py). Страница просто
+    показывает то, что уже разобрано и лежит в messenger_file_sends;
+    сама она ничего не досчитывает и не обновляет.
+    """
+    conn = request.app.state.db
+    who = next((m for m in managers(conn) if m["vats_login"] == vats_login), None)
+    ctx = _base_context(request)
+    ctx.update({
+        "manager": who,
+        "vats_login": vats_login,
+        "report": messenger_sends_by_day(conn, vats_login),
+    })
+    return TEMPLATES.TemplateResponse("messenger_sends.html", ctx)
 
 
 @app.get("/search", response_class=HTMLResponse)

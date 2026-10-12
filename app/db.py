@@ -313,6 +313,30 @@ CREATE TABLE IF NOT EXISTS transcripts (
     created_at    TEXT NOT NULL,
     is_demo       INTEGER NOT NULL DEFAULT 0
 );
+
+-- Отправки файлов (презентация, список техники) через личные мессенджеры
+-- менеджеров — Telegram/MAX. Не наш звонковый конвейер: данные приходят
+-- разовым разбором переписки (владелец читает аккаунты через VNC, агент —
+-- через debug-порт браузера), не live-потоком.
+--
+-- Без UNIQUE по получателю: имена в мессенджерах не уникальны (несколько
+-- разных «Сергеев» в один день — обычное дело), а отчёту важно именно
+-- число отправок, не число разных имён. Повторный импорт того же разбора
+-- не защищён уникальным ключом намеренно — вызывающий код (скрипт импорта)
+-- сам отвечает за то, чтобы не вставить один и тот же разбор дважды
+-- (стандартный приём — удалить старые строки по manager_login/platform
+-- перед повторной вставкой).
+CREATE TABLE IF NOT EXISTS messenger_file_sends (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    manager_login  TEXT NOT NULL,
+    platform       TEXT NOT NULL,              -- 'telegram' / 'max'
+    recipient      TEXT NOT NULL,               -- имя получателя, как в мессенджере (не уникально)
+    sent_date      TEXT NOT NULL,               -- YYYY-MM-DD
+    file_name      TEXT NOT NULL,               -- 'Техника.xlsx', 'СК ТЕХНОРЕСУРС Аренда Техники.pdf' и т.п.
+    collected_at   TEXT NOT NULL                -- когда разобрали переписку
+);
+CREATE INDEX IF NOT EXISTS idx_messenger_sends_day
+    ON messenger_file_sends (manager_login, platform, sent_date);
 """
 
 # Пять пунктов, которые менеджер обязан заполнить после разговора.
@@ -900,3 +924,29 @@ def save_order_task(conn: sqlite3.Connection, order_id: str, *,
 
 def has_any_data(conn: sqlite3.Connection) -> bool:
     return conn.execute("SELECT 1 FROM calls LIMIT 1").fetchone() is not None
+
+
+def save_messenger_send(conn: sqlite3.Connection, **row: Any) -> None:
+    """Одна отправка файла через личный мессенджер менеджера (Telegram/MAX).
+
+    Без защиты от дублей на уровне БД — получатели не уникальны по имени
+    (см. комментарий у таблицы), так что дедуплицировать тут нечем. Вызывающий
+    код сам чистит старые строки этого менеджера/платформы перед повторной
+    вставкой, если разбор переписки пересчитывают заново.
+    """
+    conn.execute(
+        """
+        INSERT INTO messenger_file_sends
+            (manager_login, platform, recipient, sent_date, file_name, collected_at)
+        VALUES (:manager_login, :platform, :recipient, :sent_date, :file_name, :collected_at)
+        """,
+        row,
+    )
+
+
+def clear_messenger_sends(conn: sqlite3.Connection, *, manager_login: str, platform: str) -> None:
+    """Стереть прежний разбор переписки перед повторным импортом тех же данных."""
+    conn.execute(
+        "DELETE FROM messenger_file_sends WHERE manager_login = ? AND platform = ?",
+        (manager_login, platform),
+    )

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}{{ manager.display_name if manager else vats_login }} — рассылка в мессенджерах{% endblock %}
+
+{% block content %}
+<div class="top">
+  <h1>{{ manager.display_name if manager else vats_login }}</h1>
+  <span class="date">рассылка в Telegram/MAX</span>
+</div>
+<p class="crumbs"><a href="{{ base }}/manager/{{ vats_login }}">← к звонкам менеджера</a> ·
+  логин в ВАТС <code>{{ vats_login }}</code></p>
+
+<p class="dim" style="font-size:13px">
+  Разовый разбор личной переписки (не часть звонкового конвейера — владелец читал
+  аккаунты через VNC-браузер, агент считал по debug-порту). Файл — набор из
+  списка техники, PDF-презентации и визитки, уходят одним пакетом. Считаются
+  <b>отправки</b>, не «разные люди»: имена получателей в мессенджерах не уникальны.
+  {% if report.collected_at %}Разобрано: {{ report.collected_at[:16] }} UTC.{% endif %}
+</p>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Итого</h2>
+    <span class="sub">
+      {% if report.first_date %}{{ report.first_date }} — {{ report.last_date }}{% endif %}
+    </span>
+  </div>
+  <div class="card-body">
+    <table>
+      <tr><th></th><th class="num">Telegram</th><th class="num">MAX</th><th class="num">Всего</th></tr>
+      <tr>
+        <td>за весь период</td>
+        <td class="num mono">{{ report.totals.telegram or 0 }}</td>
+        <td class="num mono">{{ report.totals.max or 0 }}</td>
+        <td class="num mono"><b>{{ report.grand_total }}</b></td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>По дням</h2>
+    <span class="sub">{{ report.days|length }} дней с отправками</span>
+  </div>
+  <div class="card-body scroll">
+    {% if not report.days %}
+    <p class="dim" style="margin:0">Разбор по этому менеджеру ещё не загружен.</p>
+    {% else %}
+    <table>
+      <tr><th>Дата</th><th class="num">Telegram</th><th class="num">MAX</th><th class="num">Всего</th></tr>
+      {% for d in report.days %}
+      <tr>
+        <td class="mono">{{ d.date }}</td>
+        <td class="num mono">{% if d.telegram %}{{ d.telegram }}{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td class="num mono">{% if d.max %}{{ d.max }}{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td class="num mono"><b>{{ d.total }}</b></td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

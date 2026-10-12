@@ -1147,3 +1147,47 @@ def openai_balance(data_dir: str, topup_usd: float, topup_at: str | None) -> dic
         if out["per_day"] > 0:
             out["days_left"] = int(out["left"] / out["per_day"])
     return out
+
+
+def messenger_sends_by_day(conn: sqlite3.Connection, manager_login: str) -> dict[str, Any]:
+    """Отправки файла по дням — отдельно Telegram и MAX, по одному менеджеру.
+
+    Данные не из нашего звонкового конвейера, а из разового разбора личной
+    переписки (см. scripts/import_messenger_sends_tkachevin.py, 12.10.2026) —
+    этой таблице нечего сверять с живым потоком, здесь просто то, что
+    разобрали. Получатели по имени не уникальны (разные люди с одинаковым
+    именем в один день — обычное дело), поэтому считаем **отправки**, не
+    «разных людей».
+    """
+    rows = conn.execute(
+        """SELECT platform, sent_date, COUNT(*) AS n
+             FROM messenger_file_sends
+            WHERE manager_login = ?
+            GROUP BY platform, sent_date
+            ORDER BY sent_date DESC""",
+        (manager_login,),
+    ).fetchall()
+
+    by_date: dict[str, dict[str, int]] = {}
+    totals = {"telegram": 0, "max": 0}
+    for r in rows:
+        day = r["sent_date"]
+        by_date.setdefault(day, {"telegram": 0, "max": 0})
+        by_date[day][r["platform"]] = r["n"]
+        totals[r["platform"]] = totals.get(r["platform"], 0) + r["n"]
+
+    collected_at = conn.execute(
+        "SELECT MAX(collected_at) FROM messenger_file_sends WHERE manager_login = ?",
+        (manager_login,),
+    ).fetchone()[0]
+
+    days = sorted(by_date, reverse=True)
+    return {
+        "days": [{"date": d, "telegram": by_date[d]["telegram"], "max": by_date[d]["max"],
+                  "total": by_date[d]["telegram"] + by_date[d]["max"]} for d in days],
+        "totals": totals,
+        "grand_total": totals.get("telegram", 0) + totals.get("max", 0),
+        "first_date": min(days) if days else None,
+        "last_date": max(days) if days else None,
+        "collected_at": collected_at,
+    }
