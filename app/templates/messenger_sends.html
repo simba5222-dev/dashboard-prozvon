@@ -1,6 +1,24 @@
 {% extends "base.html" %}
 {% block title %}{{ manager.display_name if manager else vats_login }} — рассылка в мессенджерах{% endblock %}
 
+{% block extra_style %}
+<style>
+/* Тот же вид фильтра по датам, что в /report (app/templates/report.html) —
+   своя копия стилей, чтобы не тащить сюда весь .rep-блок report.html. */
+.period{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;
+  background:var(--surface);border:1px solid var(--line);border-radius:3px;
+  padding:11px 15px;margin-bottom:18px;font-size:13px}
+.period label{display:flex;align-items:center;gap:6px;color:var(--ink-3)}
+.period input[type=date]{font:inherit;color:var(--ink);
+  background:var(--surface-2);border:1px solid var(--line-2);border-radius:2px;padding:3px 6px}
+.period button{font:inherit;cursor:pointer;color:var(--surface);background:var(--accent);
+  border:1px solid var(--accent);border-radius:2px;padding:4px 14px}
+.period .quick{margin-left:auto;color:var(--ink-3)}
+.period .quick a{margin-left:10px}
+.period .quick a.now{font-weight:600;text-decoration:none}
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="top">
   <h1>{{ manager.display_name if manager else vats_login }}</h1>
@@ -14,21 +32,36 @@
   аккаунты через VNC-браузер, агент считал по debug-порту). Файл — набор из
   списка техники, PDF-презентации и визитки, уходят одним пакетом. Считаются
   <b>отправки</b>, не «разные люди»: имена получателей в мессенджерах не уникальны.
+  {% if report.available_first %}Данные есть с {{ report.available_first }} по {{ report.available_last }}.{% endif %}
   {% if report.collected_at %}Разобрано: {{ report.collected_at[:16] }} UTC.{% endif %}
 </p>
+
+<form class="period" method="get" action="{{ base }}/manager/{{ vats_login }}/messenger-sends">
+  <label>с <input type="date" name="since" value="{{ report.since or '' }}"></label>
+  <label>по <input type="date" name="until" value="{{ report.until or '' }}"></label>
+  <button type="submit">Показать</button>
+  {% if quick %}
+  <span class="quick">быстро:
+    {% for q in quick %}
+    <a href="{{ link(since=q.since, until=q.until) }}"
+       class="{% if report.since == q.since and report.until == q.until %}now{% endif %}">{{ q.name }}</a>
+    {% endfor %}
+  </span>
+  {% endif %}
+</form>
 
 <div class="card">
   <div class="card-head">
     <h2>Итого</h2>
     <span class="sub">
-      {% if report.first_date %}{{ report.first_date }} — {{ report.last_date }}{% endif %}
+      {% if report.since %}{{ report.since }} — {{ report.until }}{% endif %}
     </span>
   </div>
   <div class="card-body">
     <table>
       <tr><th></th><th class="num">Telegram</th><th class="num">MAX</th><th class="num">Всего</th></tr>
       <tr>
-        <td>за весь период</td>
+        <td>за выбранный период</td>
         <td class="num mono">{{ report.totals.telegram or 0 }}</td>
         <td class="num mono">{{ report.totals.max or 0 }}</td>
         <td class="num mono"><b>{{ report.grand_total }}</b></td>

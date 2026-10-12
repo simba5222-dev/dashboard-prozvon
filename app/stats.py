@@ -1191,8 +1191,17 @@ def messenger_sends_overview(conn: sqlite3.Connection, today: str) -> list[dict[
     return out
 
 
-def messenger_sends_by_day(conn: sqlite3.Connection, manager_login: str) -> dict[str, Any]:
+def messenger_sends_by_day(
+    conn: sqlite3.Connection, manager_login: str,
+    since: str | None = None, until: str | None = None,
+) -> dict[str, Any]:
     """Отправки файла по дням — отдельно Telegram и MAX, по одному менеджеру.
+
+    `since`/`until` — тот же приём, что в /report: без них отдаёт весь
+    период, что есть в разборе (данные растянуты на месяцы, «только сегодня»
+    почти всегда было бы пусто). `available_first`/`available_last» — границы
+    ВСЕХ данных по менеджеру независимо от фильтра — по ним строится шапка
+    «данные доступны с ... по ...» и дефолт для формы.
 
     Данные не из нашего звонкового конвейера, а из разового разбора личной
     переписки (см. scripts/import_messenger_sends_tkachevin.py, 12.10.2026) —
@@ -1201,13 +1210,23 @@ def messenger_sends_by_day(conn: sqlite3.Connection, manager_login: str) -> dict
     именем в один день — обычное дело), поэтому считаем **отправки**, не
     «разных людей».
     """
+    bounds = conn.execute(
+        "SELECT MIN(sent_date), MAX(sent_date), MAX(collected_at) "
+        "FROM messenger_file_sends WHERE manager_login = ?",
+        (manager_login,),
+    ).fetchone()
+    available_first, available_last, collected_at = bounds[0], bounds[1], bounds[2]
+
+    since = since or available_first
+    until = until or available_last
+
     rows = conn.execute(
         """SELECT platform, sent_date, COUNT(*) AS n
              FROM messenger_file_sends
-            WHERE manager_login = ?
+            WHERE manager_login = ? AND sent_date BETWEEN ? AND ?
             GROUP BY platform, sent_date
             ORDER BY sent_date DESC""",
-        (manager_login,),
+        (manager_login, since or "0000-00-00", until or "9999-99-99"),
     ).fetchall()
 
     by_date: dict[str, dict[str, int]] = {}
@@ -1218,18 +1237,15 @@ def messenger_sends_by_day(conn: sqlite3.Connection, manager_login: str) -> dict
         by_date[day][r["platform"]] = r["n"]
         totals[r["platform"]] = totals.get(r["platform"], 0) + r["n"]
 
-    collected_at = conn.execute(
-        "SELECT MAX(collected_at) FROM messenger_file_sends WHERE manager_login = ?",
-        (manager_login,),
-    ).fetchone()[0]
-
     days = sorted(by_date, reverse=True)
     return {
         "days": [{"date": d, "telegram": by_date[d]["telegram"], "max": by_date[d]["max"],
                   "total": by_date[d]["telegram"] + by_date[d]["max"]} for d in days],
         "totals": totals,
         "grand_total": totals.get("telegram", 0) + totals.get("max", 0),
-        "first_date": min(days) if days else None,
-        "last_date": max(days) if days else None,
+        "since": since,
+        "until": until,
+        "available_first": available_first,
+        "available_last": available_last,
         "collected_at": collected_at,
     }

@@ -368,21 +368,49 @@ async def messenger_sends_page(request: Request) -> Any:
 
 
 @app.get("/manager/{vats_login}/messenger-sends", response_class=HTMLResponse)
-async def manager_messenger_sends(request: Request, vats_login: str) -> Any:
+async def manager_messenger_sends(
+    request: Request, vats_login: str, since: str = "", until: str = "",
+) -> Any:
     """Отправки презентации/списка техники через личные Telegram/MAX менеджера.
 
     Не часть звонкового конвейера — разовый разбор переписки владельцем
     (см. scripts/import_messenger_sends_tkachevin.py). Страница просто
     показывает то, что уже разобрано и лежит в messenger_file_sends;
     сама она ничего не досчитывает и не обновляет.
+
+    Фильтр по датам (12.10.2026, по просьбе владельца) — без since/until
+    отдаёт весь период разбора: в отличие от /report, «сегодня» здесь почти
+    всегда было бы пустым экраном, данные растянуты на месяцы в прошлом.
+    Быстрые периоды поэтому отталкиваются не от сегодняшней даты, а от
+    последнего дня, где вообще есть данные.
     """
     conn = request.app.state.db
     who = next((m for m in managers(conn) if m["vats_login"] == vats_login), None)
+    report = messenger_sends_by_day(conn, vats_login, since or None, until or None)
+
+    quick: list[dict[str, str]] = []
+    if report["available_first"] and report["available_last"]:
+        last = date.fromisoformat(report["available_last"])
+        quick = [
+            {"name": "весь период", "since": report["available_first"], "until": report["available_last"]},
+            {"name": "неделя", "since": (last - timedelta(days=6)).isoformat(), "until": report["available_last"]},
+            {"name": "месяц", "since": (last - timedelta(days=29)).isoformat(), "until": report["available_last"]},
+        ]
+
+    base = request.headers.get("x-forwarded-prefix", "").rstrip("/")
+
+    def link(**over: Any) -> str:
+        params = {"since": report["since"], "until": report["until"], **over}
+        clean = {k: v for k, v in params.items() if v}
+        return f"{base}/manager/{vats_login}/messenger-sends?{urlencode(clean)}"
+
     ctx = _base_context(request)
     ctx.update({
         "manager": who,
         "vats_login": vats_login,
-        "report": messenger_sends_by_day(conn, vats_login),
+        "report": report,
+        "quick": quick,
+        "link": link,
     })
     return TEMPLATES.TemplateResponse("messenger_sends.html", ctx)
 
