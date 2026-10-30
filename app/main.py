@@ -274,6 +274,33 @@ async def line_in_scope(request: Request) -> Any:
             "note": row["scope_note"] or ""}
 
 
+@app.post("/api/synergy-deal-company-hook")
+async def synergy_deal_company_hook(background: BackgroundTasks, request: Request) -> Any:
+    """Вебхук из Synergy (Автоматизации → Сценарии → «Вызвать вебхук»):
+    условие «сделка изменена» — общее, не по конкретному полю (ни «Начало
+    работ», ни «Транспорт» не выбираются явным триггером в конструкторе
+    сценариев — там только кастом-поля самой сделки). Разбирает цепочку
+    сделка → транспорт → телефон исполнителя → контакт → его компания и
+    пишет её в «Компания И» (custom-98), если она разошлась с текущей —
+    см. app/deal_company_sync.py.
+
+    Секретность — случайный путь в nginx, не токен здесь: в поле URL
+    настроек Synergy нет места для заголовков (как и у /api/synergy-subor-hook).
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    logger.info("вебхук «Компания И»: %s", json.dumps(payload)[:500])
+
+    from app import deal_company_sync
+
+    background.add_task(deal_company_sync.handle_webhook_sync, payload)
+    return {"accepted": True}
+
+
 def _handle_inbound(app_ref: FastAPI, meta: dict[str, Any], audio: bytes) -> None:
     """Фоновая обработка звонка: своё соединение с базой, свои ошибки."""
     from app import inbound
