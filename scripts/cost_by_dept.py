@@ -59,7 +59,7 @@ from app.db import connect  # noqa: E402
 import datetime, json
 import httpx
 from dotenv import dotenv_values
-env = dotenv_values("/opt/asr/.env")
+env = dotenv_values("/home/user/asr-webhook/.env")
 base = env["ASR_MEGAFON_VATS_URL"].rstrip("/")
 key = env["ASR_MEGAFON_API_TOKEN"]
 строки = []
@@ -104,7 +104,7 @@ def сходить(settings: Settings, с: str, по: str) -> int:
         готово = subprocess.run(
             ["ssh", "-i", settings.record_ssh_key, "-o", "ConnectTimeout=15",
              "-o", "BatchMode=yes", settings.record_ssh_host,
-             "cd /opt/asr && .venv/bin/python -"],
+             "cd /home/user/asr-webhook && .venv/bin/python -"],
             input=тело, capture_output=True, text=True, timeout=600, check=True)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         print(f"история ВАТС не получена: {(getattr(exc, 'stderr', '') or str(exc))[:300]}")

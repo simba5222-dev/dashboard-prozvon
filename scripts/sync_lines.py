@@ -55,12 +55,13 @@ def настройки() -> Settings:
     except PermissionError:
         return Settings(_env_file=None)
 
-# Тело выполняется на питерском сервере его же питоном и его же ключом.
+# Тело выполняется на российском сервере (офис, с 09.11.2026 — см.
+# record_ssh_host в app/config.py) его же питоном и его же ключом.
 УДАЛЁННО = r'''
 import collections, datetime, json
 import httpx
 from dotenv import dotenv_values
-env = dotenv_values("/opt/asr/.env")
+env = dotenv_values("/home/user/asr-webhook/.env")
 base = env["ASR_MEGAFON_VATS_URL"].rstrip("/")
 key = env["ASR_MEGAFON_API_TOKEN"]
 end = datetime.datetime.now(datetime.timezone.utc)
@@ -114,7 +115,7 @@ def сходить(settings: Settings, days: int) -> int:
         готово = subprocess.run(
             ["ssh", "-i", settings.record_ssh_key, "-o", "ConnectTimeout=15",
              "-o", "BatchMode=yes", settings.record_ssh_host,
-             "cd /opt/asr && .venv/bin/python -"],
+             "cd /home/user/asr-webhook && .venv/bin/python -"],
             input=УДАЛЁННО.replace("ДНЕЙ", str(days)),
             capture_output=True, text=True, timeout=300, check=True)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:

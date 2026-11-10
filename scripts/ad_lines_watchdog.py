@@ -36,8 +36,15 @@ from scripts.stream_watchdog import send_telegram     # noqa: E402
 
 logger = logging.getLogger("ad_lines_watchdog")
 
-PROD_HOST = "root@91.220.109.49"
-PROD_KEY = "/home/agent/.ssh/ru-proxy_ed25519"
+# 22.10.2026: обработка потока 1 переехала на сервер «офис» (asr-webhook),
+# питерский asr.service вебхуков больше не получает вовсе — журнал теперь
+# смотрим там. 09.11.2026: питерский сервер выключен владельцем целиком
+# (27.10.2026) — prod_lookup_url (история ВАТС, ручка /lookup-records)
+# переведён на тот же офисный asr-webhook: он уже поднимает ту же ручку,
+# снаружи она торчит через asr-ofis.duckdns.org:8443 (см. app/config.py).
+OFFICE_HOST = "user@192.168.0.235"
+OFFICE_KEY = "/home/claude/.ssh/office-watchdog_ed25519"
+OFFICE_UNIT = "asr-webhook"
 
 TRANSCRIBED_RE = re.compile(r"звонок (\S+) обработан:")
 ANALYZED_RE = re.compile(r"(?:звонок (\S+) — .*заявку не трогаем|звонок (\S+) -> контакт)")
@@ -75,14 +82,14 @@ def _fetch_vats_rows(settings, since_iso: str, until_iso: str) -> list[dict] | N
 
 def _fetch_journal(since_utc: str, until_utc: str) -> str | None:
     script = (
-        f"journalctl -u asr --no-pager --since '{since_utc} UTC' "
+        f"journalctl -u {OFFICE_UNIT} --no-pager --since '{since_utc} UTC' "
         f"--until '{until_utc} UTC' 2>/dev/null | grep -E "
         "'обработан:|заявку не трогаем|-> контакт|пропущен:'"
     )
     try:
         out = subprocess.run(
             ["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes",
-             "-i", PROD_KEY, PROD_HOST, script],
+             "-i", OFFICE_KEY, OFFICE_HOST, script],
             capture_output=True, text=True, timeout=30,
         )
     except (subprocess.TimeoutExpired, OSError):

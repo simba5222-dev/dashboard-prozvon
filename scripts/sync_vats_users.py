@@ -35,8 +35,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import Settings, get_settings  # noqa: E402
 from app.db import connect  # noqa: E402
 
-# Скрипт на боевом: одна команда, чтобы не гонять ключ ВАТС сюда.
-REMOTE = r'''cd /opt/asr && ./.venv/bin/python - <<'PYEOF'
+# Скрипт на российском сервере (офис, с 09.11.2026): одна команда, чтобы не
+# гонять ключ ВАТС сюда.
+REMOTE = r'''cd /home/user/asr-webhook && ./.venv/bin/python - <<'PYEOF'
 import json, httpx
 from dotenv import dotenv_values
 env = dotenv_values(".env")

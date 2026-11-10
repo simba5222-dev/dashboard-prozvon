@@ -49,7 +49,7 @@ def settings_without_secrets() -> Settings:
 # Скачивание идёт командой на той стороне: логин и пароль к записям лежат в
 # `.env` российского сервера, и вытаскивать их сюда незачем.
 REMOTE = (
-    "cd /opt/asr && set -a && . ./.env && set +a && "
+    "cd /home/user/asr-webhook && set -a && . ./.env && set +a && "
     'curl -sS --fail --max-time 120 -u "$ASR_MEGAFON_RECORD_LOGIN:$ASR_MEGAFON_RECORD_PASSWORD" {url}'
 )
 
