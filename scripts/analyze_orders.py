@@ -41,47 +41,185 @@ import logging
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import analyzer  # noqa: E402
-from app.collector import SynergyClient, collect_calls_for_phones, contact_phones  # noqa: E402
+from app.collector import (  # noqa: E402
+    SynergyClient, collect_calls_for_phones, contact_phones,
+    load_stages, order_detail, orders_by_sort,
+)
 from app.config import get_settings  # noqa: E402
+from app.crm_write import CrmWriter  # noqa: E402
 from app.db import connect, init_schema, save_order_report  # noqa: E402
 
 logger = logging.getLogger("orders")
 
+# Разбор заявки — отдельные поля от тех, что пишет первичный анализ звонка
+# (custom-30609/30600/30601 на заявке, custom-17265 на звонке): это другой,
+# более поздний шаг — общая картина по заявке из всех звонков, живой или
+# проваленной. Заведены владельцем в Synergy 22.10.2026 специально под это,
+# id проверены через GET /custom-fields перед первой записью.
+FIELD_ORDER_BREAKDOWN = "custom-30753"     # «Разбор заявки» — длинный текст
+FIELD_ORDER_ROP_ATTENTION = "custom-30754"  # «Внимание РОПа» — пусто, если не нужно
+FIELD_CRM_REASON = "custom-27969"          # «Причина статистика» — ставит менеджер сам
 
-def pick_orders(conn, args) -> list[dict]:
-    """Какие заявки разбирать: одну названную или все подходящие за период."""
+
+def verdict_text(live: bool, v: dict[str, Any], crm_reason: str = "") -> str:
+    """Человекочитаемый текст для поля «Разбор заявки».
+
+    `crm_reason` — значение «Причина статистика» (custom-27969), которое
+    менеджер ставит сам: наш разбор видит только звонки из ВАТС (не встречи,
+    переписку, звонки с личных телефонов), поэтому иногда расходится с
+    ручной отметкой. Показываем рядом, а не молчим о расхождении — владелец
+    попросил 22.10.2026, на живом примере (разбор решил «не дозвонились»,
+    менеджер отметил «Выбрал конкурента»)."""
+    if v.get("no_calls"):
+        return "Звонков с клиентом за это время не нашли — текст не придумываем, ждём разговора."
+    if not live and crm_reason:
+        lines_crm = [f"Причина в CRM (отметил менеджер): {crm_reason}"]
+    else:
+        lines_crm = []
+    if live:
+        lines = [f"Этап: {v.get('stage_now') or '—'}"]
+        if v.get("client_position"):
+            lines.append(f"Позиция клиента: {v['client_position']}")
+        if v.get("next_step"):
+            due = f" (к {v['next_step_due']})" if v.get("next_step_due") else ""
+            lines.append(f"Дальше: {v['next_step']}{due}")
+        if v.get("blocker"):
+            lines.append(f"Мешает: {v['blocker']}")
+    else:
+        lines = [f"Причина: {v.get('outcome') or '—'}"]
+        if v.get("stage_failed"):
+            lines.append(f"Сорвалось на этапе: {v['stage_failed']}")
+        for gap in v.get("gaps") or []:
+            lines.append(f"Не сделал менеджер: {gap}")
+        if v.get("recoverable") is not None:
+            lines.append("Можно вернуть клиента: " + ("да" if v["recoverable"] else "нет"))
+    for rec in v.get("recommendations") or []:
+        lines.append(f"Рекомендация: {rec}")
+    return "\n".join(lines_crm + lines)
+
+
+def rop_attention_text(live: bool, v: dict[str, Any]) -> str:
+    """«Внимание РОПа» — пусто, если звать руководителя не нужно."""
+    if live and v.get("needs_rop"):
+        return v.get("rop_reason") or "нужно внимание РОПа"
+    return ""
+
+
+def order_extra(client: SynergyClient, order_id: str) -> tuple[str, str | None]:
+    """Причина в CRM и ответственный — одним запросом на заявку."""
+    try:
+        data = client.get(f"orders/{order_id}", include="responsible")
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("заявка %s: доп. сведения не прочитались: %s", order_id, exc)
+        return "", None
+    attrs = (data.get("data") or {}).get("attributes") or {}
+    customs = attrs.get("customs") or {}
+    reason = customs.get(FIELD_CRM_REASON) or []
+    reason_text = ", ".join(reason) if isinstance(reason, list) else str(reason)
+    rels = (data.get("data") or {}).get("relationships") or {}
+    ref = (rels.get("responsible") or {}).get("data")
+    return reason_text, (str(ref["id"]) if ref else None)
+
+
+def write_order_breakdown(client: SynergyClient, order_id: str, live: bool,
+                          v: dict[str, Any], crm_reason: str) -> None:
+    try:
+        client.patch(f"orders/{order_id}", {"data": {
+            "type": "orders", "id": order_id,
+            "attributes": {"customs": {
+                FIELD_ORDER_BREAKDOWN: verdict_text(live, v, crm_reason if not live else ""),
+                FIELD_ORDER_ROP_ATTENTION: rop_attention_text(live, v),
+            }},
+        }})
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("заявка %s: разбор не записался в Synergy: %s", order_id, exc)
+
+
+# Задача на 3 дня — только для проваленных заявок, где разбор считает, что
+# клиента можно вернуть (recoverable). Решение владельца 22.10.2026: спросить
+# тогда, какая ещё техника может понадобиться. Тот же тип, что уже выбрал
+# владелец 30.09.2026 для похожих задач (`make_tasks.py`) — 5305 «Теплые».
+FOLLOWUP_DIARY_TYPE = "5305"
+FOLLOWUP_DAYS = 3
+FOLLOWUP_NAME = "Уточнить, какая ещё техника может понадобиться"
+
+
+def maybe_create_followup_task(writer: CrmWriter, order_id: str, v: dict[str, Any],
+                               responsible_id: str | None) -> None:
+    """Для проваленной, но возвратной заявки — задача менеджеру через 3 дня.
+
+    22.10.2026 проверено вживую: создание задач (`POST /diaries`) у Synergy
+    всё ещё отвечает 500 на любой корректный запрос — тот же баг, что нашли
+    30.09.2026 (см. `make_tasks.py`, письмо в поддержку уже отправлено).
+    Поэтому пишем код сейчас, в боевом режиме (не сухом прогоне) — как только
+    Synergy починит у себя, задачи начнут вставать сами, без правок здесь.
+    Если это конкретная заявка уже не попадёт на повторный разбор (проваленные
+    разбираются один раз), задачу по ней придётся поставить руками запуском
+    с `--redo`, когда баг у Synergy закроют — ограничение именно отсюда.
+    """
+    if not v.get("recoverable"):
+        return
+    if not responsible_id:
+        logger.warning("заявка %s: ответственный неизвестен, задачу не ставлю", order_id)
+        return
+    due = datetime.now(timezone(timedelta(hours=3))) + timedelta(days=FOLLOWUP_DAYS)
+    due_iso = due.strftime("%Y-%m-%dT%H:%M:%S.000%z")
+    due_iso = due_iso[:-2] + ":" + due_iso[-2:]
+    writer.create_task(
+        order_id=order_id, name=FOLLOWUP_NAME, due_at=due_iso,
+        responsible_id=responsible_id, type_id=FOLLOWUP_DIARY_TYPE,
+        description="Заявка проиграна, но разбор считает, что клиента можно "
+                    "вернуть — уточнить, не нужна ли другая техника.",
+    )
+
+
+def pick_orders(args, client: SynergyClient, stages: dict[str, tuple[str, str]]) -> list[dict]:
+    """Какие заявки разбирать: одну названную или все подходящие за период —
+    из Synergy напрямую, любой канал (решение владельца, 14.11.2026: раньше
+    бралось только из локальной `call_orders`, 377 строк за всё время —
+    заводится лишь когда заявка возникла из звонка, который дашборд уже
+    отследил локально, то есть почти только прозвон; «Пойманная с
+    прослушки» и вообще любая заявка без такой локальной привязки сюда
+    никогда не попадала).
+
+    Отбор по стадии — дёшево, по `stage_id` из уже загруженного `stages`,
+    без обращения к CRM на каждую заявку: полную карточку (`order_detail`)
+    читаем позже, только для тех, что реально дойдут до разбора — так же,
+    как уже сделано в `analyze_engagement.py`.
+    """
     if args.order:
-        rows = conn.execute(
-            "SELECT * FROM call_orders WHERE order_id = ? LIMIT 1", (args.order,)
-        ).fetchall()
-        return [dict(r) for r in rows]
+        row = order_detail(client, args.order, stages)
+        return [row] if row else []
 
     until = args.day or date.today().isoformat()
     since = (date.fromisoformat(until) - timedelta(days=max(args.days - 1, 0))).isoformat()
-    kinds = []
+    boundary = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+    kinds = set()
     if args.lost:
-        kinds.append("lost")
+        kinds.add("lost")
     if args.open:
-        kinds.extend(["opened", ""])
-    marks = ",".join("?" * len(kinds)) if kinds else "''"
-    rows = conn.execute(
-        f"""
-        SELECT o.*, k.local_date FROM call_orders o
-        JOIN calls k ON k.uid = o.call_uid
-        WHERE k.local_date BETWEEN ? AND ?
-          AND o.stage_kind IN ({marks})
-        GROUP BY o.order_id
-        ORDER BY o.created_at DESC
-        """,
-        (since, until, *kinds),
-    ).fetchall()
-    return [dict(r) for r in rows]
+        kinds.update({"opened", ""})
+    if not kinds:
+        return []
+
+    seen: dict[str, dict] = {}
+    for sort in ("-created-at", "-updated-at"):
+        for row in orders_by_sort(client, sort=sort, boundary=boundary):
+            _, stage_kind = stages.get(row["stage_id"], ("", ""))
+            if stage_kind not in kinds:
+                continue
+            seen[row["id"]] = {
+                "order_id": row["id"], "call_uid": None,
+                "created_at": row["created_at"], "stage_kind": stage_kind,
+            }
+    return sorted(seen.values(), key=lambda o: o["created_at"], reverse=True)
 
 
 def calls_with_client(conn, phones: set[str], after_iso: str) -> list[dict]:
@@ -105,26 +243,6 @@ def calls_with_client(conn, phones: set[str], after_iso: str) -> list[dict]:
         if len(digits) >= 10 and digits[-10:] in phones:
             out.append(dict(row))
     return out
-
-
-def order_contact(client: SynergyClient, order_id: str) -> str | None:
-    """Контакт заявки — из самой заявки.
-
-    След проверки карточки (`card_checks`) есть только у заявок, заведённых
-    разбором звонка: таких 37 из 170. У остальных заявку завёл человек, и
-    единственный способ узнать клиента — спросить CRM. Без этого разбор
-    молча проходит мимо четырёх заявок из пяти.
-    """
-    # `include` обязателен: без него Synergy отдаёт заявку со всеми связями,
-    # но с пустым `data` в каждой — молча, без ошибки.
-    try:
-        data = client.get(f"orders/{order_id}", include="contact")
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("заявка %s не прочиталась: %s", order_id, exc)
-        return None
-    rels = ((data or {}).get("data") or {}).get("relationships") or {}
-    ref = (rels.get("contact") or {}).get("data")
-    return str(ref["id"]) if ref else None
 
 
 def silence_days(calls: list[dict]) -> int | None:
@@ -160,16 +278,21 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     settings = get_settings()
-    yandex_engine = settings.order_analysis_engine == "yandex"
-    head_ready = settings.yandex_stt_configured if yandex_engine else settings.analysis_configured
+    engine = settings.order_analysis_engine
+    head_ready = {
+        "yandex": settings.yandex_stt_configured,
+        "claude": bool(settings.anthropic_api_key),
+    }.get(engine, settings.analysis_configured)
     conn = connect(settings.db_path)
     init_schema(conn)
     client = SynergyClient(
         base_url=settings.synergy_url, token=settings.synergy_api_token, timeout_sec=30.0,
         min_interval_sec=settings.synergy_min_interval_sec, retries=settings.synergy_retries,
     )
+    writer = CrmWriter(client, apply=True)
+    stages = load_stages(client)
 
-    orders = pick_orders(conn, args)
+    orders = pick_orders(args, client, stages)
     if args.limit:
         orders = orders[: args.limit]
     if not orders:
@@ -206,14 +329,18 @@ def main() -> int:
             if age < args.refresh_hours * 3600:
                 continue
             разбирали[order_id] = was["created_at"]
-        check = conn.execute(
-            "SELECT contact_id FROM card_checks WHERE call_uid = ?", (order["call_uid"],)
-        ).fetchone()
-        contact_id = (check["contact_id"] if check else None) or order_contact(client, order_id)
+        # Полную карточку (имя, ответственный, стадия, сумма, контакт) читаем
+        # только теперь — для заявок, что реально дойдут до разбора. Для
+        # `--order` она уже есть из pick_orders, второй раз не ходим.
+        full = order if "name" in order else order_detail(client, order_id, stages)
+        if not full:
+            logger.warning("заявка %s не прочиталась", order_id)
+            continue
+        contact_id = full.get("contact_id")
         if not contact_id:
             logger.warning("заявка %s: контакт неизвестен", order_id)
             continue
-        plan.append((order, contact_id, contact_phones(client, contact_id)))
+        plan.append((full, contact_id, contact_phones(client, contact_id)))
 
     if not plan:
         print("всё разобрано, новых заявок нет")
@@ -260,21 +387,24 @@ def main() -> int:
 
         verdict = None
         if not args.collect_only and head_ready:
-            key = (settings.yandex_api_key if yandex_engine else settings.openai_api_key) or ""
-            model = settings.yandex_model if yandex_engine else settings.analysis_model
+            key, model = {
+                "yandex": (settings.yandex_api_key, settings.yandex_model),
+                "claude": (settings.anthropic_api_key, settings.anthropic_model),
+            }.get(engine, (settings.openai_api_key, settings.analysis_model))
+            key = key or ""
             folder = settings.yandex_folder or ""
             if live:
                 verdict = analyzer.analyze_live_order(
                     {**order, "order_id": order_id}, calls,
                     api_key=key, model=model, own_company=settings.own_company,
                     silence_days=silence_days(calls),
-                    engine=settings.order_analysis_engine, folder=folder,
+                    engine=engine, folder=folder,
                 )
             else:
                 verdict = analyzer.analyze_order(
                     {**order, "order_id": order_id}, calls,
                     api_key=key, model=model, own_company=settings.own_company,
-                    engine=settings.order_analysis_engine, folder=folder,
+                    engine=engine, folder=folder,
                 )
         v = verdict or {}
         save_order_report(
@@ -289,9 +419,16 @@ def main() -> int:
             rop_reason=v.get("rop_reason") or None,
         )
         conn.commit()
+        if verdict:
+            crm_reason, responsible_id = order_extra(client, order_id)
+            write_order_breakdown(client, order_id, live, v, crm_reason)
+            if not live:
+                maybe_create_followup_task(writer, order_id, v, responsible_id)
         done += 1
         if not verdict:
             mark = "звонки собраны"
+        elif v.get("no_calls"):
+            mark = "звонков с клиентом не нашли"
         elif live:
             mark = ("РОП: " + v["rop_reason"][:70]) if v.get("needs_rop") else (
                 f"{v.get('stage_now') or 'этап неясен'}"

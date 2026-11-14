@@ -263,6 +263,17 @@ class Settings(BaseSettings):
         "не вытаскивала из разговора ничего: возвращала «потребность не "
         "прозвучала» там, где клиент называл и технику, и объект.",
     )
+    anthropic_api_key: str | None = Field(
+        default=None,
+        description="Ключ Claude (Anthropic). Нужен для вовлечённости менеджера "
+        "(custom-30756/30757) — владелец явно попросил 27.10.2026, чтобы эту "
+        "оценку давала та же модель, что уже разбирала заявки Ткачевина "
+        "лично, а не более узкий/дешёвый движок.",
+    )
+    anthropic_model: str = Field(
+        default="claude-sonnet-5-5",
+        description="Модель Claude для вовлечённости менеджера.",
+    )
     asr_analysis_token: str | None = Field(
         default=None,
         description="Ключ к ручке /analyze сервиса распознавания. Разбор для "
@@ -303,6 +314,22 @@ class Settings(BaseSettings):
         description="Чем разбирать судьбу заявки (проваленные/живые, "
         "dashboard-order-analysis.timer, 06:30 МСК): openai или yandex. "
         "Отдельная настройка — у этого разбора свой промпт и своя цена ошибки.",
+    )
+    engagement_engine: str = Field(
+        default="yandex",
+        description="Чем ставить балл вовлечённости менеджера и совет ИИ "
+        "(custom-30756/custom-30757, dashboard-engagement.timer, каждые 30 "
+        "мин, все заявки всех потоков). Владелец 27.10.2026 сначала выбрал "
+        "Claude, затем в тот же день вернул обратно на yandex — ключ "
+        "Anthropic не заводили. Поддержка engine=\"claude\" в "
+        "_спросить_голову() осталась в коде (app/analyzer.py), не вырезана: "
+        "можно включить в любой момент, когда понадобится, без правок кода.",
+    )
+    engagement_since: str = Field(
+        default="2026-10-19",
+        description="С какой даты создания заявки включать её в оценку "
+        "вовлечённости — решение владельца от 27.10.2026, более старые "
+        "заявки не трогаем.",
     )
 
     crm_task_type: str = Field(
@@ -372,7 +399,7 @@ class Settings(BaseSettings):
 
     # Пустая строка в .env означает «не задано», иначе /health врёт о настройках.
     @field_validator(
-        "vats_api_token", "synergy_api_token", "openai_api_key",
+        "vats_api_token", "synergy_api_token", "openai_api_key", "anthropic_api_key",
         "asr_analysis_token", "crm_lead_responsible", "watchdog_bot_token",
         "prod_lookup_url", "prod_lookup_token",
         "yandex_api_key", "yandex_folder", "yandex_sa_id", "yandex_assistant_id",

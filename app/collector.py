@@ -24,6 +24,7 @@ from typing import Any, Iterable
 import httpx
 
 from app.config import Settings
+from app.crm_write import FIELD_TRANSCRIPT_CALL
 from app.db import (
     save_call,
     save_activity,
@@ -32,6 +33,7 @@ from app.db import (
     save_call_task,
     save_card_check,
     save_inbound_check,
+    save_transcript,
     upsert_manager,
 )
 from app.stats import local_parts
@@ -196,6 +198,112 @@ def load_stages(client: SynergyClient) -> dict[str, tuple[str, str]]:
         attrs = row.get("attributes") or {}
         out[str(row["id"])] = (str(attrs.get("name") or ""), str(attrs.get("kind") or ""))
     return out
+
+
+def orders_by_sort(client: SynergyClient, *, sort: str, boundary: datetime,
+                    max_pages: int = 60) -> list[dict]:
+    """Листать Synergy `/orders` по `sort` ('-created-at' или '-updated-at'),
+    пока соответствующее поле не упадёт ниже `boundary`, и вернуть все
+    заявки до этой границы — независимо от потока и типа техники.
+
+    Фильтры на корневом `/orders` Synergy тихо игнорирует (см. skill
+    «синержи»), поэтому отбор только через сортировку + ранний стоп — тот же
+    приём, что в `scripts/discover_ad_orders.py:find_candidates`, но без
+    фильтра по `custom-18621` (там он нужен, чтобы отличить настоящий лид от
+    служебной карточки «реклама»; здесь берём вообще все заявки).
+
+    Поле `responsible` на списочной ручке возвращает `null` даже когда оно
+    реально заполнено (грабли, найденные вручную 27.10.2026) — поэтому сюда
+    его не кладём: кому нужен точный ответственный, пусть читает заявку
+    по отдельности (`GET orders/{id}?include=responsible,...`).
+    """
+    field = "created-at" if "created-at" in sort else "updated-at"
+    out: list[dict] = []
+    page = 1
+    while page <= max_pages:
+        payload = client.get("orders", sort=sort, include="stage",
+                              **{"page[number]": page})
+        rows = payload.get("data") or []
+        if not rows:
+            break
+        stop = False
+        for row in rows:
+            attrs = row.get("attributes") or {}
+            raw = str(attrs.get(field) or "")
+            try:
+                moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if moment < boundary:
+                stop = True
+                break
+            ref = (((row.get("relationships") or {}).get("stage") or {}).get("data") or {})
+            out.append({
+                "id": str(row["id"]),
+                "name": attrs.get("name") or "",
+                "created_at": str(attrs.get("created-at") or ""),
+                "updated_at": str(attrs.get("updated-at") or ""),
+                "stage_id": str(ref.get("id") or ""),
+            })
+        if stop:
+            break
+        page += 1
+    return out
+
+
+def order_detail(client: SynergyClient, order_id: str,
+                  stages: dict[str, tuple[str, str]]) -> dict[str, Any] | None:
+    """Заявка по отдельности, со связями, которые на списке `/orders`
+    резолвятся неверно (`responsible` там `null`, даже если реально
+    заполнено — грабли, найденные вручную 27.10.2026). По одной заявке
+    `GET orders/{id}?include=...` отдаёт их верно.
+    """
+    try:
+        payload = client.get(f"orders/{order_id}", include="responsible,stage,contact")
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("заявка %s не прочиталась: %s", order_id, exc)
+        return None
+    row = payload.get("data") or {}
+    if not row:
+        return None
+    attrs = row.get("attributes") or {}
+    rels = row.get("relationships") or {}
+    included = {(r["type"], str(r["id"])): r for r in payload.get("included") or []}
+
+    def linked(rel_name: str) -> dict | None:
+        ref = (rels.get(rel_name) or {}).get("data")
+        if not ref:
+            return None
+        return included.get((ref["type"], str(ref["id"])))
+
+    responsible_ref = (rels.get("responsible") or {}).get("data") or {}
+    responsible_name = ""
+    user = linked("responsible")
+    if user:
+        ua = user.get("attributes") or {}
+        responsible_name = str(ua.get("as-string")
+                               or " ".join(filter(None, [ua.get("last-name"), ua.get("first-name")]))).strip()
+    stage_ref = (rels.get("stage") or {}).get("data") or {}
+    stage_name, stage_kind = stages.get(str(stage_ref.get("id") or ""), ("", ""))
+    contact_ref = (rels.get("contact") or {}).get("data") or {}
+
+    number = attrs.get("number")
+    title = str(attrs.get("name") or "").strip()
+    return {
+        "order_id": str(order_id),
+        "number": number,
+        "name": f"№{number} {title}".strip() if number else title,
+        "created_at": str(attrs.get("created-at") or ""),
+        "updated_at": str(attrs.get("updated-at") or ""),
+        "contact_id": str(contact_ref.get("id") or "") or None,
+        "responsible_id": str(responsible_ref.get("id") or "") or None,
+        "responsible": responsible_name,
+        "previous_responsible_id": str(attrs.get("previous-responsible-id") or "") or None,
+        "stage_name": stage_name,
+        "stage_kind": stage_kind,
+        "amount": float(attrs.get("amount") or 0) or None,
+        "customs": attrs.get("customs") or {},
+    }
 
 
 def text_of(value: Any) -> str:
@@ -653,8 +761,9 @@ def collect_calls_for_phones(
             surname = surname_of(author)
             started = attrs.get("started-at") or attrs.get("created-at") or ""
             local_date, local_hour = local_parts(started, settings.timezone_offset_hours)
+            uid = str(item["id"])
             if save_call(
-                conn, uid=str(item["id"]), vats_login=surname or "неизвестно",
+                conn, uid=uid, vats_login=surname or "неизвестно",
                 client_phone=client_phone,
                 direction="in" if incoming else "out",
                 status=str(attrs.get("status") or ""),
@@ -668,6 +777,20 @@ def collect_calls_for_phones(
                 is_demo=0, fetched_at=now,
             ):
                 saved += 1
+            # 22.10.2026: звонки потока 1 (реклама) сюда попадают только этим
+            # путём — их транскрибирует отдельный код (asr-vats-megafon на
+            # сервере «офис»), прямо в Synergy, и в нашу локальную таблицу
+            # `transcripts` они иначе не попадают никогда. Разбор заявки
+            # (`analyze_orders.py`) без этого видел бы такие звонки пустыми и
+            # придумывал правдоподобный, но не основанный на разговоре вердикт
+            # — поймано на заявке 735420 (разбор решил «не дозвонились», хотя
+            # в записи клиент прямо называет цену конкурента).
+            transcript = (attrs.get("customs") or {}).get(FIELD_TRANSCRIPT_CALL)
+            if transcript and str(transcript).strip():
+                save_transcript(
+                    conn, call_uid=uid, text=str(transcript), analysis_json=None,
+                    created_at=now, is_demo=0,
+                )
         if too_old:
             break
         # Фиксируем каждую страницу: пока транзакция открыта, другие процессы

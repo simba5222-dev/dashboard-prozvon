@@ -98,6 +98,39 @@ def log_usage(response: Any, *, kind: str, model: str, data_dir: str | None = No
         logger.debug("учёт расхода не записан: %s", exc)
 
 
+# Цены Claude за миллион токенов, доллары — ориентир по тарифу Sonnet на
+# момент подключения (27.10.2026), сверить при следующей правке: у
+# Anthropic они отдельные для каждой модели и меняются.
+PRICES_CLAUDE: dict[str, tuple[float, float]] = {
+    "claude-sonnet-5-5": (3.00, 15.00),
+}
+
+USAGE_LOG_CLAUDE = "anthropic_usage.jsonl"
+
+
+def log_usage_claude(response: Any, *, kind: str, model: str, data_dir: str | None = None) -> None:
+    """Записать, во что обошёлся запрос к Claude — свой лог, своя цена."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    in_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    out_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    price_in, price_out = PRICES_CLAUDE.get(model, (0.0, 0.0))
+    cost = (in_tokens * price_in + out_tokens * price_out) / 1e6
+    record = {
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "kind": kind, "model": model,
+        "in": in_tokens, "out": out_tokens, "usd": round(cost, 5),
+    }
+    try:
+        path = Path(data_dir or _usage_dir()) / USAGE_LOG_CLAUDE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        logger.debug("учёт расхода Claude не записан: %s", exc)
+
+
 def _usage_dir() -> str:
     """Каталог данных — тот же, где база. Настройки сюда не тащим: разбор
     вызывается и из скриптов, и из сервиса, а путь один и тот же."""
@@ -316,7 +349,17 @@ def analyze_order(
     own_company: str = "Техно-Ресурс", timeout_sec: float = 180.0,
     engine: str = "openai", folder: str = "",
 ) -> dict[str, Any]:
-    """Разобрать судьбу заявки по звонкам после её создания."""
+    """Разобрать судьбу заявки по звонкам после её создания.
+
+    Без звонков модель не спрашиваем вовсе — 23.10.2026 поймано на заявке
+    735499 (0 звонков): промпт честно говорит «разговоров не найдено», но
+    модель всё равно придумала правдоподобную историю («не смог связаться с
+    клиентом») и поставила no_calls=false. Полагаться на то, что модель сама
+    признается в отсутствии материала, нельзя — решаем по факту на своей
+    стороне, до обращения к модели.
+    """
+    if not calls:
+        return {**EMPTY_VERDICT, "no_calls": True}
     prompt = ORDER_PROMPT.format(
         own_company=own_company,
         domain=knowledge.DOMAIN,
@@ -429,7 +472,12 @@ def analyze_live_order(
     own_company: str = "Техно-Ресурс", silence_days: int | None = None,
     timeout_sec: float = 180.0, engine: str = "openai", folder: str = "",
 ) -> dict[str, Any]:
-    """Живая заявка: где она сейчас, о чём договорились, нужен ли руководитель."""
+    """Живая заявка: где она сейчас, о чём договорились, нужен ли руководитель.
+
+    Та же защита, что в analyze_order: без звонков модель не спрашиваем.
+    """
+    if not calls:
+        return {**EMPTY_LIVE, "no_calls": True}
     silence = ""
     if silence_days is not None:
         silence = (f"\nПоследний разговор с клиентом был {silence_days} дн. назад."
@@ -476,6 +524,106 @@ def normalize_live(data: dict[str, Any]) -> dict[str, Any]:
     out["needs_rop"] = bool(out["needs_rop"])
     if not out["needs_rop"]:
         out["rop_reason"] = ""
+    out["no_calls"] = bool(out["no_calls"])
+    return out
+
+
+# Вовлечённость менеджера, которому передали заявку, + совет эксперта по
+# продажам (custom-30756/custom-30757 в Synergy). Шкала согласована с
+# владельцем 27.10.2026 — тот же разбор, что делался руками по 94 заявкам
+# Ткачевина, теперь как постоянная автоматика на все заявки всех потоков.
+ШКАЛА_ВОВЛЕЧЁННОСТИ = """
+  5 — высокая: менеджер выходит на контакт в течение суток, несколько содержательных попыток, борется за сделку (альтернатива, скидка, перенос сроков)
+  4 — хорошая: контакт вовремя, разговор содержательный, но менеджер не борется за сделку — просто узнаёт об отказе и соглашается
+  3 — средняя: контакт с задержкой (несколько дней) или только одна содержательная попытка
+  2 — низкая: формальные попытки для вида («не дозвонился» и больше ничего), либо контакт сильно позже, либо реальную работу вёл не тот, кто формально назначен ответственным
+  1 — отсутствует: содержательного контакта с клиентом после передачи не было вовсе, либо это прямо признано в CRM («перезвонили слишком поздно», «просто не взял трубку»)
+  0 — нет данных: заявке не назначен ответственный, это техническая/дублирующая запись, либо дело не о передаче заявки менеджеру по продажам
+""".strip()
+
+EMPTY_ENGAGEMENT: dict[str, Any] = {
+    "engagement_score": None,
+    "engagement_note": "",
+    "advice": "",
+    "no_calls": False,
+}
+
+ENGAGEMENT_PROMPT = """Ты — эксперт по продажам. Оцени вовлечённость менеджера,
+которому передали заявку на аренду техники, по шкале от 0 до 5.
+Наша компания — «{own_company}».
+
+{domain}
+
+ШКАЛА ВОВЛЕЧЁННОСТИ:
+{scale}
+
+ЗАЯВКА:
+{order}
+
+РАЗГОВОРЫ С КЛИЕНТОМ ПОСЛЕ ПЕРЕДАЧИ ЗАЯВКИ (в порядке времени):
+{calls}
+
+Расшифровки автоматические, с телефонной линии, местами рвутся. Додумывать
+нельзя: пиши только то, что видно из разговоров и полей заявки.
+
+Верни JSON:
+{{
+  "engagement_score": число от 0 до 5 строго по шкале выше,
+  "engagement_note": "почему именно такой балл — 1-2 предложения, по фактам из разговоров",
+  "advice": "совет эксперта по продажам менеджеру или РОПу — 2-4 предложения, по существу, без общих слов"
+}}
+
+Правила:
+- оцени именно вовлечённость (старался ли менеджер), а не исход сделки сам
+  по себе — заявка может быть честно проиграна при высокой вовлечённости,
+  и наоборот;
+- пиши по-русски, коротко, без вводных слов.
+"""
+
+
+def analyze_engagement(
+    order: dict[str, Any], calls: list[dict[str, Any]], *, api_key: str, model: str,
+    own_company: str = "Техно-Ресурс", timeout_sec: float = 180.0,
+    engine: str = "yandex", folder: str = "",
+) -> dict[str, Any]:
+    """Балл вовлечённости менеджера (0-5) + совет эксперта по продажам.
+
+    Два случая по шкале выше решаем сами, не спрашивая модель — тот же
+    принцип защиты, что в analyze_order (без материала модель начинает
+    выдумывать правдоподобную историю, см. 735499 23.10.2026):
+    - ответственный не назначен → балл 0 («нет данных»), по шкале это не
+      про отсутствие звонков, а про отсутствие самого факта передачи;
+    - назначен, но звонков с клиентом после передачи не нашлось вовсе →
+      балл 1 («отсутствует») — это прямое, однозначное содержание балла 1,
+      тут нечего спрашивать у модели.
+    """
+    if not (order.get("responsible") or "").strip():
+        return {**EMPTY_ENGAGEMENT, "engagement_score": 0,
+                "engagement_note": "заявке не назначен ответственный"}
+    if not calls:
+        return {**EMPTY_ENGAGEMENT, "engagement_score": 1,
+                "engagement_note": "звонков с клиентом после передачи заявки не найдено",
+                "no_calls": True}
+    prompt = ENGAGEMENT_PROMPT.format(
+        own_company=own_company, domain=knowledge.DOMAIN, scale=ШКАЛА_ВОВЛЕЧЁННОСТИ,
+        order=order_summary(order), calls=calls_summary(calls),
+    )
+    data = _спросить_голову(prompt, engine=engine, api_key=api_key, model=model,
+                            folder=folder, timeout_sec=timeout_sec, kind="вовлечённость")
+    if data is None:
+        return {**EMPTY_ENGAGEMENT}
+    return normalize_engagement(data)
+
+
+def normalize_engagement(data: dict[str, Any]) -> dict[str, Any]:
+    out = {**EMPTY_ENGAGEMENT, **{k: v for k, v in data.items() if k in EMPTY_ENGAGEMENT}}
+    try:
+        score = int(out["engagement_score"])
+    except (TypeError, ValueError):
+        score = None
+    out["engagement_score"] = score if score is not None and 0 <= score <= 5 else None
+    out["engagement_note"] = str(out["engagement_note"] or "").strip()
+    out["advice"] = str(out["advice"] or "").strip()
     out["no_calls"] = bool(out["no_calls"])
     return out
 
@@ -723,9 +871,12 @@ def _спросить_голову(prompt: str, *, engine: str, api_key: str, mo
                      kind: str = "просев") -> dict[str, Any] | None:
     """Задать вопрос модели и вернуть разобранный JSON. None — не ответила.
 
-    Голов две, и выбор между ними — настройка, а не правка кода. YandexGPT
+    Голов три, и выбор между ними — настройка, а не правка кода. YandexGPT
     стоит втрое дешевле и держит текст в России; OpenAI остаётся запасным
-    путём и мерой для сравнения.
+    путём и мерой для сравнения. Claude — решение владельца 27.10.2026 для
+    вовлечённости менеджера: это прямое продолжение разбора заявок
+    Ткачевина, который владелец прямо попросил делать на уровне рассуждения
+    Claude, не более узким и дешёвым движком.
     """
     if engine == "yandex":
         from app import yandex
@@ -734,6 +885,22 @@ def _спросить_голову(prompt: str, *, engine: str, api_key: str, mo
                                 model=model, max_tokens=1500,
                                 timeout_sec=timeout_sec)
         return yandex.parse_json(ответ)
+
+    if engine == "claude":
+        from app import yandex  # reuse parse_json — общий разбор JSON из ответа модели
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key, timeout=timeout_sec)
+        response = client.messages.create(
+            # temperature — отклоняется 400-й на этой модели («deprecated
+            # for this model»), не передаём вовсе. Нашли 14.11.2026 на
+            # первом боевом вызове.
+            model=model, max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        log_usage_claude(response, kind=kind, model=model)
+        text = "".join(block.text for block in response.content if block.type == "text")
+        return yandex.parse_json(text)
 
     from openai import OpenAI
 
