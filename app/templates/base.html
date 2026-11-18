@@ -133,6 +133,9 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0
   <div class="topnav-group">
     <b>Работа с исполнителями</b>
     <a href="{{ base }}/search"{% if request.url.path == '/search' %} class="now"{% endif %}>поиск техники</a>
+    <a href="{{ base }}/search/sales"{% if request.url.path == '/search/sales' %} class="now"{% endif %}>поиск по заявкам</a>
+    <a href="{{ base }}/payments">платежи</a>
+    <a href="{{ base }}/payments/invoices">счета</a>
     <a href="{{ base }}/search/plan"{% if request.url.path == '/search/plan' %} class="now"{% endif %}>план обзвона</a>
   </div>
   <div class="topnav-group">

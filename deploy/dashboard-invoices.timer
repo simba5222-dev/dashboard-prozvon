@@ -1,0 +1,10 @@
+[Unit]
+Description=Дашборд: раз в 10 минут подгружать новые счета из 1С в Synergy
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

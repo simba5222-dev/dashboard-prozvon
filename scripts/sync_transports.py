@@ -10,8 +10,10 @@
     ./scripts/sync_transports.py              всё (11 тысяч карточек, ~2 минуты)
     ./scripts/sync_transports.py --pages 5    первые страницы, для проверки
 
-Тип техники и контакт приходят тем же запросом через `include` — иначе на
-каждую карточку ушло бы по два обращения, а их почти двенадцать тысяч.
+Тип техники, контакт и ответственный менеджер приходят тем же запросом через
+`include` — иначе на каждую карточку ушло бы по два обращения, а их почти
+двенадцать тысяч. `responsible` и `created-at` тянутся с 03.11.2026 для
+ежедневного отчёта «кто сколько добавил техники» (`transport_daily_report.py`).
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ FIELD_PHONE = "custom-29545"
 FIELD_NAME = "custom-30419"
 FIELD_STATUS = "custom-26967"
 FIELD_LINK = "custom-30617"   # «Позвонить»
+FIELD_RELEASE_DATE = "custom-26952"  # «Дата освобождения» -- для «Подбора техники»
 
 
 def first(value: object) -> str:
@@ -72,7 +75,7 @@ def main() -> int:
     while True:
         try:
             data = client.get("transports", per_page=50,
-                              include="transport-type,contacts",
+                              include="transport-type,contacts,responsible",
                               **{"page[number]": page})
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("страница %s не прочитана: %s", page, exc)
@@ -82,10 +85,13 @@ def main() -> int:
         # `included`, а у карточки на них только ссылка по id.
         types: dict[str, str] = {}
         contacts: dict[str, tuple[str, str]] = {}
+        users: dict[str, str] = {}
         for item in data.get("included") or []:
             attrs = item.get("attributes") or {}
             if item.get("type") == "transport-types":
                 types[item["id"]] = str(attrs.get("name") or "")
+            elif item.get("type") == "users":
+                users[item["id"]] = str(attrs.get("as-string") or "").strip()
             elif item.get("type") == "contacts":
                 name = " ".join(
                     str(attrs.get(part) or "").strip()
@@ -108,6 +114,8 @@ def main() -> int:
             type_ref = ((rels.get("transport-type") or {}).get("data") or {})
             contact_refs = ((rels.get("contacts") or {}).get("data") or [])
             contact_id = str(contact_refs[0]["id"]) if contact_refs else ""
+            responsible_ref = ((rels.get("responsible") or {}).get("data") or {})
+            responsible_id = str(responsible_ref.get("id") or "")
             # Телефон берём из карточки, а если его там нет — из контакта.
             # Пустой он у каждой третьей карточки, и без запасного варианта
             # треть базы просто не нашлась бы по номеру.
@@ -126,6 +134,10 @@ def main() -> int:
                 updated_at=str(attrs.get("updated-at") or ""),
                 synced_at=now,
                 call_link=first(customs.get(FIELD_LINK)),
+                release_date=first(customs.get(FIELD_RELEASE_DATE)),
+                created_at=str(attrs.get("created-at") or ""),
+                responsible_id=responsible_id,
+                responsible_name=users.get(responsible_id, ""),
             )
             saved += 1
             skipped += int(not number)

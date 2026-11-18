@@ -64,8 +64,28 @@ OFFER_PROMPT = """Ты разбираешь телефонный разгово�
 4. Спросил ли сотрудник, какая ЕЩЁ техника есть у собеседника вообще, помимо
    того конкретного типа, по которому звонил — «а что у вас ещё есть», «какой
    у вас парк техники».
+5. Какую цену назвал собеседник за свою технику (рубли за смену, час, рейс или
+   сутки).
+6. Занята ли техника собеседника; если занята — сказал ли он, когда освободится,
+   и спросил ли об этом сотрудник.
+7. Кто собеседник. «исполнитель» — владелец техники, у которого сотрудник ищет
+   технику под заявку. «заказчик» — клиент, которому компания даёт технику:
+   сотрудник перезванивает ему по его заявке, называет цену, говорит, что техники
+   нет или что все машины заняты, просит «обращайтесь», «если не найдёте — звоните».
+   «неясно» — автоответчик, обрыв, не поговорили.
 
 Правила, от которых зависит всё:
+- Если собеседник — заказчик или неясно, пункты 2, 5 и 6 оставь пустыми: «занято»,
+  «нет техники», «не положим» говорит сам сотрудник от лица своей компании, это не
+  техника собеседника.
+- Цена — только та, что называет СОБЕСЕДНИК за свою технику. Цену, которую
+  предлагает или называет сам сотрудник, не берём. Сумму приводи числом в рублях
+  («двадцать пять тысяч» — 25000); если единица не названа — «неизвестно».
+- «Занята» — собеседник сказал, что техника в работе, на объекте, занята. В
+  `free_from` — когда освободится, его словами («в пятницу», «через два дня»),
+  пусто, если не сказал. `manager_asked` — true только если сотрудник сам спросил,
+  когда техника освободится. «Свободна» — собеседник сказал, что техника
+  свободна и можно брать.
 - Берём только технику собеседника. Технику, которую перечисляет сам сотрудник,
   спрашивая о ней, — не берём.
 - Если собеседник говорит, что такой техники у него НЕТ, не бывает, продал,
@@ -93,7 +113,27 @@ OFFER_PROMPT = """Ты разбираешь телефонный разгово�
   "more_unnamed": {{"yes": true/false, "quote": "<цитата или пусто>"}},
   "presented": {{"yes": true/false, "quote": "<цитата или пусто>"}},
   "clarified": {{"yes": true/false, "quote": "<цитата или пусто>"}},
+  "prices": [{{"type": "<тип из списка>", "amount": <число рублей>,
+               "unit": "смена|час|рейс|сутки|неизвестно", "quote": "<цитата>"}}],
+  "busy": [{{"type": "<тип из списка>", "state": "занята|свободна",
+             "free_from": "<когда освободится или пусто>",
+             "manager_asked": true/false, "quote": "<цитата>"}}],
+  "counterpart": "исполнитель|заказчик|неясно",
   "sure": 0-100}}"""
+
+PRICE_UNITS = ("смена", "час", "рейс", "сутки", "неизвестно")
+BUSY_STATES = ("занята", "свободна")
+NO_DATE_WORDS = frozenset({"неизвестно", "не известно", "нет", "-", "—", "не сказал",
+                           "не сказали", "не знаю", "не названа", "не указано", "пусто"})
+
+
+def _amount(value: Any) -> float | None:
+    """Сумма из ответа модели. Не число или не больше нуля — не цена."""
+    try:
+        number = float(str(value).replace(" ", "").replace(",", "."))
+    except ValueError:
+        return None
+    return number if number > 0 else None
 
 
 def vocabulary(conn: sqlite3.Connection) -> list[str]:
@@ -150,9 +190,22 @@ def contacts_with_orders(path: Path) -> set[str]:
         return set()
 
 
+def _counterpart_text(transcript: str) -> str:
+    """Только реплики собеседника — по подписи стороны в расшифровке.
+
+    Пусто, если подписей нет: тогда проверять нечем и цитату ищем по всему тексту.
+    """
+    parts = []
+    for line in transcript.splitlines():
+        head, _, body = line.partition(":")
+        if head.strip().casefold() in ("клиент", "client", "к", "собеседник"):
+            parts.append(body.strip())
+    return "\n".join(parts)
+
+
 def heard_types(transcript: str, allowed: list[str], *, api_key: str, model: str,
                 timeout_sec: float = 60.0, engine: str = "openai",
-                folder: str = "") -> dict[str, Any]:
+                folder: str = "", require_supplier: bool = False) -> dict[str, Any]:
     """Что собеседник назвал своим. Только из справочника, только с цитатой.
 
     Голова — через общий диспетчер `_спросить_голову`, как у потока 3.
@@ -161,16 +214,48 @@ def heard_types(transcript: str, allowed: list[str], *, api_key: str, model: str
     от OpenAI отдельно и падал молча при его недоступности.
     """
     if not transcript.strip() or not allowed:
-        return {"asked": "", "has": [], "sure": 0, "presented": "", "clarified": ""}
-    prompt = OFFER_PROMPT.format(
-        types="\n".join(f"- {name}" for name in allowed),
-        transcript=transcript[:6000],
-    )
-    data = analyzer._спросить_голову(prompt, engine=engine, api_key=api_key, model=model,
-                                      folder=folder, timeout_sec=timeout_sec,
-                                      kind="техника поставщика")
+        return {"asked": "", "has": [], "sure": 0, "presented": "", "clarified": "",
+                "prices": [], "busy": []}
+    if require_supplier and len(_counterpart_text(transcript).strip()) < 15:
+        # Собеседник почти не говорил (автоответчик, обрыв, «алло»): модель не нужна.
+        # Отсев до обращения к платной модели — экономия, 16.11.2026.
+        return {"asked": "", "has": [], "sure": 0, "more_unnamed": "", "presented": "",
+                "clarified": "", "prices": [], "busy": [], "counterpart": "неясно"}
+    types = "\n".join(f"- {name}" for name in allowed)
+    if engine == "claude":
+        # Правила и справочник — одним неизменным блоком с кэшем, разговор — отдельно.
+        static = OFFER_PROMPT.format(types=types, transcript="(разговор — в сообщении пользователя)")
+        static += ("\n\nОтвет — ТОЛЬКО JSON, одной строкой, без пояснений. Пустые поля, "
+                   "пустые списки и поле sure не пиши: каждый лишний токен стоит денег.")
+        data = analyzer.спросить_claude_с_кэшем(
+            static, "Разговор (Р — сотрудник, К — собеседник; роли могли определиться "
+                    "неточно):\n" + transcript[:6000],
+            api_key=api_key, model=model, kind="техника поставщика", max_tokens=700,
+            timeout_sec=timeout_sec)
+    else:
+        prompt = OFFER_PROMPT.format(types=types, transcript=transcript[:6000])
+        data = analyzer._спросить_голову(prompt, engine=engine, api_key=api_key, model=model,
+                                          folder=folder, timeout_sec=timeout_sec,
+                                          kind="техника поставщика")
     if data is None:
-        return {"asked": "", "has": [], "sure": 0, "presented": "", "clarified": ""}
+        return {"asked": "", "has": [], "sure": 0, "presented": "", "clarified": "",
+                "prices": [], "busy": []}
+
+    counterpart = str(data.get("counterpart") or "").strip().casefold()
+    if require_supplier and counterpart != "исполнитель":
+        # Новый канал (менеджеры продаж): их исходящие бывают и исполнителям, и
+        # заказчикам, которым менеджер перезванивает по заявке. «Занято» и «нет
+        # техники» там говорит сам менеджер — приписывать это собеседнику и
+        # заводить его в базу как поставщика нельзя (пробный прогон 15.11.2026).
+        return {"asked": "", "has": [], "sure": data.get("sure"), "more_unnamed": "",
+                "presented": "", "clarified": "", "prices": [], "busy": [],
+                "counterpart": counterpart or "неясно"}
+
+    # Что сказал именно собеседник: тип, цена и «занято» — его слова, а не менеджера.
+    side = _counterpart_text(transcript) if require_supplier else ""
+
+    def said_by_counterpart(quote_text: str) -> bool:
+        return not side or analyzer.quote_found(quote_text, side)
 
     known = {name.casefold(): name for name in allowed}
     has: list[dict[str, str]] = []
@@ -187,6 +272,9 @@ def heard_types(transcript: str, allowed: list[str], *, api_key: str, model: str
         if not analyzer.quote_found(quote, transcript):
             logger.info("цитата не найдена в разговоре, пропускаю: %s", quote[:60])
             continue
+        if not said_by_counterpart(quote):
+            logger.info("цитата из реплики менеджера, не собеседника, пропускаю: %s", quote[:60])
+            continue
         seen.add(name)
         has.append({"type": name, "quote": quote})
     asked = known.get(str(data.get("asked") or "").strip().casefold(), "")
@@ -202,9 +290,48 @@ def heard_types(transcript: str, allowed: list[str], *, api_key: str, model: str
         ok = bool(item.get("yes")) and bool(text) and analyzer.quote_found(text, transcript)
         return text if ok else ""
 
+    # Цена и занятость — по тем же правилам, что и тип: из справочника, с цитатой,
+    # которая вправду есть в разговоре. Цена без числа или без цитаты не нужна:
+    # по ней будут судить о ставках поставщиков.
+    prices: list[dict[str, Any]] = []
+    for item in data.get("prices") or []:
+        if not isinstance(item, dict):
+            continue
+        name = known.get(str(item.get("type") or "").strip().casefold())
+        quote_p = str(item.get("quote") or "").strip()[:120]
+        amount = _amount(item.get("amount"))
+        if not name or not quote_p or amount is None:
+            continue
+        if not analyzer.quote_found(quote_p, transcript) or not said_by_counterpart(quote_p):
+            continue
+        unit = str(item.get("unit") or "").strip().casefold()
+        prices.append({"type": name, "amount": amount,
+                       "unit": unit if unit in PRICE_UNITS else "неизвестно",
+                       "quote": quote_p})
+    busy: list[dict[str, Any]] = []
+    for item in data.get("busy") or []:
+        if not isinstance(item, dict):
+            continue
+        name = known.get(str(item.get("type") or "").strip().casefold())
+        quote_b = str(item.get("quote") or "").strip()[:120]
+        state = str(item.get("state") or "").strip().casefold()
+        if not name or not quote_b or state not in BUSY_STATES:
+            continue
+        if not analyzer.quote_found(quote_b, transcript) or not said_by_counterpart(quote_b):
+            continue
+        free_from = str(item.get("free_from") or "").strip()[:80]
+        # Модель любит писать слово вместо пустоты: «неизвестно» — не дата.
+        if free_from.casefold() in NO_DATE_WORDS:
+            free_from = ""
+        busy.append({"type": name, "state": state,
+                     "free_from": free_from,
+                     "manager_asked": bool(item.get("manager_asked")),
+                     "quote": quote_b})
+
     return {"asked": asked, "has": has, "sure": data.get("sure"),
             "more_unnamed": quote if unnamed else "",
-            "presented": flag_quote("presented"), "clarified": flag_quote("clarified")}
+            "presented": flag_quote("presented"), "clarified": flag_quote("clarified"),
+            "prices": prices, "busy": busy, "counterpart": counterpart}
 
 
 def compare(heard: dict[str, Any], cards: list[dict[str, Any]]) -> dict[str, Any]:
@@ -229,7 +356,7 @@ def compare(heard: dict[str, Any], cards: list[dict[str, Any]]) -> dict[str, Any
 
 
 def check_call(conn: sqlite3.Connection, settings: Settings, uid: str, path: Path,
-               *, text: str | None = None) -> dict[str, Any]:
+               *, text: str | None = None, require_supplier: bool = False) -> dict[str, Any]:
     """Расшифровать разговор поисковика и сверить технику с карточками.
 
     Расшифровка сохраняется до разбора: если разбор упадёт, текст останется.
@@ -264,8 +391,15 @@ def check_call(conn: sqlite3.Connection, settings: Settings, uid: str, path: Pat
     if not (text or "").strip():
         return {"uid": uid, "transcribed": True, "checked": False,
                 "note": "в записи нет речи"}
-    yandex_engine = settings.search_engine == "yandex"
-    if yandex_engine:
+    # Канал менеджеров продаж (require_supplier) отличает исполнителя от заказчика — Яндекс Lite
+    # на этом ошибается (пробный прогон 15.11.2026), поэтому там Claude, если он включён.
+    claude_engine = (require_supplier and settings.search_sales_engine == "claude"
+                     and bool(settings.anthropic_api_key))
+    engine = "claude" if claude_engine else settings.search_engine
+    yandex_engine = engine == "yandex"
+    if claude_engine:
+        pass
+    elif yandex_engine:
         if not settings.yandex_stt_configured:
             return {"uid": uid, "transcribed": True, "checked": False,
                     "note": "ключ Яндекса не задан"}
@@ -273,11 +407,17 @@ def check_call(conn: sqlite3.Connection, settings: Settings, uid: str, path: Pat
         return {"uid": uid, "transcribed": True, "checked": False,
                 "note": "ключ OpenAI не задан"}
 
+    if claude_engine:
+        key, model_name = settings.anthropic_api_key or "", settings.anthropic_model
+    elif yandex_engine:
+        key, model_name = settings.yandex_api_key or "", settings.yandex_model
+    else:
+        key, model_name = settings.openai_api_key or "", settings.analysis_model
     heard = heard_types(
         text, vocabulary(conn),
-        api_key=(settings.yandex_api_key if yandex_engine else settings.openai_api_key) or "",
-        model=settings.yandex_model if yandex_engine else settings.analysis_model,
-        engine=settings.search_engine, folder=settings.yandex_folder or "",
+        api_key=key, model=model_name,
+        engine=engine, folder=settings.yandex_folder or "",
+        require_supplier=require_supplier,
     )
     cards = supplier_cards(conn, call.get("client_phone"))
     result = compare(heard, cards)
@@ -302,8 +442,10 @@ def check_call(conn: sqlite3.Connection, settings: Settings, uid: str, path: Pat
         more_unnamed=result.get("more_unnamed") or "",
         presented=result.get("presented") or "",
         clarified=result.get("clarified") or "",
+        prices_json=json.dumps(heard.get("prices") or [], ensure_ascii=False),
+        busy_json=json.dumps(heard.get("busy") or [], ensure_ascii=False),
     )
     conn.commit()
     if result["missing"]:
         logger.info("разговор %s: не занесено — %s", uid, ", ".join(result["missing"]))
-    return {"uid": uid, "transcribed": True, "checked": True, **result}
+    return {"uid": uid, "transcribed": True, "checked": True, "heard": heard, **result}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Дашборд: раз в час забирать новые звонки Авито
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

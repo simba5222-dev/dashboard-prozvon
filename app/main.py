@@ -25,14 +25,18 @@ from app import __version__
 from app.config import Settings, get_settings
 from app.db import (
     CARD_FIELDS, approve_screen, connect, dismiss_inbound, has_any_data, init_schema,
-    judge_screen, save_ad_verdict,
+    judge_screen, save_ad_verdict, save_order_comment, save_training_correction,
+    training_rows,
 )
 from fastapi.responses import FileResponse, RedirectResponse
 
 from app.stats import _parsed_analysis as parsed_analysis  # noqa: E402
+from app.transport_report import added_cards as transport_added_cards  # noqa: E402
 from app.stats import (  # noqa: F401
     search_day, search_feed, search_tasks, search_by_type, heard_checks, heard_summary,
     heard_problems, search_cold_suppliers,
+    sales_search_rows, sales_search_by_order, sales_search_by_manager,
+    ai_transport_rows, link_comparison,
     call_detail,
     calls_of_day,
     day_summary,
@@ -85,6 +89,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Дашборд прозвона", version=__version__, lifespan=lifespan)
+
+from app.payments_ui import router as payments_router  # noqa: E402  страница «Финансы → Платежи» (разнос платежей по сделкам)
+app.include_router(payments_router)
 
 
 def as_int(value: Any, default: int = 0) -> int:
@@ -272,6 +279,31 @@ async def line_in_scope(request: Request) -> Any:
         вердикт = "не знаю"
     return {"verdict": вердикт, "name": имя, "kind": вид,
             "note": row["scope_note"] or ""}
+
+
+@app.post("/api/synergy-subor-hook")
+async def synergy_subor_hook(background: BackgroundTasks, request: Request) -> Any:
+    """Вебхук из Synergy (Автоматизации → Сценарии → «Вызвать вебхук»):
+    условие «заявка изменена» — общее, шлёт на любое изменение, не только
+    на смену этапа. Поэтому тело запроса используем только чтобы достать id
+    заявки, а актуальный этап перепроверяем сами через API (app/subor_hook.py)
+    — телу чужого вебхука верить нельзя.
+
+    Секретность — случайный путь в nginx, не токен здесь: в поле URL
+    настроек Synergy нет места для заголовков.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    logger.info("вебхук подбора техники: %s", json.dumps(payload)[:500])
+
+    from app import subor_hook
+
+    background.add_task(subor_hook.handle_webhook_sync, payload)
+    return {"accepted": True}
 
 
 @app.post("/api/synergy-deal-company-hook")
@@ -481,6 +513,39 @@ async def search_page(request: Request, day: str | None = None,
     return TEMPLATES.TemplateResponse("search.html", ctx)
 
 
+@app.get("/search/sales", response_class=HTMLResponse)
+async def search_sales_page(request: Request, since: str = "", until: str = "") -> Any:
+    """Поиск техники менеджерами продаж: звонки исполнителям по заявкам.
+
+    Для каждой заявки: сколько звонков сделали, у скольких поставщиков, какие
+    цены назвали, занята ли техника и спросил ли менеджер дату освобождения.
+    Плюс что ИИ предложил занести в базу «Транспорт» и как наша привязка звонков
+    к заявкам сходится с тем, что проставил помощник. Цены исполнителей живут
+    только здесь: в поля заявки заказчика их писать нельзя — чужая ставка.
+    """
+    settings: Settings = request.app.state.settings
+    conn = request.app.state.db
+    today = local_now(settings.timezone_offset_hours).strftime("%Y-%m-%d")
+    until = as_date(until) or today
+    since = as_date(since) or (date.fromisoformat(until) - timedelta(days=6)).isoformat()
+    if since > until:
+        since, until = until, since
+    rows = sales_search_rows(conn, since, until, settings.search_sales_dept)
+    ctx = _base_context(request)
+    ctx.update({
+        "since": since, "until": until, "quick": quick_periods(today),
+        "by_order": sales_search_by_order(rows),
+        "by_manager": sales_search_by_manager(rows),
+        "adds": ai_transport_rows(conn, since, until),
+        "compare": link_comparison(conn, since),
+        "total_calls": len(rows),
+        "transport_mode": settings.transport_ai_mode,
+        "link_mode": settings.link_ai_mode,
+        "order_url": settings.synergy_url.split("/api/")[0].rstrip("/") + "/orders/",
+    })
+    return TEMPLATES.TemplateResponse("search_sales.html", ctx)
+
+
 @app.get("/search/manager/{vats_login}", response_class=HTMLResponse)
 async def search_manager_page(request: Request, vats_login: str, day: str | None = None,
                               since: str = "", until: str = "") -> Any:
@@ -515,6 +580,7 @@ async def search_manager_page(request: Request, vats_login: str, day: str | None
         "heard": heard,
         "heard_total": heard_summary(heard),
         "problems": heard_problems(heard),
+        "added": transport_added_cards(conn, since, until, who["display_name"] if who else None),
     })
     return TEMPLATES.TemplateResponse("search_manager.html", ctx)
 
@@ -1083,9 +1149,93 @@ async def orders_page(
 async def order_page(request: Request, order_id: str) -> Any:
     """Одна заявка: что было в разговорах после неё и почему она не стала сделкой."""
     conn = request.app.state.db
+    order = order_detail(conn, order_id)
+    if order:
+        # Расшифровка — сразу на странице, разворачиваемыми репликами, а не
+        # отдельной ссылкой на /call/{uid}: РОП физически не успевает слушать
+        # запись каждого звонка, нужно всё в одном месте (владелец, 15.11.2026).
+        for c in order["calls"]:
+            c["turns"] = split_turns(c.get("transcript_text"))
     ctx = _base_context(request)
-    ctx.update({"order": order_detail(conn, order_id), "order_id": order_id})
+    ctx.update({"order": order, "order_id": order_id})
     return TEMPLATES.TemplateResponse("order.html", ctx)
+
+
+@app.post("/order/{order_id}/comment")
+async def order_comment_post(request: Request, order_id: str, author: str = Form(""),
+                             comment: str = Form(""), back: str = Form("")) -> Any:
+    """Заметка РОПа по заявке — своя, не в Synergy (см. order.html)."""
+    conn = request.app.state.db
+    if comment.strip():
+        save_order_comment(conn, order_id, author.strip(), comment.strip(),
+                           datetime.now(timezone.utc).isoformat())
+        conn.commit()
+    ctx = _base_context(request)
+    адрес = back or f"{ctx['base']}/order/{order_id}"
+    return RedirectResponse(адрес, status_code=303)
+
+
+def training_draft_text(draft_json: str) -> str:
+    """Черновик звонка строками «[мм:сс] роль: текст» — метки времени нужны, чтобы
+    исправленный текст потом можно было привязать к кускам звука."""
+    lines = []
+    try:
+        segments = json.loads(draft_json or "[]")
+    except ValueError:
+        segments = []
+    for seg in segments:
+        moment = int(seg.get("start") or 0)
+        lines.append(f"[{moment // 60:02d}:{moment % 60:02d}] {seg.get('role', '')}: {seg.get('text', '')}")
+    return "\n".join(lines)
+
+
+@app.get("/training", response_class=HTMLResponse)
+async def training_page(request: Request, batch: int | None = None) -> Any:
+    """Эталонный набор для дообучения распознавания: послушать звонок и поправить текст.
+
+    Цель владельца (15.11.2026) — 50 часов исправленных звонков, начинать по 30
+    минут в день. Черновик посчитан на офисной карте с метками времени; исправляют
+    прямо в поле, формат строк «[мм:сс] роль: текст» не ломая.
+    """
+    conn = request.app.state.db
+    all_rows = training_rows(conn)
+    batches = sorted({r["batch"] for r in all_rows}, reverse=True)
+    current = batch if batch in batches else (batches[0] if batches else None)
+    items = []
+    for row in all_rows:
+        if row["batch"] != current:
+            continue
+        item = dict(row)
+        item["text"] = row["corrected_text"] or training_draft_text(row["draft_json"])
+        item["tag_list"] = [t for t in (row["tags"] or "").split(",") if t]
+        item["rows"] = min(max(item["text"].count("\n") + 3, 6), 30)
+        items.append(item)
+    done_all = sum(r["duration_sec"] for r in all_rows if r["status"] == "done")
+    ctx = _base_context(request)
+    ctx.update({
+        "items": items, "batch": current, "batches": batches,
+        "batch_total_min": round(sum(i["duration_sec"] for i in items) / 60, 1),
+        "batch_done_min": round(sum(i["duration_sec"] for i in items if i["status"] == "done") / 60, 1),
+        "done_hours": round(done_all / 3600, 2), "goal_hours": 50,
+    })
+    return TEMPLATES.TemplateResponse("training.html", ctx)
+
+
+@app.post("/training/save")
+async def training_save(request: Request, call_uid: str = Form(...), corrected: str = Form(""),
+                        status: str = Form("draft"), tags: list[str] = Form(default=[]),
+                        batch: int = Form(0)) -> Any:
+    """Сохранить исправление. done — готово, draft — не закончено, skip — не брать."""
+    conn = request.app.state.db
+    if status not in ("done", "draft", "skip"):
+        status = "draft"
+    allowed = {"акцент", "шум", "роли_перепутаны", "личный_разговор"}
+    clean_tags = ",".join(t for t in tags if t in allowed)
+    save_training_correction(conn, call_uid, corrected.strip(), clean_tags, status,
+                             datetime.now(timezone.utc).isoformat())
+    conn.commit()
+    ctx = _base_context(request)
+    return RedirectResponse(f"{ctx['base']}/training?batch={batch}#c{call_uid}", status_code=303)
 
 
 @app.get("/call/{uid}", response_class=HTMLResponse)

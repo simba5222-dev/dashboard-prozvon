@@ -1,0 +1,13 @@
+[Unit]
+Description=Дашборд: подгрузка новых входящих платежей из 1С в раздел «Платежи» Synergy
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под agent: у него ключ ssh на офисный сервер (1С читается там). Запись в базу дашборда — через sudo -u claude внутри.
+User=agent
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+ExecStart=/usr/bin/flock -w 1200 /tmp/dashboard-1c.lock /home/claude/dashboard/scripts/pull_1c_payments.sh
+TimeoutStartSec=25min

@@ -1,0 +1,20 @@
+[Unit]
+Description=Дашборд: вовлечённость менеджера + совет ИИ по всем заявкам всех потоков
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под claude: пишет в базу, читает .env с токеном Synergy и ключом YandexGPT.
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+# Пересчёт только при изменениях (новый звонок или обновление заявки) —
+# решение владельца от 27.10.2026. --limit ограничивает число обращений к
+# модели за прогон, не число просмотренных заявок: сама развёртка и
+# дочитывание заявки по отдельности дешёвые, дорогой только вызов головы.
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/analyze_engagement.py --apply --limit 120
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=multi-user.target

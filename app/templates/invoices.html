@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Счета — привязка к сделкам</title>
+<style>{% include '_pay_style.html' %}
+.tot{font-size:13px;color:var(--ink2);padding:8px 22px;border-bottom:1px solid var(--line);background:#fafbfc}
+.tot b{color:var(--ink)}
+.chip.part{background:#ffe9d6;color:#9a5400}
+.cell-sm{font-size:13px;color:var(--ink2)}
+.deal-pick{display:grid;grid-template-columns:26px 1fr auto;gap:4px 12px;border:1.5px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;cursor:pointer;background:#fff}
+.deal-pick.sel{border-color:var(--accent);background:var(--sel)}
+.deal-pick.match{box-shadow:inset 4px 0 0 var(--green)}
+.deal-pick:hover{border-color:#b7c9f5}
+.deal-pick .t{font-weight:600}
+.deal-pick .m{font-size:13px;color:var(--ink2);margin-top:2px}
+.deal-pick .nums{text-align:right;font-size:13px;color:var(--ink2);white-space:nowrap}
+.deal-pick .nums b{color:var(--ink);font-size:15px}
+.deal-pick .info{display:grid;gap:3px;margin-top:8px;font-size:13px;grid-column:2/4}
+.deal-pick .info div{display:grid;grid-template-columns:104px 1fr;gap:8px}
+.deal-pick .info span{color:var(--ink3)}
+.deal-pick .info b{font-weight:600}
+</style>
+</head>
+<body>
+<div class="nav">
+  <div class="logo">ТЕХНО<small>РЕСУРС</small></div>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Заявки</a>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Сделки</a>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Контакты</a>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Компании</a>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Задачи</a>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Транспорт</a>
+  <a class="on" href="#">Финансы</a>
+  <span class="dots">···</span>
+  <span class="sp"></span>
+  <span class="who" id="who" title="Нажмите, чтобы сменить имя">Ваше имя</span>
+</div>
+
+<div class="page"><div class="panel">
+  <div class="bar">
+    <div class="sections"><a href="{{ base }}/payments">Платежи</a><a class="on" href="{{ base }}/payments/invoices">Счета</a></div>
+    <div class="views" id="views">
+      <button class="view on" data-tab="unpaid">Не оплачены<span class="n" id="n-unpaid">0</span></button>
+      <button class="view" data-tab="nodeal">Без сделки<span class="n" id="n-nodeal">0</span></button>
+      <button class="view" data-tab="paid">Оплачены<span class="n" id="n-paid">0</span></button>
+      <button class="view" data-tab="all">Все счета<span class="n" id="n-all">0</span></button>
+    </div>
+    <div class="search">
+      <svg viewBox="0 0 24 24"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+      <input id="q" placeholder="Поиск: клиент, ИНН, номер счёта, сумма, менеджер, назначение…" autocomplete="off">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><line x1="16" y1="16" x2="21" y2="21"/></svg>
+    </div>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div class="tot" id="tot"></div>
+  <div class="scroll"><table>
+    <thead><tr>
+      <th class="chk"></th>
+      <th data-col="issued" data-sort="issued"><span class="ft">Дата</span><span class="s">⇅</span></th>
+      <th data-col="number" data-sort="number"><span class="ft">Счёт</span><span class="s">⇅</span></th>
+      <th data-col="status" data-sort="status"><span class="ft">Статус</span><span class="s">⇅</span></th>
+      <th data-col="amount" data-sort="amount"><span class="ft">Сумма</span><span class="s">⇅</span></th>
+      <th data-col="balance" data-sort="balance"><span class="ft">Остаток</span><span class="s">⇅</span></th>
+      <th data-col="payer" data-sort="payer"><span class="ft">Клиент</span><span class="s">⇅</span></th>
+      <th data-col="deal" data-sort="deal"><span class="ft">Сделка</span><span class="s">⇅</span></th>
+      <th data-col="manager" data-sort="manager"><span class="ft">Менеджер</span><span class="s">⇅</span></th>
+      <th data-col="org" data-sort="org"><span class="ft">Выставлен от</span><span class="s">⇅</span></th>
+      <th data-col="purpose"><span class="ft">Назначение платежа</span></th>
+      <th></th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+  <div class="empty" id="empty" style="display:none"></div>
+  <div class="more"><button class="btn ghost" id="more" style="display:none">Показать ещё</button></div>
+</div></div>
+
+<div class="shade" id="shade"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="dh"><h2 id="d-title"></h2><div class="sub" id="d-sub"></div><button class="x" id="d-x" aria-label="Закрыть">×</button></div>
+  <div class="db" id="d-body"></div>
+  <div class="df" id="d-foot"></div>
+</aside>
+<div class="modal" id="modal"><div class="mbox" id="mbox"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const BASE = "{{ base }}";
+const api = p => BASE + "/payments/api" + p;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const rub = n => (Math.round(Number(n) * 100) / 100).toLocaleString("ru-RU", {maximumFractionDigits: 2}) + " ₽";
+const fd = iso => iso ? iso.slice(8,10) + "." + iso.slice(5,7) + "." + iso.slice(0,4) : "";
+const CRM = "https://app.synergycrm.ru";
+const lnk = (path, id, html) => id ? `<a class="crm" href="${CRM}/${path}/${esc(id)}" target="_blank" rel="noopener" title="Открыть карточку в Synergy">${html}</a>` : html;
+
+let S = {tab:"unpaid", q:"", sort:"issued", desc:1, offset:0, rows:[], total:0, flt:{}};
+const CACHE = {};
+const cacheKey = () => [S.tab, S.q, S.sort, S.desc, JSON.stringify(S.flt)].join("|");
+let CUR = null, PICK = "";
+
+function user() { return localStorage.getItem("payUser") || ""; }
+function askUser(force) {
+  let n = user();
+  if (!n || force) { n = (prompt("Ваше имя (фамилия) — оно запишется в журнал:", n) || "").trim(); if (n) localStorage.setItem("payUser", n); }
+  $("#who").textContent = user() || "Ваше имя"; return user();
+}
+function toast(t, err) { const e = $("#toast"); e.textContent = t; e.className = "toast open" + (err ? " err" : ""); clearTimeout(toast.t); toast.t = setTimeout(() => e.className = "toast", err ? 7000 : 3500); }
+async function jget(url) { const r = await fetch(url); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
+async function jpost(url, body) { const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
+
+/* ───── список ───── */
+async function load(append) {
+  if (!append) { S.offset = 0; const c = CACHE[cacheKey()]; if (c) { S.rows = c.rows; S.total = c.total; render(c); } else { S.rows = []; $("#rows").innerHTML = '<tr><td colspan="12" class="spin">Загрузка…</td></tr>'; } }
+  const p = new URLSearchParams({tab:S.tab, q:S.q, sort:S.sort, desc:S.desc, offset:S.offset, limit:100, filters:JSON.stringify(S.flt)});
+  let j; try { j = await jget(api("/inv/list?" + p)); } catch (e) { toast("Не удалось загрузить: " + e.message, true); return; }
+  S.rows = append ? S.rows.concat(j.rows) : j.rows; S.total = j.total;
+  for (const t of ["unpaid","nodeal","paid","all"]) $("#n-" + t).textContent = j.counts[t];
+  if (!append) CACHE[cacheKey()] = {rows: S.rows, total: S.total, sum_amount: j.sum_amount, sum_balance: j.sum_balance};
+  render(j);
+}
+function statusChip(r) {
+  if (r.status === "paid") return '<span class="chip ok">Оплачен</span>';
+  if (r.status === "without_positions") return '<span class="chip no">Без позиций</span>';
+  if (r.balance > 0 && r.balance < r.amount - 0.004) return '<span class="chip part">Частично</span>';
+  return '<span class="chip no">Не оплачен</span>';
+}
+function render(j) {
+  $("#tot").innerHTML = `Счетов: <b>${S.total}</b> · на сумму <b>${rub(j.sum_amount || 0)}</b> · остаток к оплате <b>${rub(j.sum_balance || 0)}</b>`;
+  const tb = $("#rows"); tb.innerHTML = "";
+  const empty = $("#empty");
+  empty.style.display = S.rows.length ? "none" : "block"; empty.textContent = "Счетов не найдено";
+  for (const r of S.rows) {
+    const tr = document.createElement("tr"); tr.dataset.id = r.id;
+    const deal = r.deal_id ? lnk("deals", r.deal_id, `<b>${esc(r.deal_name || "")} №${esc(r.deal_number)}</b>`) : '<span class="dim">...</span>';
+    const action = r.deal_id ? '<button class="link-btn sec" data-act="open">Сменить сделку</button>' : '<button class="link-btn" data-act="open">Привязать к сделке</button>';
+    tr.innerHTML = `<td class="chk"></td>
+      <td class="when">${fd(r.issued)}</td>
+      <td><b>${lnk("invoices", r.id, esc(r.number))}</b></td>
+      <td>${statusChip(r)}</td>
+      <td class="money" style="color:var(--ink)">${rub(r.amount)}</td>
+      <td class="money" style="color:${r.balance > 0 ? "#9a5400" : "var(--money)"}">${rub(r.balance)}</td>
+      <td class="cp"><div class="nm">${lnk("companies", r.payer_id, esc(r.payer_name || "— не указан —"))}</div><div class="sub">${r.payer_inn ? "ИНН " + esc(r.payer_inn) : ""}</div></td>
+      <td>${deal}</td>
+      <td class="cell-sm">${esc(r.manager || "—")}</td>
+      <td class="cell-sm">${esc(r.org || "")}</td>
+      <td><div class="purpose" title="${esc(r.purpose)}">${esc(r.purpose)}</div></td>
+      <td>${action}</td>`;
+    tb.appendChild(tr);
+  }
+  const more = $("#more"); more.style.display = S.rows.length < S.total ? "" : "none"; more.textContent = `Показать ещё (${S.total - S.rows.length})`;
+}
+$("#rows").addEventListener("click", e => {
+  const tr = e.target.closest("tr"); if (!tr || e.target.closest("a")) return;
+  const b = e.target.closest("[data-act]");
+  if (b || !e.target.closest("input")) openDrawer(tr.dataset.id);
+});
+
+/* ───── панель: привязка счёта к сделке ───── */
+async function openDrawer(id) {
+  if (!askUser()) { toast("Укажите имя — оно нужно для журнала", true); return; }
+  const r = S.rows.find(x => x.id === id); if (!r) return;
+  CUR = {inv: r, deals: []}; PICK = r.deal_id || "";
+  $("#d-title").textContent = `Счёт ${r.number}: ${rub(r.amount)}`;
+  $("#d-sub").textContent = `${r.payer_name || "клиент не указан"} · ${fd(r.issued)} · ${r.status === "paid" ? "оплачен" : "остаток " + rub(r.balance)}`;
+  $("#d-body").innerHTML = '<div class="spin">Ищу сделки клиента…</div>'; $("#d-foot").innerHTML = "";
+  $("#shade").classList.add("open"); $("#drawer").classList.add("open");
+  try { const j = await jget(api(`/inv/${id}/deals`)); CUR.deals = j.deals; renderDrawer(); }
+  catch (e) { $("#d-body").innerHTML = `<div class="spin">Не удалось получить сделки: ${esc(e.message)}</div>`; }
+}
+function closeDrawer() { $("#shade").classList.remove("open"); $("#drawer").classList.remove("open"); CUR = null; }
+$("#d-x").onclick = closeDrawer; $("#shade").onclick = closeDrawer;
+
+function dealPick(d) {
+  return `<div class="deal-pick ${d.sum_match || d.key_match ? "match" : ""} ${PICK === d.id ? "sel" : ""}" data-deal="${d.id}">
+    <input type="radio" name="dp" ${PICK === d.id ? "checked" : ""} tabindex="-1">
+    <div><div class="t">${lnk("deals", d.id, esc(d.name || "Без названия"))} <span class="dim">№${esc(d.number)}</span>${d.key_match ? '<span class="tag g">номер 1С в названии</span>' : ""}${d.sum_match ? '<span class="tag g">сумма совпала</span>' : ""}</div>
+      <div class="m">${esc(d.stage || "—")} · создана ${fd(d.created)}${d.manager ? " · менеджер " + esc(d.manager) : ""}</div></div>
+    <div class="nums"><b>${d.total ? rub(d.total) : "—"}</b><div>оплачено ${rub(d.paid)}</div></div>
+    <div class="info"><div><span>Клиент</span><b>${d.client_id ? lnk("companies", d.client_id, esc(d.client || "не указан")) : esc(d.client || "не указан")}</b></div>
+      <div><span>Транспорт</span><b>${esc(d.transport || "не указан")}</b></div>
+      <div><span>Ставка З</span><b>${d.rate ? rub(d.rate) : "не указана"}</b></div>
+      <div><span>Адрес объекта</span><b>${esc(d.address || "не указан")}</b></div>
+      <div><span>Начало работ</span><b>${d.start ? fd(d.start) + (d.end ? " — " + fd(d.end) : "") : "дата начала не указана"}</b></div></div></div>`;
+}
+function renderDrawer() {
+  const r = CUR.inv;
+  $("#d-body").innerHTML = `
+    <div class="box"><h3>Счёт из 1С</h3><div class="kv">
+      <div>Клиент</div><div><b>${lnk("companies", r.payer_id, esc(r.payer_name || "не указан"))}</b>${r.payer_inn ? " · ИНН " + esc(r.payer_inn) : ""}</div>
+      <div>Выставлен от</div><div>${esc(r.org || "—")}</div>
+      <div>Менеджер</div><div>${esc(r.manager || "—")}</div>
+      <div>Назначение</div><div>${esc(r.purpose || "—")}</div>
+      <div>Основание</div><div>${esc(r.reason || "—")}</div>
+      <div>Сделка сейчас</div><div>${r.deal_id ? lnk("deals", r.deal_id, esc(r.deal_name || "") + " №" + esc(r.deal_number)) : "не привязан"}</div></div></div>
+    <div class="deals"><h3>К какой сделке относится счёт</h3>
+      <div class="invnote">Платежи по этому счёту потом будут привязываться к выбранной сделке сами. Подходящие по сумме и номеру 1С подсвечены.</div>
+      <div id="deal-list">${CUR.deals.length ? CUR.deals.map(dealPick).join("") : '<div class="box" style="color:#6b7480">У клиента нет сделок в Synergy. Найдите другую компанию поиском ниже.</div>'}</div>
+      <div class="find"><input id="cq" placeholder="Нужна другая компания? Название или ИНН"><button class="btn ghost" id="cgo">Найти</button></div>
+      <div class="cres" id="cres"></div></div>`;
+  bindPicks(); renderFoot();
+  $("#cgo").onclick = findCompany; $("#cq").onkeydown = e => { if (e.key === "Enter") findCompany(); };
+}
+function bindPicks() {
+  document.querySelectorAll(".deal-pick").forEach(c => c.onclick = e => { if (e.target.closest("a")) return; PICK = c.dataset.deal; $("#deal-list").innerHTML = CUR.deals.map(dealPick).join(""); bindPicks(); renderFoot(); });
+}
+function renderFoot() {
+  const r = CUR.inv, changed = PICK && PICK !== (r.deal_id || "");
+  $("#d-foot").innerHTML = `<div class="btns"><button class="btn" id="go" ${changed ? "" : "disabled"}>${r.deal_id ? "Сменить сделку" : "Привязать к сделке"}</button>
+    ${r.deal_id ? '<button class="btn warn" id="clr">Открепить сделку</button>' : ""}<button class="btn ghost" id="cancel">Закрыть</button></div>`;
+  $("#go").onclick = () => save(PICK); $("#cancel").onclick = closeDrawer; if ($("#clr")) $("#clr").onclick = () => save("");
+}
+async function save(dealId) {
+  const r = CUR.inv, d = CUR.deals.find(x => x.id === dealId);
+  $("#go").disabled = true;
+  try { await jpost(api(`/inv/${r.id}/deal`), {deal_id: dealId, user: user()}); toast(dealId ? `Счёт ${r.number} привязан к сделке №${d ? d.number : ""}` : "Сделка откреплена"); closeDrawer(); load(); }
+  catch (e) { toast(e.message, true); renderFoot(); }
+}
+async function findCompany() {
+  const q = $("#cq").value.trim(); if (q.length < 3) { toast("Введите хотя бы 3 символа названия или ИНН", true); return; }
+  $("#cres").innerHTML = '<div class="spin">Ищу…</div>';
+  try {
+    const j = await jget(api("/companies?q=" + encodeURIComponent(q)));
+    $("#cres").innerHTML = j.companies.length ? j.companies.map(c => `<button data-c="${c.id}">${esc(c.name)} <span class="dim">· ИНН ${esc(c.inn || "—")}</span></button>`).join("") : '<div class="dim">Ничего не найдено</div>';
+    document.querySelectorAll("[data-c]").forEach(b => b.onclick = async () => {
+      $("#deal-list").innerHTML = '<div class="spin">Загружаю сделки…</div>';
+      try { const k = await jget(api(`/inv/${CUR.inv.id}/deals?company=${b.dataset.c}`)); CUR.deals = k.deals; PICK = ""; $("#deal-list").innerHTML = k.deals.length ? k.deals.map(dealPick).join("") : '<div class="box">У этой компании нет сделок</div>'; $("#cres").innerHTML = ""; bindPicks(); renderFoot(); }
+      catch (e) { toast(e.message, true); }
+    });
+  } catch (e) { $("#cres").innerHTML = ""; toast(e.message, true); }
+}
+
+/* ───── фильтры по колонкам как в Excel ───── */
+const EMPTY = "__empty__";
+const STATUS = {paid:"Оплачен", not_paid:"Не оплачен", without_positions:"Без позиций"};
+const colLabel = (col, v) => v === EMPTY ? "(Пусто)" : col === "issued" ? fd(v) : (col === "amount" || col === "balance") ? rub(v) : col === "status" ? (STATUS[v] || v) : v;
+const colName = col => document.querySelector(`th[data-col="${col}"] .ft`).textContent;
+function ctxParams(col) { return new URLSearchParams({col, tab:S.tab, q:S.q, filters:JSON.stringify(S.flt)}); }
+function closeColMenu() { document.querySelectorAll(".colmenu").forEach(m => m.remove()); }
+function refreshHeads() {
+  document.querySelectorAll("th[data-col]").forEach(th => th.classList.toggle("act", !!S.flt[th.dataset.col]));
+  const ch = $("#chips"), keys = Object.keys(S.flt);
+  ch.classList.toggle("open", keys.length > 0);
+  ch.innerHTML = keys.length ? "<span>Фильтры по колонкам:</span>" + keys.map(k => `<span class="chip-f">${esc(colName(k))}: ${k === "purpose" ? "«" + esc(S.flt[k]) + "»" : S.flt[k].length > 2 ? S.flt[k].length + " знач." : S.flt[k].map(v => esc(colLabel(k, v))).join(", ")}<button data-clr="${k}" title="Убрать">×</button></span>`).join("") + '<button class="clear" id="clr-all">Сбросить все</button>' : "";
+  ch.querySelectorAll("[data-clr]").forEach(b => b.onclick = () => { delete S.flt[b.dataset.clr]; refreshHeads(); load(); });
+  if ($("#clr-all")) $("#clr-all").onclick = () => { S.flt = {}; refreshHeads(); load(); };
+}
+async function openColMenu(th) {
+  closeColMenu();
+  const col = th.dataset.col, r = th.getBoundingClientRect();
+  const m = document.createElement("div"); m.className = "colmenu"; m.onclick = e => e.stopPropagation();
+  m.style.left = Math.min(r.left, innerWidth - 330) + "px"; m.style.top = (r.bottom + 4) + "px";
+  m.innerHTML = (th.dataset.sort ? '<div class="cm-sort"><button data-s="1">↑ По возрастанию</button><button data-s="0">↓ По убыванию</button></div>' : "")
+    + (col === "purpose" ? `<div class="cm-search"><input id="cm-text" placeholder="Содержит слово или фразу…" value="${esc(S.flt.purpose || "")}"></div>`
+       : '<div class="cm-search"><input id="cm-q" placeholder="Поиск по значениям"></div><div class="cm-list" id="cm-list"><div class="spin">Загрузка…</div></div>')
+    + '<div class="cm-foot"><button class="btn" id="cm-ok">Применить</button><button class="btn ghost" id="cm-clear">Очистить фильтр</button></div>';
+  document.body.appendChild(m);
+  m.querySelectorAll("[data-s]").forEach(b => b.onclick = () => { S.sort = th.dataset.sort; S.desc = +b.dataset.s ? 0 : 1; closeColMenu(); load(); });
+  $("#cm-clear").onclick = () => { delete S.flt[col]; closeColMenu(); refreshHeads(); load(); };
+  if (col === "purpose") {
+    const t = $("#cm-text"); t.focus();
+    const ok = () => { const v = t.value.trim(); if (v) S.flt.purpose = v; else delete S.flt.purpose; closeColMenu(); refreshHeads(); load(); };
+    $("#cm-ok").onclick = ok; t.onkeydown = e => { if (e.key === "Enter") ok(); }; return;
+  }
+  let vals = []; const chosen = new Set(S.flt[col] || []);
+  const draw = () => {
+    const q = ($("#cm-q").value || "").toLowerCase();
+    const shown = vals.filter(x => !q || colLabel(col, x.v).toLowerCase().includes(q));
+    const allOn = shown.length && shown.every(x => chosen.has(x.v));
+    $("#cm-list").innerHTML = `<label><input type="checkbox" id="cm-all" ${allOn ? "checked" : ""}><span class="lv"><b>(Выбрать все)</b></span><span class="cn">${shown.length}</span></label>`
+      + shown.map(x => `<label><input type="checkbox" data-v="${esc(x.v)}" ${chosen.has(x.v) ? "checked" : ""}><span class="lv" title="${esc(colLabel(col, x.v))}">${esc(colLabel(col, x.v))}</span><span class="cn">${x.n}</span></label>`).join("");
+    $("#cm-all").onchange = e => { shown.forEach(x => e.target.checked ? chosen.add(x.v) : chosen.delete(x.v)); draw(); };
+    $("#cm-list").querySelectorAll("[data-v]").forEach(c => c.onchange = () => { c.checked ? chosen.add(c.dataset.v) : chosen.delete(c.dataset.v); const a = $("#cm-all"); if (a) a.checked = shown.every(x => chosen.has(x.v)); });
+  };
+  try {
+    vals = (await jget(api("/inv/values?" + ctxParams(col)))).values;
+    if (!S.flt[col]) vals.forEach(x => chosen.add(x.v));
+    draw(); $("#cm-q").oninput = draw; $("#cm-q").focus();
+  } catch (e) { $("#cm-list").innerHTML = '<div class="spin">Не удалось загрузить: ' + esc(e.message) + "</div>"; }
+  $("#cm-ok").onclick = () => {
+    const q = ($("#cm-q").value || "").toLowerCase();
+    const picked = vals.filter(x => (!q || colLabel(col, x.v).toLowerCase().includes(q)) && chosen.has(x.v)).map(x => x.v);
+    if (picked.length === vals.length) delete S.flt[col]; else if (picked.length === 0) { toast("Отметьте хотя бы одно значение", true); return; } else S.flt[col] = picked;
+    closeColMenu(); refreshHeads(); load();
+  };
+}
+document.querySelectorAll("th[data-col]").forEach(th => th.addEventListener("click", e => {
+  e.stopPropagation();
+  if (e.target.classList.contains("s")) { const k = th.dataset.sort; if (S.sort === k) S.desc = S.desc ? 0 : 1; else { S.sort = k; S.desc = 1; } closeColMenu(); load(); }
+  else if (e.target.classList.contains("ft")) openColMenu(th);
+}));
+document.addEventListener("click", closeColMenu);
+
+document.querySelectorAll(".view").forEach(b => b.onclick = () => { document.querySelectorAll(".view").forEach(x => x.classList.remove("on")); b.classList.add("on"); S.tab = b.dataset.tab; load(); });
+let qt; $("#q").oninput = e => { clearTimeout(qt); qt = setTimeout(() => { S.q = e.target.value; load(); }, 350); };
+$("#more").onclick = () => { S.offset = S.rows.length; load(true); };
+$("#who").onclick = () => askUser(true);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+$("#who").textContent = user() || "Ваше имя";
+load();
+setInterval(() => { if (!CUR) load(); }, 90000);
+</script>
+</body>
+</html>

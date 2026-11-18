@@ -1,0 +1,15 @@
+[Unit]
+Description=Дашборд: сводный отчёт владельцу по менеджерам за вчера
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/manager_digest.py --period daily --apply
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=multi-user.target

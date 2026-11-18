@@ -139,6 +139,30 @@
 
 <div class="card">
   <div class="card-head">
+    <h2>Новая техника в карточках</h2>
+    <span class="sub">заведено новых карточек за период: {{ added|length }}</span>
+  </div>
+  <div class="card-body scroll">
+    {% if not added %}
+      <p class="dim">За этот период новых карточек техники не заводил.</p>
+    {% else %}
+    <table>
+      <tr><th>Когда</th><th>Тип техники</th><th>Карточка</th><th>Поставщик</th></tr>
+      {% for r in added %}
+      <tr>
+        <td class="num">{% if since != until %}{{ r.created_at[:16].replace('T', ' ') }}{% else %}{{ r.created_at[11:16] }}{% endif %}</td>
+        <td>{{ r.type_name or '—' }}</td>
+        <td>{{ r.name or '—' }}</td>
+        <td>{{ r.contact_name or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
     <h2>Все разговоры за период</h2>
     <span class="sub">{{ heard|length }} разобрано</span>
   </div>

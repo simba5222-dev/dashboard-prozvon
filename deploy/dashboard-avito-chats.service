@@ -1,0 +1,15 @@
+[Unit]
+Description=Дашборд: чаты Авито — подтянуть изменившиеся чаты и сообщения в базу, только чтение из Авито
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под claude: пишет в базу и читает .env с ключами Авито (DASH_AVITO_*).
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+# Чаты, менявшиеся за последние три дня, и сообщения только у изменившихся. Идемпотентно (ключи — id чата и сообщения).
+# Отправки сообщений и «прочитано» здесь нет и быть не должно без отдельного слова владельца.
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/avito_chats_sync.py --days 3
+TimeoutStartSec=1800

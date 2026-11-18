@@ -1,0 +1,11 @@
+[Unit]
+Description=Дашборд: ABC-анализ клиентской базы, раз в сутки
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=24h
+# Наверстать один раз, а не лавиной, если сервер был выключен.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

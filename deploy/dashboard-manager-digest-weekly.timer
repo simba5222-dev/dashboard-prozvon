@@ -1,0 +1,10 @@
+[Unit]
+Description=Дашборд: сводка по менеджерам за неделю, по понедельникам в 8:00 по Москве
+
+[Timer]
+OnCalendar=Mon *-*-* 08:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

@@ -21,6 +21,7 @@ def build_report(conn: sqlite3.Connection, date_from: str, date_to: str) -> str:
                COUNT(*)
         FROM transport_cards
         WHERE substr(created_at, 1, 10) BETWEEN ? AND ?
+          AND COALESCE(status, '') <> 'Добавлено ИИ'
         GROUP BY 1
         ORDER BY 2 DESC
         """,
@@ -51,7 +52,9 @@ def added_cards(conn: sqlite3.Connection, date_from: str, date_to: str,
     `search_by_type`/`search_feed` в app/stats.py — те берут ленту ПРАВОК
     (`activities`, и там шире: редактирование уже существующей карточки
     тоже считается), а здесь именно факт появления новой карточки."""
-    where = ["substr(created_at, 1, 10) BETWEEN ? AND ?"]
+    # Карточки со статусом «Добавлено ИИ» создаёт робот под токеном владельца —
+    # они не работа менеджера и в «кто сколько добавил» не входят (15.11.2026).
+    where = ["substr(created_at, 1, 10) BETWEEN ? AND ?", "COALESCE(status, '') <> 'Добавлено ИИ'"]
     params: list[str] = [date_from, date_to]
     if responsible_name:
         where.append("responsible_name = ?")

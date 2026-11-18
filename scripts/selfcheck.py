@@ -31,7 +31,7 @@ from app.config import get_settings  # noqa: E402
 from app.db import connect  # noqa: E402
 
 TIMERS = ("dashboard-collect", "dashboard-records", "dashboard-leads",
-          "dashboard-order-analysis")
+          "dashboard-order-analysis", "dashboard-payments", "dashboard-deal-payments", "dashboard-invoices")
 
 # Слова, по которым в логах видно обрыв. «locked» отдельно: эта ошибка
 # выглядит безобидной строкой в конце файла, а означает потерянный день.

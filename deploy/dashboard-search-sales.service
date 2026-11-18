@@ -1,0 +1,17 @@
+[Unit]
+Description=Дашборд: поиск техники менеджерами продаж — разбор звонков исполнителям, привязка к заявкам, предложения по карточкам транспорта
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под claude: пишет в базу, читает .env с токеном Synergy и ключом YandexGPT.
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+# Режимы записи в Synergy — DASH_LINK_AI_MODE и DASH_TRANSPORT_AI_MODE. По умолчанию
+# propose: в CRM ничего не пишется (первая неделя, решение владельца 15.11.2026).
+# Повторно разбирается только звонок без строки в search_checks, поэтому лишних
+# обращений к модели нет.
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/search_sales.py --days 2
+TimeoutStartSec=30min

@@ -1,0 +1,10 @@
+[Unit]
+Description=Дашборд: раз в 10 минут пересчитывать сумму платежей сделок
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

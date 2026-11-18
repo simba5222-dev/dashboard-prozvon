@@ -1,0 +1,15 @@
+[Unit]
+Description=Дашборд: звонки Авито (CallTracking) — подтянуть свежие в базу, только чтение из Авито
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под claude: пишет в базу и читает .env с ключами Авито (DASH_AVITO_*).
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+# Три последних дня с запасом: звонок может появиться в журнале Авито с задержкой. Идемпотентно (ключ — callId).
+# Авито жёстко ограничивает частоту: клиент сам ждёт при ответе 429, поэтому запуск может занять минуту-две.
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/avito_sync.py --days 3
+TimeoutStartSec=900

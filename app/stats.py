@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from app.db import CARD_FIELDS
+from app.db import CARD_FIELDS, order_comments as db_order_comments
 from app.search_calls import VERDICT_LABEL
 
 
@@ -511,25 +511,30 @@ def order_detail(conn: sqlite3.Connection, order_id: str) -> dict[str, Any] | No
 
     phone_digits = "".join(ch for ch in (order.get("client_phone") or "") if ch.isdigit())[-10:]
     calls = []
+    # Без границы по дате: раньше брали только звонки «после создания заявки»,
+    # но первый звонок с клиентом нередко идёт ДО того, как заявка появилась
+    # в CRM (ей он и заводится) — такие пропадали из вида. РОП должен видеть
+    # всю историю с этим телефоном, не только хвост (владелец, 15.11.2026).
     for call in conn.execute(
         """
         SELECT k.uid, k.started_at, k.direction, k.duration_sec, k.vats_login,
                k.in_group, k.client_phone, m.display_name,
-               t.text IS NOT NULL AS has_transcript, t.analysis_json
+               t.text AS transcript_text, t.analysis_json
         FROM calls k
         LEFT JOIN managers m ON m.vats_login = k.vats_login
         LEFT JOIN transcripts t ON t.call_uid = k.uid
-        WHERE k.started_at >= ? ORDER BY k.started_at
+        ORDER BY k.started_at
         """,
-        (order["created_at"] or order["call_started_at"],),
     ):
         digits = "".join(ch for ch in (call["client_phone"] or "") if ch.isdigit())
         if not phone_digits or digits[-10:] != phone_digits:
             continue
         item = dict(call)
+        item["has_transcript"] = item["transcript_text"] is not None
         item["analysis"] = _parsed_analysis(call["analysis_json"])
         calls.append(item)
     order["calls"] = calls
+    order["comments"] = db_order_comments(conn, order_id)
     return order
 
 
@@ -1249,3 +1254,138 @@ def messenger_sends_by_day(
         "available_last": available_last,
         "collected_at": collected_at,
     }
+
+
+# --- Поиск техники менеджерами продаж (15.11.2026) --------------------------
+
+def _json_list(raw: str | None) -> list[Any]:
+    try:
+        value = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    return value if isinstance(value, list) else []
+
+
+def sales_search_rows(conn: sqlite3.Connection, since: str, until: str,
+                      dept: str) -> list[dict[str, Any]]:
+    """Исходящие менеджеров продаж исполнителям, где менеджер искал технику.
+
+    Звонок, на котором менеджер технику не спрашивал (клиенту, не по делу),
+    сюда не попадает: у него нет ни `asked_type`, ни названной поставщиком техники.
+    """
+    rows = conn.execute(
+        """
+        SELECT s.call_uid, s.local_date, s.vats_login, s.phone10, s.contact_name,
+               s.asked_type, s.offered, s.verdict, s.prices_json, s.busy_json,
+               s.order_id, s.order_equipment, k.started_at, k.duration_sec,
+               m.display_name, o.number AS order_number,
+               l.confidence AS link_confidence, l.source AS link_source,
+               l.order_id AS link_order_id, l.written_at AS link_written_at
+          FROM search_checks s
+          JOIN calls k ON k.uid = s.call_uid
+          JOIN managers m ON m.vats_login = s.vats_login AND m.dept = ?
+          LEFT JOIN order_index o ON o.order_id = s.order_id
+          LEFT JOIN call_order_links l ON l.call_uid = s.call_uid
+         WHERE s.local_date BETWEEN ? AND ?
+           AND (s.asked_type <> '' OR (s.offered IS NOT NULL AND s.offered NOT IN ('', '[]')))
+         ORDER BY k.started_at DESC
+        """,
+        (dept, since, until),
+    ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["has"] = _json_list(row["offered"])
+        item["prices"] = _json_list(row["prices_json"])
+        item["busy"] = _json_list(row["busy_json"])
+        item["helper_order_id"] = row["link_order_id"] if row["link_source"] == "helper" else None
+        out.append(item)
+    return out
+
+
+def sales_search_by_order(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """По заявке: сколько звонков, у скольких поставщиков, какие цены и даты.
+
+    Заявка — наша привязка (`order_id`), а если её нет, то привязка помощника.
+    Без заявки звонки собраны в одну группу в конце.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        key = row["order_id"] or row["helper_order_id"] or ""
+        group = groups.setdefault(key, {
+            "order_id": key, "order_number": row["order_number"],
+            "equipment": row["order_equipment"] or row["asked_type"], "manager": row["display_name"],
+            "calls": [], "phones": set(), "prices": [], "busy": [], "busy_no_date": 0,
+            "last_at": "",
+        })
+        group["calls"].append(row)
+        group["phones"].add(row["phone10"])
+        group["last_at"] = max(group["last_at"], row["started_at"] or "")
+        for p in row["prices"]:
+            group["prices"].append({**p, "contact": row["contact_name"] or row["phone10"]})
+        for b in row["busy"]:
+            if b.get("state") != "занята":
+                continue
+            asked = bool(b.get("manager_asked")) or bool(b.get("free_from"))
+            group["busy"].append({**b, "contact": row["contact_name"] or row["phone10"]})
+            if not asked:
+                group["busy_no_date"] += 1
+    result = []
+    for group in groups.values():
+        group["suppliers"] = len(group.pop("phones"))
+        result.append(group)
+    result.sort(key=lambda g: g["last_at"], reverse=True)
+    result.sort(key=lambda g: g["order_id"] == "")  # «без заявки» — в конец, порядок сохраняется
+    return result
+
+
+def sales_search_by_manager(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """По менеджеру: звонков на поиск, из них с заявкой, и дисциплина по занятой технике."""
+    people: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        person = people.setdefault(row["vats_login"], {
+            "display_name": row["display_name"], "calls": 0, "with_order": 0,
+            "busy": 0, "busy_no_date": 0, "priced": 0})
+        person["calls"] += 1
+        person["with_order"] += int(bool(row["order_id"] or row["helper_order_id"]))
+        person["priced"] += int(bool(row["prices"]))
+        for b in row["busy"]:
+            if b.get("state") != "занята":
+                continue
+            person["busy"] += 1
+            if not (b.get("manager_asked") or b.get("free_from")):
+                person["busy_no_date"] += 1
+    return sorted(people.values(), key=lambda p: -p["calls"])
+
+
+def ai_transport_rows(conn: sqlite3.Connection, since: str, until: str) -> list[dict[str, Any]]:
+    """Что ИИ предложил или добавил в базу «Транспорт» за период."""
+    return [dict(r) for r in conn.execute(
+        """
+        SELECT a.*, k.started_at, m.display_name,
+               (SELECT contact_name FROM transport_cards t WHERE t.phone10 = a.phone10
+                 AND t.contact_name <> '' LIMIT 1) AS contact_name
+          FROM ai_transport_adds a
+          LEFT JOIN calls k ON k.uid = a.call_uid
+          LEFT JOIN managers m ON m.vats_login = k.vats_login
+         WHERE substr(a.created_at, 1, 10) BETWEEN ? AND ?
+         ORDER BY a.id DESC LIMIT 300
+        """, (since, until))]
+
+
+def link_comparison(conn: sqlite3.Connection, since: str) -> dict[str, int]:
+    """Наша привязка звонков к заявкам против той, что проставил помощник.
+
+    Эталон — связи помощника (`source='helper'`, поле звонка custom-11360). Наш
+    выбор лежит в `search_checks.order_id`.
+    """
+    rows = conn.execute(
+        """
+        SELECT l.order_id AS helper_order, s.order_id AS ai_order
+          FROM call_order_links l LEFT JOIN search_checks s ON s.call_uid = l.call_uid
+         WHERE l.source = 'helper' AND substr(l.created_at, 1, 10) >= ?
+        """, (since,)).fetchall()
+    total = len(rows)
+    same = sum(1 for r in rows if r["ai_order"] and r["ai_order"] == r["helper_order"])
+    other = sum(1 for r in rows if r["ai_order"] and r["ai_order"] != r["helper_order"])
+    return {"helper": total, "same": same, "other": other, "no_ai": total - same - other}

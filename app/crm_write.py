@@ -62,14 +62,18 @@ MARK_AI = "Создано ИИ"
 # помечен, и слушать можно сразу его, а не все подряд.
 FIELD_CALL_ORDER = "custom-30615"
 
-# «Результат__» — основное поле на карточке звонка, решение владельца
-# 05.10.2026: заполнять после каждого разобранного разговора потока 2,
-# независимо от того, стала заявка или нет. Найдено среди семи полей со
-# словом «результат» в Synergy — остальные шесть либо на другой сущности
-# (orders, contacts, diaries), либо вовсе чужие (одно из полей на звонках
-# оказалось отдела кадров: варианты вроде «Нет ВУ», «Патента нет»).
-# Владелец подтвердил именно это, custom-17265, resource-name telephony-calls.
-FIELD_RESULT = "custom-17265"
+# «Заявки» на звонке (custom-11360, тип «связь», relation_class Order) — родная
+# привязка звонка к заявке в Synergy: по ней вкладка «Звонки» заявки показывает и
+# считает звонки. Вручную её проставляет помощник по исходящим менеджеров, значение
+# при чтении — номер заявки (целое). Поиск техники менеджерами продаж, 15.11.2026.
+FIELD_CALL_ORDERS = "custom-11360"
+
+# Карточка транспорта исполнителя: телефон в виде «+7XXXXXXXXXX» (так у живых
+# карточек, снято 15.11.2026) и статус-список; значение «Добавлено ИИ» завёл
+# владелец в списке 15.11.2026.
+FIELD_TRANSPORT_PHONE = "custom-29545"
+FIELD_TRANSPORT_STATUS = "custom-26967"
+STATUS_AI_ADDED = "Добавлено ИИ"
 
 # «Транскрибация» — полный текст распознанного разговора на карточке звонка
 # (отдельное поле, не «Результат__» — то короткий вердикт). Решение владельца
@@ -79,6 +83,15 @@ FIELD_RESULT = "custom-17265"
 # потока 1: короткий отрывок (75с) на просеве, полный текст — если стала
 # заявкой (полного текста для остальных пока не считаем, дороже).
 FIELD_TRANSCRIPT_CALL = "custom-30604"
+
+# «Результат__» — основное поле на карточке звонка, решение владельца
+# 05.10.2026: заполнять после каждого разобранного разговора потока 2,
+# независимо от того, стала заявка или нет. Найдено среди семи полей со
+# словом «результат» в Synergy — остальные шесть либо на другой сущности
+# (orders, contacts, diaries), либо вовсе чужие (одно из полей на звонках
+# оказалось отдела кадров: варианты вроде «Нет ВУ», «Патента нет»).
+# Владелец подтвердил именно это, custom-17265, resource-name telephony-calls.
+FIELD_RESULT = "custom-17265"
 
 
 class CrmWriter:
@@ -299,6 +312,80 @@ class CrmWriter:
             logger.warning("звонок %s: результат не записан: %s", call_id, exc)
             return None
 
+    def set_call_order_link(self, call_uid: str, order_id: str) -> str | None:
+        """Привязать звонок к заявке — родное поле «Заявки» (`custom-11360`).
+
+        Формат записи связи ни разу не проверялся: при чтении значение — целое
+        число (номер заявки), пишем так же. Первую запись делают на одном звонке
+        под контролем владельца, прежде чем включать режим create.
+        """
+        if self.dry_run or not str(order_id).strip():
+            return None
+        call_id = self.find_call(call_uid)
+        if not call_id:
+            return None
+        try:
+            self._client.patch(f"telephony-calls/{call_id}", {"data": {
+                "type": "telephony-calls", "id": call_id,
+                "attributes": {"customs": {FIELD_CALL_ORDERS: int(order_id)}},
+            }})
+            logger.info("звонок %s привязан к заявке %s", call_id, order_id)
+            return call_id
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("звонок %s к заявке %s не привязан: %s", call_id, order_id, exc)
+            return None
+
+    def create_transport(self, phone10: str, type_id: str) -> str | None:
+        """Карточка транспорта исполнителя со статусом «Добавлено ИИ».
+
+        Создание не идемпотентно, поэтому **без повтора вообще** (`post_once`):
+        429 не всегда значит «не записалось» — на заявках уже получили три дубля
+        на один повтор (09.10.2026). Защита от дубля — на вызывающей стороне:
+        уникальная пара номер+тип в `ai_transport_adds` ставится ДО отправки и не
+        снимается при ошибке, повторить можно только руками. Контакт не
+        привязываем (решение владельца 15.11.2026): у части карточек его и так нет.
+        """
+        payload = {"data": {
+            "type": "transports",
+            "attributes": {"customs": {
+                FIELD_TRANSPORT_PHONE: f"+7{phone10[-10:]}",
+                FIELD_TRANSPORT_STATUS: STATUS_AI_ADDED,
+            }},
+            "relationships": {
+                "transport-type": {"data": {"type": "transport-types", "id": str(type_id)}},
+            },
+        }}
+        if self.dry_run:
+            logger.info("сухой прогон: завели бы карточку транспорта %s, тип %s", phone10, type_id)
+            return None
+        data = self._client.post_once("transports", payload)
+        new_id = str(((data or {}).get("data") or {}).get("id") or "")
+        logger.info("карточка транспорта %s создана: номер %s, тип %s", new_id or "?", phone10, type_id)
+        return new_id or None
+
+    def set_call_transcript(self, call_uid: str, text: str) -> str | None:
+        """«Транскрибация» — полный текст разговора на карточке звонка.
+
+        Отдельно от `set_call_result`: то поле — короткий вердикт («заявка» /
+        «не заявка» и почему), это — сам текст, чтобы не держать его только
+        в комментарии к заявке (там неудобно искать и сверять).
+        """
+        if self.dry_run or not text.strip():
+            return None
+        call_id = self.find_call(call_uid)
+        if not call_id:
+            return None
+        try:
+            self._client.patch(f"telephony-calls/{call_id}", {"data": {
+                "type": "telephony-calls", "id": call_id,
+                "attributes": {"customs": {FIELD_TRANSCRIPT_CALL: text}},
+            }})
+            logger.info("звонок %s: транскрибация записана, %s символов", call_id, len(text))
+            return call_id
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("звонок %s: транскрибация не записана: %s", call_id, exc)
+            return None
+
     def update_customs(self, order_id: str, customs: dict[str, Any]) -> bool:
         """Дописать поля существующей заявки, не трогая ничего остального.
 
@@ -319,6 +406,27 @@ class CrmWriter:
             return True
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("заявку %s дописать не вышло: %s", order_id, exc)
+            return False
+
+    def update_contact_customs(self, contact_id: str, customs: dict[str, Any]) -> bool:
+        """Дописать кастомные поля контакта (не заявки) — например, ABC-разметку.
+
+        Та же защита, что в `update_customs`: пустые значения отбрасываем,
+        чтобы не затирать то, что уже стоит (в том числе ручные поля
+        менеджера, которые мы сюда не передаём вовсе).
+        """
+        payload = {k: v for k, v in (customs or {}).items() if v not in (None, "", [])}
+        if self.dry_run or not payload:
+            return False
+        try:
+            self._client.patch(f"contacts/{contact_id}", {"data": {
+                "type": "contacts", "id": str(contact_id),
+                "attributes": {"customs": payload},
+            }})
+            logger.info("контакт %s дописан: поля %s", contact_id, ", ".join(sorted(payload)))
+            return True
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("контакт %s дописать не вышло: %s", contact_id, exc)
             return False
 
     def set_contact_hint(self, contact_id: str, field: str, text: str) -> bool:

@@ -1,0 +1,13 @@
+[Unit]
+Description=Дашборд: пересчёт «Суммы платежей» (custom-30778) во всех сделках Synergy, где есть платежи
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под claude. Читает платежи Synergy, пишет только число в поле custom-30778 и только там, где оно изменилось.
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/sync_deal_payments.py --all --apply
+TimeoutStartSec=600

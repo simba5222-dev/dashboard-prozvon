@@ -1,0 +1,10 @@
+[Unit]
+Description=Дашборд: раз в час забирать новые чаты и сообщения Авито
+
+[Timer]
+OnBootSec=11min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Поиск техники менеджерами продаж — {{ since }}…{{ until }}{% endblock %}
+
+{% block extra_style %}
+<style>
+.period{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;
+  background:var(--surface);border:1px solid var(--line);border-radius:3px;
+  padding:11px 15px;margin-bottom:18px;font-size:13px}
+.period label{display:flex;align-items:center;gap:6px;color:var(--ink-3)}
+.period input[type=date]{font:inherit;color:var(--ink);
+  background:var(--surface-2);border:1px solid var(--line-2);border-radius:2px;padding:3px 6px}
+.period button{font:inherit;cursor:pointer;color:var(--surface);background:var(--accent);
+  border:1px solid var(--accent);border-radius:2px;padding:4px 14px}
+.period .quick{margin-left:auto;color:var(--ink-3)}
+.period .quick a{margin-left:10px}
+.period .quick a.now{font-weight:600;text-decoration:none}
+table.t{width:100%;border-collapse:collapse;font-size:13px}
+table.t th{text-align:left;color:var(--ink-3);font-weight:500;padding:6px 8px;
+  border-bottom:1px solid var(--line)}
+table.t td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.5}
+table.t tr:last-child td{border-bottom:none}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.bad{color:var(--stop)}
+.ok{color:var(--ok)}
+.pill2{font-size:11px;padding:1px 7px;border-radius:2px;background:var(--sunken);color:var(--ink-3)}
+.note{margin:0 0 12px;padding:8px 11px;border-left:3px solid var(--warn);
+  background:var(--sunken);color:var(--ink-2);font-size:13px}
+</style>
+{% endblock %}
+
+{% block content %}
+<form class="period" method="get" action="{{ base }}/search/sales">
+  <label>с <input type="date" name="since" value="{{ since }}"></label>
+  <label>по <input type="date" name="until" value="{{ until }}"></label>
+  <button type="submit">Показать</button>
+  <span class="quick">быстро:
+    {% for q in quick %}
+    <a href="{{ base }}/search/sales?since={{ q.since }}&amp;until={{ q.until }}"
+       class="{% if since == q.since and until == q.until %}now{% endif %}">{{ q.name }}</a>
+    {% endfor %}
+  </span>
+</form>
+
+<div class="note">
+  Режим: карточки в базе «Транспорт» — <b>{{ {"propose": "только предлагаем", "create": "создаём", "off": "выключено"}.get(transport_mode, transport_mode) }}</b>,
+  привязка звонков к заявкам в Synergy — <b>{{ {"propose": "только считаем у себя", "create": "пишем в Synergy", "off": "выключено"}.get(link_mode, link_mode) }}</b>.
+  Цены исполнителей показаны только здесь и в поля заявки заказчика не попадают.
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Поиск техники по заявкам</h2>
+    <span class="sub">{{ total_calls }} звонков менеджеров продаж исполнителям, где искали технику</span>
+  </div>
+  <div class="card-body">
+    {% if not by_order %}
+      <p class="dim" style="margin:0">За период таких звонков нет. Записи исходящих качает
+      <span class="mono">fetch_records.py --search-sales</span>, разбор —
+      <span class="mono">scripts/search_sales.py</span>.</p>
+    {% else %}
+    <table class="t">
+      <thead><tr>
+        <th>Заявка</th><th>Техника</th><th>Менеджер</th>
+        <th>Звонков / поставщиков</th><th>Цены исполнителей</th><th>Занято, дата освобождения</th>
+      </tr></thead>
+      <tbody>
+      {% for g in by_order %}
+      <tr>
+        <td>
+          {% if g.order_id %}<a href="{{ order_url }}{{ g.order_id }}" target="_blank">№{{ g.order_number or g.order_id }}</a>
+          {% else %}<span class="dim">без заявки</span>{% endif %}
+        </td>
+        <td>{{ g.equipment or "—" }}</td>
+        <td>{{ g.manager }}</td>
+        <td>{{ g.calls|length }} / {{ g.suppliers }}</td>
+        <td>
+          {% for p in g.prices %}
+          <div>{{ "{:,.0f}".format(p.amount).replace(",", " ") }} ₽{% if p.unit != "неизвестно" %}/{{ p.unit }}{% endif %}
+            <span class="dim">— {{ p.contact }}, {{ p.type }}</span></div>
+          {% else %}<span class="dim">цен не называли</span>{% endfor %}
+        </td>
+        <td>
+          {% for b in g.busy %}
+          <div>{{ b.type }}, {{ b.contact }}:
+            {% if b.free_from %}<span class="ok">освободится {{ b.free_from }}</span>
+            {% elif b.manager_asked %}<span class="dim">дату спросил, не назвали</span>
+            {% else %}<span class="bad">занята, дату не спросил</span>{% endif %}</div>
+          {% else %}<span class="dim">—</span>{% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+{% if by_manager %}
+<div class="card">
+  <div class="card-head"><h2>По менеджерам</h2>
+    <span class="sub">«занята, дату не спросил» — занятая техника, по которой дата освобождения не узнана</span></div>
+  <div class="card-body">
+    <table class="t">
+      <thead><tr><th>Менеджер</th><th>Звонков на поиск</th><th>из них с заявкой</th>
+        <th>с названной ценой</th><th>занято</th><th>дату не узнал</th></tr></thead>
+      <tbody>
+      {% for p in by_manager %}
+      <tr><td>{{ p.display_name }}</td><td>{{ p.calls }}</td><td>{{ p.with_order }}</td>
+        <td>{{ p.priced }}</td><td>{{ p.busy }}</td>
+        <td>{% if p.busy_no_date %}<span class="bad">{{ p.busy_no_date }}</span>{% else %}0{% endif %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head"><h2>Что ИИ предложил занести в базу «Транспорт»</h2>
+    <span class="sub">исполнитель назвал технику, а карточки с таким типом у его номера нет</span></div>
+  <div class="card-body">
+    {% if not adds %}
+      <p class="dim" style="margin:0">За период предложений нет.</p>
+    {% else %}
+    <table class="t">
+      <thead><tr><th>Когда</th><th>Исполнитель</th><th>Тип техники</th><th>Что сказал</th>
+        <th>Менеджер</th><th>Уверенность модели</th><th>Статус</th></tr></thead>
+      <tbody>
+      {% for a in adds %}
+      <tr>
+        <td class="mono">{{ (a.started_at or a.created_at or "")[:16]|replace("T", " ") }}</td>
+        <td>{{ a.contact_name or "—" }} <span class="mono dim">+7{{ a.phone10 }}</span></td>
+        <td>{{ a.type_name }}</td>
+        <td class="dim">«{{ a.quote }}»</td>
+        <td>{{ a.display_name or "—" }}</td>
+        <td class="mono">{{ a.sure if a.sure is not none else "—" }}</td>
+        <td>
+          {% if a.mode == "created" %}<span class="ok">создана, карточка {{ a.transport_id }}</span>
+          {% elif a.mode == "failed" %}<span class="bad">не создана: {{ a.error }}</span>
+          {% else %}<span class="pill2">предложено</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>Сверка привязки звонков с тем, что проставил помощник</h2>
+    <span class="sub">поле звонка «Заявки» (custom-11360) в Synergy</span></div>
+  <div class="card-body">
+    {% if not compare.helper %}
+      <p class="dim" style="margin:0">За период помощник звонки к заявкам не привязывал — сравнивать не с чем.</p>
+    {% else %}
+    <p style="margin:0">Помощник привязал {{ compare.helper }} звонков.
+      Наша заявка совпала у {{ compare.same }},
+      другая — у {{ compare.other }},
+      нашей привязки нет — у {{ compare.no_ai }}.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

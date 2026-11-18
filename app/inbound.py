@@ -309,7 +309,14 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
             uid, f"Не заявка — перезвон на наш поиск техники ({tries} недозвона до этого)")
         return {"uid": uid, "skipped": f"перезвон на наш поиск ({tries} недозвона)"}
 
-    head = transcribe(settings, f"{uid}.mp3", audio, seconds=75)
+    # Распознаём звонок целиком один раз — раньше здесь брались только первые
+    # 75 секунд («просев»), а полный текст считался заново внутри
+    # create_lead(), если просев решал, что заявка реальная (один звонок
+    # распознавался дважды). С 15.11.2026, когда вся транскрибация и так уже
+    # идёт на своём офисном GPU (не Yandex, не платные API), ограничивать
+    # вход смысла нет — решение владельца.
+    transcript = transcribe(settings, f"{uid}.mp3", audio)
+    writer.set_call_transcript(uid, transcript)
     # Повод звонка считается из метаданных и уходит в задание как факт.
     # Раньше модель выводила его из слов, и на перезвонах исполнителей
     # придумывала заявки, которых не было.
@@ -321,7 +328,7 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
     }))
     яндексом = settings.screen_engine == "yandex"
     verdict = analyzer.screen_call(
-        head, "",
+        transcript, "",
         api_key=(settings.yandex_api_key if яндексом else settings.openai_api_key) or "",
         model=settings.yandex_model if яндексом else settings.analysis_model,
         engine=settings.screen_engine, folder=settings.yandex_folder or "",
@@ -329,7 +336,7 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
         context=контекст,
     )
     is_request = bool(verdict["is_request"] and not verdict["about_existing"])
-    save_screen(conn, call_uid=uid, head_text=head,
+    save_screen(conn, call_uid=uid, head_text=transcript,
                 verdict_json=json.dumps(verdict, ensure_ascii=False),
                 is_request=int(is_request),
                 created_at=datetime.now(timezone.utc).isoformat())
@@ -340,7 +347,7 @@ def process(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
         return {"uid": uid, "manager": manager["display_name"] if manager else "—",
                 "request": False}
 
-    return create_lead(conn, settings, call, manager, verdict, path, local_date, writer)
+    return create_lead(conn, settings, call, manager, verdict, transcript, local_date, writer)
 
 
 def lead_block_reason(active: list[dict[str, str]], equipment: str = "") -> str:
@@ -516,7 +523,7 @@ def refresh_hint(conn: sqlite3.Connection, settings: Settings, phone: str) -> No
 
 
 def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, Any],
-                manager: sqlite3.Row | None, verdict: dict[str, Any], path: Path,
+                manager: sqlite3.Row | None, verdict: dict[str, Any], transcript: str,
                 local_date: str, writer: CrmWriter | None = None) -> dict[str, Any]:
     """Полный разбор и заявка в CRM.
 
@@ -557,7 +564,10 @@ def create_lead(conn: sqlite3.Connection, settings: Settings, call: dict[str, An
         writer.set_call_result(uid, call_result_text(verdict, True, note=reason))
         return {"uid": uid, "request": True, "order": None, "note": reason}
 
-    transcript = transcribe(settings, path.name, path.read_bytes())
+    # Текст уже есть целиком — process() передал его сюда. Раньше он
+    # распознавался заново именно на этом шаге (отдельный `transcribe()`,
+    # второй раз для одного звонка) — не нужно с 15.11.2026, когда просев
+    # и так получает полный текст, а не 75-секундный отрывок.
     save_transcript(conn, call_uid=uid, text=transcript, analysis_json=None,
                     created_at=datetime.now(timezone.utc).isoformat(), is_demo=0)
     conn.commit()

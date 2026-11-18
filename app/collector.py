@@ -682,6 +682,65 @@ def find_contact(client: SynergyClient, phone: str) -> dict[str, Any] | None:
     return None
 
 
+FIELD_CONTACT_TYPE = "custom-30616"  # «Тип контакта_API» — штатной связью не ставится
+
+
+def create_contact(
+    client: SynergyClient, *, phone: str, name: str = "", email: str = "",
+    contact_type: str = "Заказчик",
+) -> str | None:
+    """Завести контакт по телефону, которого не нашли в CRM.
+
+    Телефон кладём в general-phone — это первое, что проверяет find_contact
+    у всех будущих обращений. Тип контакта штатной связью не ставится (см.
+    /синержи) — обход через custom-30616, написан слово в слово.
+    """
+    digits = re.sub(r"\D", "", phone or "")
+    if not digits:
+        return None
+    attributes: dict[str, Any] = {
+        # "name" самим API не принимается (ни на создание, ни на правку) —
+        # имя собирается из first-name/last-name/middle-name, которых у нас
+        # по отдельности нет, поэтому всё целиком кладём в last-name, как
+        # делает сама Synergy для контактов, заведённых телефонией
+        # («Неизвестный контакт»).
+        "last-name": name or digits,
+        "general-phone": digits,
+        "customs": {FIELD_CONTACT_TYPE: contact_type},
+    }
+    if email:
+        attributes["email"] = email
+    payload = {"data": {"type": "contacts", "attributes": attributes}}
+    data = client.post("contacts", payload)
+    return str(((data or {}).get("data") or {}).get("id") or "") or None
+
+
+def fill_contact_blanks(client: SynergyClient, contact: dict[str, Any], *,
+                        email: str = "", name: str = "") -> None:
+    """Дополнить найденный контакт почтой/именем, если их не было.
+
+    Только то, что пусто: контакт, заведённый раньше телефонной интеграцией
+    по одному номеру, не должен терять ничего, что в него уже вписал человек.
+    """
+    attrs = contact.get("attributes") or {}
+    patch: dict[str, Any] = {}
+    if email and not attrs.get("email"):
+        patch["email"] = email
+    # "name" само API не отдаёт и не принимает — собирается из first/last/middle.
+    # Дополняем last-name только если контакт безымянный (телефония заводит
+    # его как «Неизвестный контакт» — это тоже «пусто» по смыслу).
+    if name and attrs.get("last-name") in (None, "", "Неизвестный контакт"):
+        patch["last-name"] = name
+    if not patch:
+        return
+    try:
+        client.patch(f"contacts/{contact['id']}", {"data": {
+            "type": "contacts", "id": str(contact["id"]), "attributes": patch,
+        }})
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("контакт %s не дополнился: %s", contact.get("id"), exc)
+
+
 def contact_phones(client: SynergyClient, contact_id: str) -> set[str]:
     """Все телефоны контакта — по ним ищем звонки любых менеджеров."""
     try:

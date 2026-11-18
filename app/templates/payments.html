@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Платежи — разнос по сделкам</title>
+<style>{% include '_pay_style.html' %}</style>
+</head>
+<body>
+<div class="nav">
+  <div class="logo">ТЕХНО<small>РЕСУРС</small></div>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Заявки</a>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Сделки</a>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Контакты</a>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Компании</a>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Задачи</a>
+  <a href="https://app.synergycrm.ru/" target="_blank" rel="noopener">Транспорт</a>
+  <a class="on" href="#">Финансы</a>
+  <span class="dots">···</span>
+  <span class="sp"></span>
+  <span class="who" id="who" title="Нажмите, чтобы сменить имя">Ваше имя</span>
+</div>
+
+<div class="page"><div class="panel">
+  <div class="bar">
+    <div class="sections"><a class="on" href="{{ base }}/payments">Платежи</a><a href="{{ base }}/payments/invoices">Счета</a></div>
+    <div class="views" id="views">
+      <button class="view on" data-tab="wait">Ждут разноски<span class="n" id="n-wait">0</span></button>
+      <button class="view" data-tab="clarify">Нужно уточнить<span class="n" id="n-clarify">0</span></button>
+      <button class="view" data-tab="done">Разнесённые<span class="n" id="n-done">0</span></button>
+      <button class="view" data-tab="other" title="Расходы и старые приходы без сделки (до ноября 2026, без документа 1С)">Прочие<span class="n" id="n-other">0</span></button>
+      <button class="view" data-tab="all">Все платежи<span class="n" id="n-all">0</span></button>
+    </div>
+    <button class="ftoggle" id="ftoggle"><span>Фильтры</span>
+      <svg viewBox="0 0 24 24"><path d="M3 4h18l-7 8.5V20l-4-2v-5.5z"/></svg></button>
+    <div class="search">
+      <svg viewBox="0 0 24 24"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+      <input id="q" placeholder="Поиск: клиент, ИНН, сумма, номер счёта 1С, назначение…" autocomplete="off">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><line x1="16" y1="16" x2="21" y2="21"/></svg>
+    </div>
+    <span class="sync" id="sync"></span>
+  </div>
+  <div class="filters" id="filters">
+    <label>Статус<select id="f-status"><option value="">Любой</option><option value="not_executed">Не проведен</option><option value="executed">Проведен</option></select></label>
+    <label>Наша компания (получатель)<select id="f-recv"><option value="">Все</option></select></label>
+    <label>Дата с<input type="date" id="f-since"></label>
+    <label>Дата по<input type="date" id="f-until"></label>
+    <button class="btn ghost" id="f-reset">Сбросить</button>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div class="scroll"><table>
+    <thead><tr>
+      <th class="chk"><input type="checkbox" id="all-chk"></th><th></th>
+      <th data-col="op_at" data-sort="op_at"><span class="ft">Когда</span><span class="s">⇅</span></th>
+      <th data-col="amount" data-sort="amount"><span class="ft">Сумма</span><span class="s">⇅</span></th>
+      <th data-col="status" data-sort="status"><span class="ft">Статус</span><span class="s">⇅</span></th>
+      <th data-col="deal" data-sort="deal"><span class="ft">Сделка</span><span class="s">⇅</span></th>
+      <th data-col="type" data-sort="type"><span class="ft">Тип</span><span class="s">⇅</span></th>
+      <th data-col="payer" data-sort="payer"><span class="ft">Контрагент</span><span class="s">⇅</span></th>
+      <th data-col="receiver" data-sort="receiver"><span class="ft">На какую компанию</span><span class="s">⇅</span></th>
+      <th data-col="purpose"><span class="ft">Назначение</span></th>
+      <th></th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+  <div class="empty" id="empty" style="display:none"></div>
+  <div class="more"><button class="btn ghost" id="more" style="display:none">Показать ещё</button></div>
+</div></div>
+
+<div class="shade" id="shade"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="dh"><h2 id="d-title"></h2><div class="sub" id="d-sub"></div><button class="x" id="d-x" aria-label="Закрыть">×</button></div>
+  <div class="db" id="d-body"></div>
+  <div class="df" id="d-foot"></div>
+</aside>
+<div class="modal" id="modal"><div class="mbox" id="mbox"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const BASE = "{{ base }}";
+const api = p => BASE + "/payments/api" + p;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const rub = n => (Math.round(Number(n) * 100) / 100).toLocaleString("ru-RU", {maximumFractionDigits: 2}) + " ₽";
+const fdt = iso => { if (!iso) return ""; const d = new Date(iso); return d.toLocaleDateString("ru-RU", {day:"2-digit",month:"2-digit",year:"2-digit"}) + " " + d.toLocaleTimeString("ru-RU", {hour:"2-digit",minute:"2-digit"}); };
+const CRM = "https://app.synergycrm.ru";
+const lnk = (path, id, html, cls) => id ? `<a class="crm ${cls || ""}" href="${CRM}/${path}/${esc(id)}" target="_blank" rel="noopener" title="Открыть карточку в Synergy">${html}</a>` : html;
+const fd = iso => iso ? iso.slice(8,10) + "." + iso.slice(5,7) + "." + iso.slice(0,4) : "";
+
+let S = {tab:"wait", q:"", receiver:"", status:"", since:"", until:"", sort:"op_at", desc:1, offset:0, rows:[], total:0, flt:{}};
+const CACHE = {};  // последний ответ по каждой вкладке/фильтру: показываем сразу, пока свежие данные догружаются
+const cacheKey = () => [S.tab, S.q, S.receiver, S.status, S.since, S.until, S.sort, S.desc, JSON.stringify(S.flt)].join("|");
+let CUR = null;   // открытый платёж
+let SEL = {};     // выбранные сделки: id -> {amount, number}
+
+function user() { return localStorage.getItem("payUser") || ""; }
+function askUser(force) {
+  let n = user();
+  if (!n || force) { n = (prompt("Ваше имя (фамилия) — оно запишется в журнал разноски:", n) || "").trim(); if (n) localStorage.setItem("payUser", n); }
+  $("#who").textContent = user() || "Ваше имя";
+  return user();
+}
+function toast(t, err) { const e = $("#toast"); e.textContent = t; e.className = "toast open" + (err ? " err" : ""); clearTimeout(toast.t); toast.t = setTimeout(() => e.className = "toast", err ? 7000 : 3500); }
+async function jget(url) { const r = await fetch(url); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
+async function jpost(url, body) { const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
+
+/* ───── список ───── */
+async function load(append) {
+  if (!append) { S.offset = 0; const c = CACHE[cacheKey()]; if (c) { S.rows = c.rows; S.total = c.total; render(); } else { S.rows = []; $("#rows").innerHTML = '<tr><td colspan="11" class="spin">Загрузка…</td></tr>'; } }
+  const p = new URLSearchParams({tab:S.tab, q:S.q, receiver:S.receiver, status:S.status, since:S.since, until:S.until, sort:S.sort, desc:S.desc, offset:S.offset, limit:100, filters:JSON.stringify(S.flt)});
+  let j;
+  try { j = await jget(api("/list?" + p)); } catch (e) { toast("Не удалось загрузить: " + e.message, true); return; }
+  S.rows = append ? S.rows.concat(j.rows) : j.rows; S.total = j.total;
+  if (!append) CACHE[cacheKey()] = {rows: S.rows, total: S.total};
+  for (const t of ["wait","clarify","done","other","all"]) $("#n-" + t).textContent = j.counts[t];
+  document.querySelector('[data-tab="clarify"]').classList.toggle("attn", j.counts.clarify > 0);
+  const sel = $("#f-recv"); if (sel.options.length <= 1) j.receivers.forEach(r => sel.add(new Option(r, r)));
+  $("#sync").textContent = j.synced_ago == null ? "" : "Данные Synergy обновлены " + (j.synced_ago < 60 ? "только что" : Math.round(j.synced_ago / 60) + " мин назад");
+  render();
+}
+function render() {
+  const tb = $("#rows"); tb.innerHTML = "";
+  const empty = $("#empty");
+  if (!S.rows.length) { empty.style.display = "block"; empty.textContent = S.tab === "wait" ? "Все платежи разнесены 🎉" : "Платежей не найдено"; }
+  else empty.style.display = "none";
+  for (const r of S.rows) {
+    const tr = document.createElement("tr"); if (r.flag) tr.className = "flagged"; tr.dataset.id = r.id;
+    const dd = r.deal;
+    const deal = r.deal_id ? (dd ? `<div class="deal"><b>${lnk("deals", r.deal_id, `${esc(dd.name || "")} №${esc(dd.number)}`)}</b>
+        <div class="dl"><span>Клиент</span>${dd.client_id ? lnk("companies", dd.client_id, esc(dd.client || "не указан")) : esc(dd.client || "не указан")}</div>
+        <div class="dl"><span>Транспорт</span>${esc(dd.transport || "не указан")} · <span class="in">ставка З</span> ${dd.rate ? rub(dd.rate) : "не указана"}</div>
+        <div class="dl"><span>Адрес</span>${esc(dd.address || "не указан")}</div>
+        <div class="dl"><span>Работы</span>${dd.start ? fd(dd.start) + (dd.end ? " — " + fd(dd.end) : "") : "дата начала не указана"}</div>
+        <div class="st"><span class="dot"></span>${esc(dd.stage || "—")} · сделка ${dd.total ? rub(dd.total) : "—"}, оплачено ${rub(dd.paid)}${dd.manager ? " · " + esc(dd.manager) : ""}</div></div>`
+      : `<div class="deal"><b>${lnk("deals", r.deal_id, `${esc(r.deal_name || "")} №${esc(r.deal_number)}`)}</b><div class="st"><span class="dot"></span>${r.deal_amount != null ? rub(r.deal_amount) : ""}</div></div>`) : '<span class="dim">...</span>';
+    const invLine = r.invoice_number ? `<div class="dl"><span>Счёт</span>${lnk("invoices", r.invoice_id, esc(r.invoice_number))}</div>` : "";
+    const type = r.direction === "income" ? '<span class="chip in">Приход</span>' : '<span class="chip out">Расход</span>';
+    const status = r.status === "executed" ? '<span class="chip ok">Проведен</span>' : '<span class="chip no">Не проведен</span>';
+    const action = r.deal_id
+      ? (r.can_undo ? '<button class="link-btn sec" data-act="undo">Отменить разноску</button>' : "")
+      : (r.direction === "income" ? '<button class="link-btn" data-act="open">Привязать</button>' : "");
+    tr.innerHTML = `<td class="chk"><input type="checkbox"></td>
+      <td class="kebab"><button class="kb" data-act="menu">⋮</button></td>
+      <td class="when">${fdt(r.op_at)}</td>
+      <td class="money">${r.direction === "income" ? "+" : "−"}&thinsp;${rub(r.amount)}</td>
+      <td>${status}</td><td>${deal}${r.deal_id ? invLine ? `<div class="deal">${invLine}</div>` : "" : invLine ? `<div class="deal">${invLine}</div>` : ""}</td><td>${type}</td>
+      <td class="cp"><div class="nm">${lnk("companies", r.payer_id, esc(r.payer_name || "— не указан —"))}</div><div class="sub">${r.payer_inn ? "ИНН " + esc(r.payer_inn) : ""}${r.doc1c ? " · 1С " + esc(r.doc1c) : ""}</div>${r.flag ? `<span class="badge-flag">Нужно уточнить: ${esc(r.flag.note || "")}${r.flag.user ? " (" + esc(r.flag.user) + ")" : ""}</span>` : ""}</td>
+      <td class="recv">${esc(r.receiver_name || "")}<small>${esc(r.receiver_bank || "")}</small></td>
+      <td><div class="purpose" title="${esc(r.purpose)}">${esc(r.purpose)}</div></td>
+      <td>${action}</td>`;
+    tb.appendChild(tr);
+  }
+  const more = $("#more"); more.style.display = S.rows.length < S.total ? "" : "none"; more.textContent = `Показать ещё (${S.total - S.rows.length})`;
+}
+$("#rows").addEventListener("click", e => {
+  const b = e.target.closest("[data-act]"); const tr = e.target.closest("tr"); if (!tr) return;
+  closeMenus();
+  const id = tr.dataset.id; const r = S.rows.find(x => x.id === id);
+  if (!b) { if (r && !r.deal_id && r.direction === "income" && !e.target.closest("input,.kebab,a")) openDrawer(id); return; }
+  if (b.dataset.act === "open") openDrawer(id);
+  else if (b.dataset.act === "undo") undoAlloc(id);
+  else if (b.dataset.act === "menu") {
+    const td = b.parentElement; const m = document.createElement("div"); m.className = "menu";
+    m.innerHTML = (r.deal_id ? "" : '<button data-m="open">Привязать к сделке</button><button data-m="flag">Не нашёл сделку…</button>')
+      + (r.flag ? '<button data-m="unflag">Убрать пометку «Нужно уточнить»</button>' : "")
+      + (r.can_undo ? '<button data-m="undo">Отменить разноску</button>' : "")
+      + (r.deal_id && !r.can_undo ? '<button disabled style="color:#9aa3ad">Платёж уже привязан к сделке</button>' : "");
+    m.onclick = ev => { const k = ev.target.dataset.m; closeMenus(); if (k === "open") openDrawer(id); if (k === "flag") openDrawer(id, true); if (k === "undo") undoAlloc(id); if (k === "unflag") unflag(id); };
+    td.appendChild(m);
+    e.stopPropagation();
+  }
+});
+function closeMenus() { document.querySelectorAll(".menu").forEach(m => m.remove()); }
+document.addEventListener("click", closeMenus);
+
+/* ───── боковая панель разноски ───── */
+async function openDrawer(id, openFlag) {
+  if (!askUser()) { toast("Укажите имя — оно нужно для журнала разноски", true); return; }
+  const r = S.rows.find(x => x.id === id); if (!r) return;
+  CUR = {row: r, deals: [], companies: []}; SEL = {};
+  $("#d-title").textContent = `Платёж №${r.number}: ${rub(r.amount)}`;
+  $("#d-sub").textContent = `${r.payer_name || "плательщик не указан"} · ${fdt(r.op_at)}`;
+  $("#d-body").innerHTML = '<div class="spin">Ищу сделки клиента…</div>'; $("#d-foot").innerHTML = "";
+  $("#shade").classList.add("open"); $("#drawer").classList.add("open");
+  try {
+    const j = await jget(api(`/${id}/candidates`));
+    CUR.deals = j.deals; CUR.data = j; CUR.invoices = j.invoices || []; CUR.pending = "";
+    renderDrawer(openFlag);
+    const m = CUR.invoices.find(i => i.match && i.status !== "paid");   // счёт, по которому платили, выбирается сразу
+    if (m) selectInvoice(m.id, true);
+  } catch (e) { $("#d-body").innerHTML = `<div class="spin">Не удалось получить сделки: ${esc(e.message)}</div>`; }
+}
+function closeDrawer() { $("#shade").classList.remove("open"); $("#drawer").classList.remove("open"); CUR = null; }
+$("#d-x").onclick = closeDrawer; $("#shade").onclick = closeDrawer;
+
+function renderDrawer(openFlag) {
+  const r = CUR.row, j = CUR.data;
+  const onec = (j.onec || []).filter(l => l.inv || l.rel).map(l => `<div>${l.inv ? `Счёт 1С <b>${esc(l.inv)}</b> от ${fd(l.inv_date)} на ${rub(l.inv_sum || 0)}` : ""}${l.rel ? ` · реализация ${esc(l.rel)}` : ""}${(l.inv_comment || l.rel_comment) ? `<div class="cm">«${esc(l.inv_comment || l.rel_comment)}»</div>` : ""}</div>`).join("");
+  const dealsHtml = CUR.deals.length ? CUR.deals.map(dealCard).join("") : '<div class="box" style="color:#6b7480">У этого клиента в Synergy не нашлось сделок. Найдите нужную компанию поиском ниже или нажмите «Не нашёл сделку».</div>';
+  $("#d-body").innerHTML = `
+    <details class="help"><summary>Как разнести платёж — 3 шага</summary><ol>
+      <li>Найдите в списке ниже сделку, за которую заплатили. Подходящие по сумме отмечены зелёным.</li>
+      <li>Нажмите на сделку и проверьте сумму. Платёж можно разделить на несколько сделок.</li>
+      <li>Нажмите «Привязать и провести». Платёж станет «Проведен», в сделке обновится «Сумма платежей».</li></ol>
+      Ошиблись — в списке «Разнесённые» есть кнопка «Отменить разноску». Не нашли сделку — нажмите «Не нашёл сделку», платёж не потеряется.</details>
+    <div class="box"><h3>Кто и куда заплатил</h3><div class="kv">
+      <div>Плательщик</div><div><b>${lnk("companies", r.payer_id, esc(r.payer_name || "не указан"))}</b>${r.payer_inn ? " · ИНН " + esc(r.payer_inn) : ""}</div>
+      <div>Получили на</div><div>${esc(r.receiver_name || "—")}${r.receiver_bank ? " · " + esc(r.receiver_bank) : ""}</div>
+      <div>Назначение платежа</div><div>${esc(j.purpose || r.purpose || "—")}</div></div></div>
+    ${onec ? `<div class="box onec"><h3>Что написано в 1С</h3>${onec}</div>` : ""}
+    <div class="deals"><h3>Счета клиента из 1С</h3>
+      <div class="invnote">Платёж привяжется к выбранному счёту: счёт станет «оплачен», а у платежа появится ссылка на счёт. Если у счёта уже есть сделка — она выберется сама.</div>
+      <div id="inv-list">${invListHtml()}</div>
+      <h3 style="margin-top:18px">Выберите сделку</h3>
+      <div class="splitnote"><b>Платёж за несколько машин или заявок?</b> Отметьте сразу несколько сделок и укажите сумму для каждой — платёж разобьётся автоматически. Можно разнести не всю сумму: остаток останется отдельным платежом.</div><div id="deal-list">${dealsHtml}</div>
+      <div class="find"><input id="cq" placeholder="Нужна другая компания? Название или ИНН"><button class="btn ghost" id="cgo">Найти</button></div>
+      <div class="cres" id="cres"></div></div>
+    <div class="flagbox ${openFlag ? "open" : ""}" id="flagbox"><h3 style="margin:0 0 6px;font-size:13px">Почему не нашли сделку</h3>
+      <textarea id="flagnote" placeholder="Например: оплата за август, заявки нет; спросить менеджера Иванова"></textarea>
+      <div class="btns" style="margin-top:8px"><button class="btn warn" id="flagsave">Пометить «Нужно уточнить»</button></div></div>`;
+  $("#cgo").onclick = findCompany; $("#cq").onkeydown = e => { if (e.key === "Enter") findCompany(); };
+  bindDeals(); renderFoot(); redrawInvoices();
+  $("#flagsave").onclick = async () => { try { await jpost(api(`/${r.id}/flag`), {note:$("#flagnote").value, user:user()}); toast("Платёж отмечен «Нужно уточнить»"); closeDrawer(); load(); } catch (e) { toast(e.message, true); } };
+}
+function dealCard(d) {
+  const sel = SEL[d.id];
+  const left = d.total ? `Остаток ${rub(d.left)}` : "Сумма в сделке не указана";
+  return `<div class="deal-card ${d.sum_match || d.key_match ? "match" : ""} ${sel ? "sel" : ""}" data-deal="${d.id}">
+    <input type="checkbox" ${sel ? "checked" : ""} tabindex="-1">
+    <div><div class="t">${lnk("deals", d.id, esc(d.name || "Без названия"))} <span class="dim">№${esc(d.number)}</span>${d.key_match ? '<span class="tag g">номер 1С в названии</span>' : ""}${d.sum_match ? '<span class="tag g">сумма совпала</span>' : ""}</div>
+      <div class="m">${esc(d.stage || "—")} · создана ${fd(d.created)}${d.manager ? " · менеджер " + esc(d.manager) : ""}</div>
+      <div class="info">
+        <div><span>Клиент</span><b>${d.client_id ? lnk("companies", d.client_id, esc(d.client || "не указан")) : esc(d.client || "не указан")}</b>${d.contact && !String(d.client).includes(d.contact) ? ` <i>(${esc(d.contact)})</i>` : ""}</div>
+        <div><span>Транспорт</span><b>${esc(d.transport || "не указан")}</b></div>
+        <div><span>Ставка З</span><b>${d.rate ? rub(d.rate) : "не указана"}</b></div>
+        <div><span>Адрес объекта</span><b>${esc(d.address || "не указан")}</b></div>
+        <div><span>Начало работ</span><b>${d.start ? fd(d.start) + (d.end ? " — " + fd(d.end) : "") : "дата начала не указана"}</b></div>
+      </div></div>
+    <div class="nums"><b>${d.total ? rub(d.total) : "—"}</b><div>оплачено ${rub(d.paid)}</div><div>${left}</div></div>
+    <div class="alloc"><span>Сколько отнести на эту сделку:</span><input type="text" inputmode="decimal" value="${sel ? sel.amount : ""}" data-amt="${d.id}"><button data-all="${d.id}">всё что осталось</button>
+      ${(CUR.invoices || []).length ? `<span>Счёт:</span><select data-invfor="${d.id}"><option value="">— без счёта —</option>${CUR.invoices.map(i => `<option value="${i.id}" ${sel && sel.invoice === i.id ? "selected" : ""}>${esc(i.number)} · ${rub(i.amount)}${i.status === "paid" ? " · оплачен" : ""}</option>`).join("")}</select>` : ""}</div></div>`;
+}
+function invListHtml() {
+  const L = CUR.invoices || [];
+  if (!L.length) return '<div class="box" style="color:#6b7480">У этого клиента нет счетов из 1С в Synergy. Платёж можно разнести только по сделке.</div>';
+  return L.map(i => {
+    const used = Object.values(SEL).some(x => x.invoice === i.id), pend = CUR.pending === i.id, paid = i.status === "paid";
+    return `<div class="inv-card ${used || pend ? "sel" : ""} ${i.match ? "match" : ""} ${paid ? "paid" : ""}" data-inv="${i.id}">
+      <div><div class="t">${lnk("invoices", i.id, "Счёт " + esc(i.number))} <span class="dim">от ${fd(i.date)}</span>${i.match ? '<span class="tag g">по этому счёту платили</span>' : ""}<span class="istat ${paid ? "p" : "n"}">${paid ? "оплачен" : "не оплачен"}</span></div>
+        <div class="m">${i.deal_id ? "Сделка: " + lnk("deals", i.deal_id, esc(i.deal_name || "") + " №" + esc(i.deal_number)) : "Сделка не указана"}${i.manager ? " · менеджер " + esc(i.manager) : ""}</div>
+        ${i.reason ? `<div class="m">${esc(i.reason)}</div>` : ""}${pend ? '<div class="m" style="color:#1f4fc2"><b>Теперь выберите сделку для этого счёта ниже</b></div>' : ""}</div>
+      <div class="nums"><b>${rub(i.amount)}</b><div>остаток ${rub(i.balance)}</div></div></div>`;
+  }).join("");
+}
+function redrawInvoices() {
+  const el = $("#inv-list"); if (!el) return; el.innerHTML = invListHtml();
+  el.querySelectorAll(".inv-card").forEach(c => c.onclick = e => { if (e.target.closest("a")) return; selectInvoice(c.dataset.inv); });
+}
+function selectInvoice(id, silent) {
+  const inv = CUR.invoices.find(x => x.id === id); if (!inv || inv.status === "paid") return;
+  const mine = Object.entries(SEL).find(([, v]) => v.invoice === id);
+  if (mine) { SEL[mine[0]].invoice = ""; redrawAll(); return; }   // повторный клик снимает счёт
+  if (inv.deal_id) {   // у счёта уже есть сделка — берём её
+    let d = CUR.deals.find(x => x.id === inv.deal_id);
+    if (!d) { d = {id: inv.deal_id, number: inv.deal_number, name: inv.deal_name, created: "", stage: "", manager: "", total: 0, paid: 0, left: null, sum_match: false, key_match: false, client: "", client_id: "", transport: "", rate: null, address: ""}; CUR.deals.unshift(d); }
+    if (!SEL[d.id]) { const rest = Math.max(CUR.row.amount - allocated(), 0); const want = Math.min(inv.balance || rest, rest || CUR.row.amount); SEL[d.id] = {amount: String(Math.round(want * 100) / 100), number: d.number, invoice: id}; }
+    else SEL[d.id].invoice = id;
+    CUR.pending = "";
+  } else {
+    const free = Object.entries(SEL).filter(([, v]) => !v.invoice);
+    if (free.length === 1) free[0][1].invoice = id;   // одна выбранная сделка без счёта — привязываем сразу
+    else CUR.pending = CUR.pending === id ? "" : id;   // иначе запомним: счёт получит следующую выбранную сделку
+  }
+  redrawAll();
+}
+function redrawAll() {
+  $("#deal-list").innerHTML = CUR.deals.length ? CUR.deals.map(dealCard).join("") : '<div class="box">Сделок не найдено</div>';
+  bindDeals(); redrawInvoices(); renderFoot();
+}
+function allocated() { return Object.values(SEL).reduce((s, x) => s + (parseFloat(x.amount) || 0), 0); }
+function bindDeals() {
+  document.querySelectorAll(".deal-card").forEach(c => {
+    c.onclick = e => {
+      const id = c.dataset.deal; const d = CUR.deals.find(x => x.id === id);
+      if (e.target.closest(".alloc") || e.target.closest("a")) return;
+      if (SEL[id]) delete SEL[id];
+      else { const rest = Math.max(CUR.row.amount - allocated(), 0); const want = d.left ? Math.min(d.left, rest || CUR.row.amount) : (rest || CUR.row.amount); SEL[id] = {amount: String(Math.round(want * 100) / 100), number: d.number, invoice: CUR.pending || ""}; CUR.pending = ""; }
+      c.outerHTML = dealCard(d); bindDeals(); renderFoot(); redrawInvoices();
+    };
+  });
+  document.querySelectorAll("[data-invfor]").forEach(sel => sel.onchange = () => { SEL[sel.dataset.invfor].invoice = sel.value; redrawInvoices(); });
+  document.querySelectorAll("[data-amt]").forEach(i => i.oninput = () => { SEL[i.dataset.amt].amount = i.value.replace(",", ".").replace(/[^\d.]/g, ""); renderFoot(); });
+  document.querySelectorAll("[data-all]").forEach(b => b.onclick = ev => { ev.stopPropagation(); const id = b.dataset.all; const other = allocated() - (parseFloat(SEL[id].amount) || 0); SEL[id].amount = String(Math.max(Math.round((CUR.row.amount - other) * 100) / 100, 0)); const i = document.querySelector(`[data-amt="${id}"]`); i.value = SEL[id].amount; renderFoot(); });
+}
+function distribute(mode) {
+  const ids = Object.keys(SEL), total = Math.round(CUR.row.amount * 100);
+  if (mode === "equal") {
+    const base = Math.floor(total / ids.length);
+    ids.forEach((id, i) => SEL[id].amount = String((i === ids.length - 1 ? total - base * (ids.length - 1) : base) / 100));
+  } else {   // по остаткам: каждой сделке не больше её остатка, пока хватает суммы
+    let left = total;
+    ids.forEach(id => { const d = CUR.deals.find(x => x.id === id); const want = d.left ? Math.round(d.left * 100) : left; const v = Math.min(want, left); SEL[id].amount = String(v / 100); left -= v; });
+  }
+  ids.forEach(id => { const i = document.querySelector(`[data-amt="${id}"]`); if (i) i.value = SEL[id].amount; });
+  renderFoot();
+}
+function renderFoot() {
+  const total = CUR.row.amount, got = Math.round(allocated() * 100) / 100, rest = Math.round((total - got) * 100) / 100, n = Object.keys(SEL).length;
+  const over = got > total + 0.005, bad = Object.values(SEL).some(x => !(parseFloat(x.amount) > 0));
+  $("#d-foot").innerHTML = `<div class="sum"><span>Разнесено <b class="${over ? "bad" : "ok"}">${rub(got)}</b> из ${rub(total)}</span><span>${over ? '<span class="bad">Больше суммы платежа</span>' : rest > 0.004 && n ? "Останется: " + rub(rest) : n ? '<span class="ok">Всё распределено</span>' : "Сделка не выбрана"}</span></div>
+    ${!over && rest > 0.004 && n && !bad ? `<div class="rest-note">Не вся сумма разнесена: остаток ${rub(rest)} останется отдельным платежом «Не проведен» — его можно разнести позже.</div>` : ""}
+    ${n >= 2 ? `<div class="splitbar"><span>Распределить сумму:</span><button class="btn ghost sm" id="sp-eq">поровну</button><button class="btn ghost sm" id="sp-left">по остаткам сделок</button></div>` : n === 1 && rest > 0.004 && !over ? `<div class="splitbar"><span>Осталось ${rub(rest)} — отметьте ещё сделку, чтобы разбить платёж.</span></div>` : ""}
+    <div class="btns"><button class="btn" id="go" ${!n || over || bad ? "disabled" : ""}>Привязать и провести</button>
+      <button class="btn warn" id="nf">Не нашёл сделку</button><button class="btn ghost" id="cancel">Закрыть</button></div>`;
+  $("#go").onclick = confirmAlloc; $("#cancel").onclick = closeDrawer;
+  if ($("#sp-eq")) $("#sp-eq").onclick = () => distribute("equal");
+  if ($("#sp-left")) $("#sp-left").onclick = () => distribute("left");
+  $("#nf").onclick = () => { const f = $("#flagbox"); if (f) { f.classList.toggle("open"); f.scrollIntoView({behavior:"smooth"}); $("#flagnote").focus(); } };
+}
+async function findCompany() {
+  const q = $("#cq").value.trim(); if (q.length < 3) { toast("Введите хотя бы 3 символа названия или ИНН", true); return; }
+  $("#cres").innerHTML = '<div class="spin">Ищу…</div>';
+  try {
+    const j = await jget(api("/companies?q=" + encodeURIComponent(q)));
+    $("#cres").innerHTML = j.companies.length ? j.companies.map(c => `<button data-c="${c.id}">${esc(c.name)} <span class="dim">· ИНН ${esc(c.inn || "—")}</span></button>`).join("") : '<div class="dim">Ничего не найдено</div>';
+    document.querySelectorAll("[data-c]").forEach(b => b.onclick = async () => {
+      $("#deal-list").innerHTML = '<div class="spin">Загружаю сделки…</div>';
+      try { const k = await jget(api(`/${CUR.row.id}/candidates?company=${b.dataset.c}`)); CUR.deals = k.deals; CUR.invoices = k.invoices || []; CUR.pending = ""; SEL = {}; redrawInvoices(); $("#deal-list").innerHTML = k.deals.length ? k.deals.map(dealCard).join("") : '<div class="box">У этой компании нет сделок</div>'; $("#cres").innerHTML = ""; bindDeals(); renderFoot(); }
+      catch (e) { toast(e.message, true); }
+    });
+  } catch (e) { $("#cres").innerHTML = ""; toast(e.message, true); }
+}
+
+/* ───── подтверждение и запись ───── */
+function modal(html) { $("#mbox").innerHTML = html; $("#modal").classList.add("open"); }
+function closeModal() { $("#modal").classList.remove("open"); }
+function confirmAlloc() {
+  const r = CUR.row, parts = Object.entries(SEL).map(([id, x]) => { const iv = (CUR.invoices || []).find(i => i.id === x.invoice); return {deal_id:id, amount:parseFloat(x.amount), number:x.number, invoice_id:x.invoice || "", invoice_number: iv ? iv.number : ""}; });
+  const got = parts.reduce((s, p) => s + p.amount, 0), rest = Math.round((r.amount - got) * 100) / 100;
+  modal(`<h3>Проверьте перед записью</h3>
+    <div>Платёж №${r.number} от <b>${esc(r.payer_name || "—")}</b> на ${rub(r.amount)} будет разнесён так:</div>
+    <ul>${parts.map(p => { const d = CUR.deals.find(x => x.id === p.deal_id); return `<li><b>${rub(p.amount)}</b> → сделка №${esc(p.number)} «${esc(d ? d.name : "")}»${p.invoice_number ? `, счёт <b>${esc(p.invoice_number)}</b>` : ""}</li>`; }).join("")}${rest > 0.004 ? `<li>остаток <b>${rub(rest)}</b> останется отдельным платежом без сделки</li>` : ""}</ul>
+    <div style="color:#6b7480;font-size:14px">Платёж получит статус «Проведен», в сделках обновится «Сумма платежей», а у выбранных счетов — остаток и статус. Это можно отменить кнопкой «Отменить разноску».</div>
+    <div class="btns" style="margin-top:16px"><button class="btn" id="ok">Да, привязать</button><button class="btn ghost" id="no">Назад</button></div>`);
+  $("#no").onclick = closeModal;
+  $("#ok").onclick = async () => {
+    $("#ok").disabled = true; $("#ok").textContent = "Записываю…";
+    try { const j = await jpost(api(`/${r.id}/allocate`), {parts, user:user()}); closeModal(); closeDrawer(); toast("Готово: платёж привязан и проведён" + (j.created.length ? ` (создано дополнительных платежей: ${j.created.length})` : "")); load(); }
+    catch (e) { closeModal(); toast(e.message, true); }
+  };
+}
+async function undoAlloc(id) {
+  const r = S.rows.find(x => x.id === id); if (!askUser()) return;
+  modal(`<h3>Отменить разноску?</h3><div>Платёж №${r.number} на ${rub(r.amount)} будет отвязан от сделки №${esc(r.deal_number)}, станет «Не проведен», дополнительные части (если платёж делили) удалятся.</div>
+    <div class="btns" style="margin-top:16px"><button class="btn" id="ok">Да, отменить</button><button class="btn ghost" id="no">Назад</button></div>`);
+  $("#no").onclick = closeModal;
+  $("#ok").onclick = async () => { try { await jpost(api(`/${id}/undo`), {user:user()}); closeModal(); toast("Разноска отменена"); load(); } catch (e) { closeModal(); toast(e.message, true); } };
+}
+async function unflag(id) { try { await jpost(api(`/${id}/flag`), {clear:true}); load(); } catch (e) { toast(e.message, true); } }
+
+/* ───── управление списком ───── */
+document.querySelectorAll(".view").forEach(b => b.onclick = () => { document.querySelectorAll(".view").forEach(x => x.classList.remove("on")); b.classList.add("on"); S.tab = b.dataset.tab; load(); });
+let qt; $("#q").oninput = e => { clearTimeout(qt); qt = setTimeout(() => { S.q = e.target.value; load(); }, 350); };
+$("#ftoggle").onclick = () => $("#filters").classList.toggle("open");
+for (const [id, k] of [["f-status","status"],["f-recv","receiver"],["f-since","since"],["f-until","until"]]) $("#" + id).onchange = e => { S[k] = e.target.value; load(); };
+$("#f-reset").onclick = () => { for (const id of ["f-status","f-recv","f-since","f-until"]) $("#" + id).value = ""; Object.assign(S, {status:"", receiver:"", since:"", until:"", flt:{}}); refreshHeads(); load(); };
+/* ───── фильтры по колонкам «как в Excel» ───── */
+const EMPTY = "__empty__";
+const STATUS = {executed:"Проведен", not_executed:"Не проведен", overdue:"Просрочен"}, TYPE = {income:"Приход", outcome:"Расход"};
+const colLabel = (col, v) => v === EMPTY ? "(Пусто)" : col === "op_at" ? fd(v) : col === "amount" ? rub(v) : col === "status" ? (STATUS[v] || v) : col === "type" ? (TYPE[v] || v) : col === "deal" ? v : v;
+const colName = col => document.querySelector(`th[data-col="${col}"] .ft`).textContent;
+function ctxParams(col) { return new URLSearchParams({col, tab:S.tab, q:S.q, receiver:S.receiver, status:S.status, since:S.since, until:S.until, filters:JSON.stringify(S.flt)}); }
+function closeColMenu() { document.querySelectorAll(".colmenu").forEach(m => m.remove()); }
+function refreshHeads() {
+  document.querySelectorAll("th[data-col]").forEach(th => th.classList.toggle("act", !!S.flt[th.dataset.col]));
+  const ch = $("#chips"), keys = Object.keys(S.flt);
+  ch.classList.toggle("open", keys.length > 0);
+  ch.innerHTML = keys.length ? "<span>Фильтры по колонкам:</span>" + keys.map(k => `<span class="chip-f">${esc(colName(k))}: ${k === "purpose" ? "«" + esc(S.flt[k]) + "»" : S.flt[k].length > 2 ? S.flt[k].length + " знач." : S.flt[k].map(v => esc(colLabel(k, v))).join(", ")}<button data-clr="${k}" title="Убрать">×</button></span>`).join("") + '<button class="clear" id="clr-all">Сбросить все</button>' : "";
+  ch.querySelectorAll("[data-clr]").forEach(b => b.onclick = () => { delete S.flt[b.dataset.clr]; refreshHeads(); load(); });
+  if ($("#clr-all")) $("#clr-all").onclick = () => { S.flt = {}; refreshHeads(); load(); };
+}
+async function openColMenu(th) {
+  closeColMenu();
+  const col = th.dataset.col, r = th.getBoundingClientRect();
+  const m = document.createElement("div"); m.className = "colmenu"; m.onclick = e => e.stopPropagation();
+  m.style.left = Math.min(r.left, innerWidth - 330) + "px"; m.style.top = (r.bottom + 4) + "px";
+  const sortable = !!th.dataset.sort;
+  m.innerHTML = (sortable ? '<div class="cm-sort"><button data-s="1">↑ По возрастанию</button><button data-s="0">↓ По убыванию</button></div>' : "")
+    + (col === "purpose" ? `<div class="cm-search"><input id="cm-text" placeholder="Содержит слово или фразу…" value="${esc(S.flt.purpose || "")}"></div>`
+       : '<div class="cm-search"><input id="cm-q" placeholder="Поиск по значениям"></div><div class="cm-list" id="cm-list"><div class="spin">Загрузка…</div></div>')
+    + '<div class="cm-foot"><button class="btn" id="cm-ok">Применить</button><button class="btn ghost" id="cm-clear">Очистить фильтр</button></div>';
+  document.body.appendChild(m);
+  m.querySelectorAll("[data-s]").forEach(b => b.onclick = () => { S.sort = th.dataset.sort; S.desc = +b.dataset.s ? 0 : 1; closeColMenu(); load(); });
+  $("#cm-clear").onclick = () => { delete S.flt[col]; closeColMenu(); refreshHeads(); load(); };
+  if (col === "purpose") {
+    const t = $("#cm-text"); t.focus();
+    const ok = () => { const v = t.value.trim(); if (v) S.flt.purpose = v; else delete S.flt.purpose; closeColMenu(); refreshHeads(); load(); };
+    $("#cm-ok").onclick = ok; t.onkeydown = e => { if (e.key === "Enter") ok(); };
+    return;
+  }
+  let vals = [];
+  const chosen = new Set(S.flt[col] || []);
+  const draw = () => {
+    const q = ($("#cm-q").value || "").toLowerCase();
+    const shown = vals.filter(x => !q || colLabel(col, x.v).toLowerCase().includes(q));
+    const allOn = shown.length && shown.every(x => chosen.has(x.v));
+    $("#cm-list").innerHTML = `<label><input type="checkbox" id="cm-all" ${allOn ? "checked" : ""}><span class="lv"><b>(Выбрать все)</b></span><span class="cn">${shown.length}</span></label>`
+      + shown.map(x => `<label><input type="checkbox" data-v="${esc(x.v)}" ${chosen.has(x.v) ? "checked" : ""}><span class="lv" title="${esc(colLabel(col, x.v))}">${esc(colLabel(col, x.v))}</span><span class="cn">${x.n}</span></label>`).join("");
+    $("#cm-all").onchange = e => { shown.forEach(x => e.target.checked ? chosen.add(x.v) : chosen.delete(x.v)); draw(); };
+    $("#cm-list").querySelectorAll("[data-v]").forEach(c => c.onchange = () => { c.checked ? chosen.add(c.dataset.v) : chosen.delete(c.dataset.v); const a = $("#cm-all"); if (a) a.checked = shown.every(x => chosen.has(x.v)); });
+  };
+  try {
+    vals = (await jget(api("/values?" + ctxParams(col)))).values;
+    if (!S.flt[col]) vals.forEach(x => chosen.add(x.v));   // фильтра нет — отмечено всё, как в Excel
+    draw(); $("#cm-q").oninput = draw; $("#cm-q").focus();
+  } catch (e) { $("#cm-list").innerHTML = '<div class="spin">Не удалось загрузить: ' + esc(e.message) + "</div>"; }
+  $("#cm-ok").onclick = () => {
+    const q = ($("#cm-q").value || "").toLowerCase();   // как в Excel: если в поиске есть текст, применяются только найденные значения
+    const picked = vals.filter(x => (!q || colLabel(col, x.v).toLowerCase().includes(q)) && chosen.has(x.v)).map(x => x.v);
+    if (picked.length === vals.length) delete S.flt[col]; else if (picked.length === 0) { toast("Отметьте хотя бы одно значение", true); return; } else S.flt[col] = picked;
+    closeColMenu(); refreshHeads(); load();
+  };
+}
+document.querySelectorAll("th[data-col]").forEach(th => th.addEventListener("click", e => {
+  e.stopPropagation();
+  if (e.target.classList.contains("s")) { const k = th.dataset.sort; if (S.sort === k) S.desc = S.desc ? 0 : 1; else { S.sort = k; S.desc = 1; } closeColMenu(); load(); }
+  else if (e.target.classList.contains("ft")) openColMenu(th);
+}));
+document.addEventListener("click", closeColMenu);
+$("#more").onclick = () => { S.offset = S.rows.length; load(true); };
+$("#who").onclick = () => askUser(true);
+$("#all-chk").onchange = e => document.querySelectorAll("#rows .chk input").forEach(c => c.checked = e.target.checked);
+document.addEventListener("keydown", e => { if (e.key === "Escape") { closeModal(); closeDrawer(); } });
+$("#who").textContent = user() || "Ваше имя";
+load();
+setInterval(() => { if (!CUR && !$("#modal").classList.contains("open")) load(); }, 90000);
+</script>
+</body>
+</html>

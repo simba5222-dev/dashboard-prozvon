@@ -61,11 +61,13 @@ def test_чужой_звонок_не_попадает_в_отчёт_прозв�
     assert [r["uid"] for r in rows] == ["1"]
 
 
-def test_в_заявку_попадают_звонки_после_её_создания(conn):
+def test_в_заявку_попадают_все_звонки_с_клиентом_в_том_числе_до_её_создания(conn):
+    # 15.11.2026, по просьбе РОПа: первый звонок, из которого заявка и появилась,
+    # идёт раньше самой заявки в CRM — раньше он выпадал из страницы.
     order = order_detail(conn, "900")
     assert order["responsible"] == "Толстов И."
-    assert [c["uid"] for c in order["calls"]] == ["2"]
-    assert order["calls"][0]["in_group"] == 0
+    assert [c["uid"] for c in order["calls"]] == ["1", "2"]
+    assert order["calls"][1]["in_group"] == 0
 
 
 def test_звонок_другому_клиенту_в_заявку_не_идёт(conn):
@@ -73,7 +75,7 @@ def test_звонок_другому_клиенту_в_заявку_не_идё�
               direction="out", status="success", started_at=f"{DAY}T11:30:00+03:00",
               local_date=DAY, local_hour=11, wait_sec=1, duration_sec=60,
               record_url=None, in_group=0, is_demo=0, fetched_at=f"{DAY}T12:00:00Z")
-    assert [c["uid"] for c in order_detail(conn, "900")["calls"]] == ["2"]
+    assert [c["uid"] for c in order_detail(conn, "900")["calls"]] == ["1", "2"]
 
 
 def test_вердикт_читается_со_страницы_заявки(conn):

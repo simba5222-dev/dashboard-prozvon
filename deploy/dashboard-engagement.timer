@@ -1,0 +1,11 @@
+[Unit]
+Description=Дашборд: вовлечённость менеджера, раз в 30 минут
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+# Наверстать один раз, а не лавиной, если сервер был выключен.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

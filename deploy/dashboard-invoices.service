@@ -1,0 +1,14 @@
+[Unit]
+Description=Дашборд: подгрузка новых счетов покупателям из 1С в раздел «Счета» Synergy
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под agent: ключ ssh на офисный сервер (1С читается там). Запись в базу и в Synergy — через sudo -u claude внутри.
+# flock: не работать одновременно с dashboard-payments (оба создают компании по ИНН; дубль возможен из-за задержки поиска Synergy).
+User=agent
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+ExecStart=/usr/bin/flock -w 1200 /tmp/dashboard-1c.lock /home/claude/dashboard/scripts/pull_1c_invoices.sh
+TimeoutStartSec=25min

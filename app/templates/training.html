@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Обучение распознавания — порция {{ batch }}{% endblock %}
+
+{% block extra_style %}
+<style>
+.prog{display:flex;flex-wrap:wrap;gap:6px 22px;align-items:center;padding:11px 15px;margin-bottom:16px;
+  background:var(--surface);border:1px solid var(--line);border-radius:3px;font-size:13px}
+.prog b{font-size:15px}
+.rules{margin:0 0 16px;padding:10px 13px;border-left:3px solid var(--accent);background:var(--sunken);
+  font-size:13px;line-height:1.6;color:var(--ink-2)}
+.rules ul{margin:4px 0 0;padding-left:18px}
+.item{border:1px solid var(--line);border-radius:3px;background:var(--surface);margin-bottom:14px}
+.item.done{border-left:4px solid var(--ok)}
+.item.skip{opacity:.55}
+.item-head{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;padding:10px 14px;
+  border-bottom:1px solid var(--line);font-size:13px}
+.item-head .n{font-weight:600}
+.item-head .dim{color:var(--ink-3)}
+.item audio{width:100%;display:block;padding:8px 14px 0;box-sizing:border-box}
+.item form{padding:8px 14px 14px}
+.item textarea{width:100%;box-sizing:border-box;font:13.5px/1.55 ui-monospace,Menlo,monospace;
+  padding:9px 11px;border:1px solid var(--line);border-radius:3px;background:var(--surface);
+  color:var(--ink);resize:vertical}
+.tags{display:flex;flex-wrap:wrap;gap:4px 16px;margin:8px 0;font-size:13px}
+.tags label{display:flex;align-items:center;gap:5px}
+.btns{display:flex;flex-wrap:wrap;gap:8px}
+.btns button{font:inherit;cursor:pointer;padding:6px 14px;border-radius:3px;
+  border:1px solid var(--line-2);background:var(--surface-2);color:var(--ink)}
+.btns button.go{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+.pillst{font-size:11px;padding:1px 7px;border-radius:2px;background:var(--sunken);color:var(--ink-3)}
+.pillst.done{background:var(--ok-soft);color:var(--ok)}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="top"><h1>Обучение распознавания: поправить текст по звуку</h1></div>
+
+{% if not items %}
+<p class="dim">Звонков для обучения пока нет. Порцию готовит
+<span class="mono">scripts/training_batch.py</span> (под agent), загружает —
+<span class="mono">scripts/training_import.py</span> (под claude).</p>
+{% else %}
+<div class="prog">
+  <span>Порция <b>{{ batch }}</b>{% for b in batches %}{% if b != batch %} · <a href="{{ base }}/training?batch={{ b }}">{{ b }}</a>{% endif %}{% endfor %}</span>
+  <span>сделано <b>{{ batch_done_min }}</b> из {{ batch_total_min }} мин</span>
+  <span>всего исправлено <b>{{ done_hours }}</b> ч из {{ goal_hours }} ч</span>
+</div>
+
+<div class="rules">
+  <b>Как исправлять.</b> Слушаете запись и правите текст прямо в поле, оставляя формат строк
+  <span class="mono">[мм:сс] роль: текст</span> — метки времени нужны, чтобы потом нарезать звук на куски.
+  <ul>
+    <li>Пишите то, что <b>сказано</b>, а не «как правильно»: «моя каток надо» остаётся как есть.</li>
+    <li>Не разобрали слово — <span class="mono">[неразборчиво]</span>, не угадывайте.</li>
+    <li>Числа и сокращения пишите одинаково везде: цифрами («25000», «12 тонн»), «НДС», «юрлицо».</li>
+    <li>Отметьте «акцент» или «шум», если они мешали: это нужно, чтобы считать ошибки по группам.</li>
+    <li>Звонок личный (не по делу) — отметьте «личный разговор» и нажмите «Не брать».</li>
+    <li>Голос автоинформатора или робота («Канал «Звонки» с сайта», «оставайтесь на линии») — роль <span class="mono">система</span>, а не клиент.</li>
+    <li>Если роли «менеджер»/«клиент» перепутаны — отметьте «роли перепутаны», менять подписи не нужно.</li>
+  </ul>
+</div>
+
+{% for it in items %}
+<div class="item {{ it.status }}" id="c{{ it.call_uid }}">
+  <div class="item-head">
+    <span class="n">{{ loop.index }}.</span>
+    <span>{{ it.source }}</span>
+    <span class="dim">{{ (it.started_at or "")[:16]|replace("T", " ") }} UTC · {{ it.duration_sec }} с · {{ it.manager }}</span>
+    <span class="pillst {{ it.status }}">{{ {"new": "не начато", "draft": "в работе", "done": "готово", "skip": "не берём"}.get(it.status, it.status) }}</span>
+    <a class="dim" href="#c{{ it.call_uid }}">ссылка на звонок</a>
+  </div>
+  <audio controls preload="none" src="{{ base }}/record/{{ it.call_uid }}.mp3"></audio>
+  <form method="post" action="{{ base }}/training/save">
+    <input type="hidden" name="call_uid" value="{{ it.call_uid }}">
+    <input type="hidden" name="batch" value="{{ batch }}">
+    <textarea name="corrected" rows="{{ it.rows }}">{{ it.text }}</textarea>
+    <div class="tags">
+      {% for tag, label in [("акцент", "акцент"), ("шум", "шум на линии"), ("роли_перепутаны", "роли перепутаны"), ("личный_разговор", "личный разговор")] %}
+      <label><input type="checkbox" name="tags" value="{{ tag }}" {% if tag in it.tag_list %}checked{% endif %}> {{ label }}</label>
+      {% endfor %}
+    </div>
+    <div class="btns">
+      <button class="go" name="status" value="done">Готово</button>
+      <button name="status" value="draft">Сохранить, не закончил</button>
+      <button name="status" value="skip">Не брать</button>
+    </div>
+  </form>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

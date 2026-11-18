@@ -115,13 +115,20 @@ def log_usage_claude(response: Any, *, kind: str, model: str, data_dir: str | No
         return
     in_tokens = int(getattr(usage, "input_tokens", 0) or 0)
     out_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    # Кэш подсказки: запись стоит 1,25 от входной цены, чтение — 0,10. input_tokens
+    # в ответе их НЕ включает, поэтому считаем отдельно (16.11.2026).
+    cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
     price_in, price_out = PRICES_CLAUDE.get(model, (0.0, 0.0))
-    cost = (in_tokens * price_in + out_tokens * price_out) / 1e6
+    cost = ((in_tokens + cache_write * 1.25 + cache_read * 0.10) * price_in
+            + out_tokens * price_out) / 1e6
     record = {
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "kind": kind, "model": model,
         "in": in_tokens, "out": out_tokens, "usd": round(cost, 5),
     }
+    if cache_write or cache_read:
+        record["cw"], record["cr"] = cache_write, cache_read
     try:
         path = Path(data_dir or _usage_dir()) / USAGE_LOG_CLAUDE
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -671,7 +678,7 @@ def name_sides(text: str) -> str:
     return text
 
 
-SCREEN_PROMPT = """Ты просматриваешь начало входящего звонка менеджеру компании
+SCREEN_PROMPT = """Ты просматриваешь входящий звонок менеджеру компании
 «{own_company}» — она сдаёт технику в аренду. Вопрос ровно один: **просит ли
 технику позвонивший**, то есть спрашивает наличие, цену или сроки аренды.
 
@@ -864,6 +871,79 @@ SCREEN_PROMPT = """Ты просматриваешь начало входяще
 
 Ответ — **только JSON**, без пояснений до и после, без markdown-обрамления.
 """
+
+
+def render_digest_text(prompt: str, *, engine: str, api_key: str, model: str,
+                       folder: str = "", timeout_sec: float = 90.0,
+                       kind: str = "свод по менеджерам") -> str:
+    """Как `_спросить_голову`, но ответ — свободный текст, не JSON.
+
+    Сводный отчёт владельцу — не структурированные поля на запись в CRM, а
+    связный текст для Telegram. `yandex.parse_json`/разбор JSON у Claude тут
+    не нужен и мог бы отрезать часть ответа, если модель что-то не
+    обернула в скобки идеально.
+    """
+    if engine == "yandex":
+        from app import yandex
+
+        return yandex.complete(prompt, api_key=api_key, folder=folder,
+                               model=model, max_tokens=2000, timeout_sec=timeout_sec)
+
+    if engine == "claude":
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key, timeout=timeout_sec)
+        response = client.messages.create(
+            model=model, max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        log_usage_claude(response, kind=kind, model=model)
+        return "".join(block.text for block in response.content if block.type == "text")
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, timeout=timeout_sec)
+    pace_calls()
+    response = client.chat.completions.create(
+        model=model, messages=[{"role": "user", "content": prompt}], temperature=0.0,
+    )
+    log_usage(response, kind=kind, model=model)
+    return response.choices[0].message.content or ""
+
+
+def спросить_claude_с_кэшем(static: str, dynamic: str, *, api_key: str, model: str,
+                            kind: str, max_tokens: int = 700,
+                            timeout_sec: float = 60.0) -> dict[str, Any] | None:
+    """Вопрос к Claude, у которого длинная неизменная часть и короткая меняющаяся.
+
+    Неизменная (правила, справочник типов, формат ответа) идёт отдельным блоком
+    с пометкой кэша: повторное чтение стоит 10% от обычной цены входа. Условие —
+    блок должен быть **побайтно одинаковым** от звонка к звонку, поэтому справочник
+    типов не урезаем под звонок: тогда кэш не сработает (решение 16.11.2026).
+    Кэш живёт 5 минут; при одиночных запросах реже этого срока попадание не
+    гарантировано — реальную экономию смотреть по полям `cr`/`cw` в
+    anthropic_usage.jsonl. Без «думающего» режима: для разбора с цитатой он не нужен.
+    """
+    from app import yandex
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=api_key, timeout=timeout_sec)
+    request = dict(
+        model=model, max_tokens=max_tokens,
+        system=[{"type": "text", "text": static, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": dynamic}],
+    )
+    try:
+        # Скрытое «думание» оплачивается как выход: на звонке из 130 токенов ответа
+        # оно давало 400–550 лишних (проба 16.11.2026, цена звонка 1 цент → 0,3). Эта
+        # модель выключает его значением between_tools, а не disabled.
+        response = client.messages.create(**request, thinking={"type": "between_tools"})
+    except anthropic.BadRequestError as exc:
+        logger.info("модель не приняла thinking=between_tools, повторяю без него: %s", str(exc)[:120])
+        response = client.messages.create(**request)
+    log_usage_claude(response, kind=kind, model=model)
+    text = "".join(block.text for block in response.content if block.type == "text")
+    return yandex.parse_json(text)
 
 
 def _спросить_голову(prompt: str, *, engine: str, api_key: str, model: str,

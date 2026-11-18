@@ -152,6 +152,190 @@ CREATE TABLE IF NOT EXISTS order_reports (
     created_at    TEXT NOT NULL
 );
 
+-- Заметки РОПа по заявке на странице /order/{id} — свои, не в Synergy:
+-- комментарии через POST /comments там пишутся, но нигде не видны в
+-- веб-интерфейсе заявки (проверено вживую 15.11.2026). Лог, не одна строка
+-- на заявку — РОП дописывает по ходу работы, историю терять нельзя.
+CREATE TABLE IF NOT EXISTS order_comments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id    TEXT NOT NULL,
+    author      TEXT NOT NULL DEFAULT '',
+    comment     TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_order_comments_order ON order_comments (order_id);
+
+-- Эталонный набор для дообучения распознавания (16.11.2026): звонки, где человек
+-- исправил текст по звуку. Черновик — с метками времени (сегменты), чтобы потом
+-- нарезать звонок на куски до 30 секунд. Цель владельца — 50 часов, по 30 минут в
+-- день. tags — метки через запятую: акцент, шум, роли_перепутаны, личный_разговор.
+CREATE TABLE IF NOT EXISTS training_items (
+    call_uid        TEXT PRIMARY KEY,
+    batch           INTEGER NOT NULL,
+    position        INTEGER NOT NULL DEFAULT 0,
+    source          TEXT NOT NULL DEFAULT '',
+    direction       TEXT NOT NULL DEFAULT '',
+    duration_sec    INTEGER NOT NULL DEFAULT 0,
+    started_at      TEXT NOT NULL DEFAULT '',
+    manager         TEXT NOT NULL DEFAULT '',
+    draft_json      TEXT NOT NULL DEFAULT '[]',
+    corrected_text  TEXT NOT NULL DEFAULT '',
+    tags            TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'new',
+    updated_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_training_batch ON training_items (batch, position);
+
+-- Поиск техники менеджерами продаж. Связь звонка с заявкой — родное поле
+-- звонка в Synergy custom-11360 «Заявки»; через API списка связей нет, поэтому
+-- копия лежит у нас. source: helper — проставил помощник вручную (эталон для
+-- сверки), ai — предложили/проставили мы.
+CREATE TABLE IF NOT EXISTS call_order_links (
+    call_uid         TEXT PRIMARY KEY,
+    synergy_call_id  TEXT,
+    order_id         TEXT NOT NULL,
+    source           TEXT NOT NULL,
+    confidence       TEXT NOT NULL DEFAULT '',
+    note             TEXT NOT NULL DEFAULT '',
+    written_at       TEXT,
+    created_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_call_order_links_order ON call_order_links (order_id);
+
+-- Индекс заявок для привязки звонков: ответственный, тип техники, создание.
+-- Пополняется инкрементально, чтобы не листать заявки Synergy при каждом разборе.
+CREATE TABLE IF NOT EXISTS order_index (
+    order_id        TEXT PRIMARY KEY,
+    number          TEXT,
+    responsible_id  TEXT,
+    equipment       TEXT NOT NULL DEFAULT '',
+    stage_kind      TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    fetched_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_order_index_resp ON order_index (responsible_id, created_at);
+
+-- Что ИИ предложил или добавил в базу «Транспорт» по разговорам с исполнителями.
+-- Уникальность (phone10, type_name): один и тот же тип у одного номера не
+-- предлагаем и не создаём дважды.
+CREATE TABLE IF NOT EXISTS ai_transport_adds (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_uid      TEXT NOT NULL,
+    phone10       TEXT NOT NULL,
+    type_name     TEXT NOT NULL,
+    type_id       TEXT,
+    quote         TEXT NOT NULL DEFAULT '',
+    sure          INTEGER,
+    mode          TEXT NOT NULL,
+    transport_id  TEXT,
+    error         TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    UNIQUE (phone10, type_name)
+);
+
+-- Звонки по объявлениям Авито (CallTracking API, с 17.11.2026). Один звонок — одна строка, ключ — callId Авито.
+-- seller_phone — наша линия (9213909268 = «Авито СПБ»), её же ВАТС называет diversion; buyer_phone — клиент;
+-- item_id — объявление. По (линия, клиент, время) звонок сопоставляется со звонком в ВАТС.
+CREATE TABLE IF NOT EXISTS avito_calls (
+    call_id       INTEGER PRIMARY KEY,
+    call_time     TEXT NOT NULL,
+    local_date    TEXT NOT NULL,
+    buyer_phone   TEXT NOT NULL DEFAULT '',
+    seller_phone  TEXT NOT NULL DEFAULT '',
+    virtual_phone TEXT NOT NULL DEFAULT '',
+    item_id       INTEGER,
+    talk_sec      INTEGER NOT NULL DEFAULT 0,
+    wait_sec      REAL NOT NULL DEFAULT 0,
+    fetched_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_avito_calls_date ON avito_calls(local_date);
+CREATE INDEX IF NOT EXISTS ix_avito_calls_item ON avito_calls(item_id);
+
+-- Чаты Авито по объявлениям (Messenger API, с 17.11.2026). Только чтение. Клиент в чате известен по имени и id Авито;
+-- телефона Авито не отдаёт, но клиенты часто пишут его в тексте — по нему чат связывается с заявкой CRM.
+-- msgs_fetched_updated — значение `updated` чата, при котором мы последний раз читали сообщения (так видно, что чат изменился).
+CREATE TABLE IF NOT EXISTS avito_chats (
+    chat_id              TEXT PRIMARY KEY,
+    item_id              INTEGER,
+    item_title           TEXT NOT NULL DEFAULT '',
+    item_url             TEXT NOT NULL DEFAULT '',
+    client_id            TEXT NOT NULL DEFAULT '',
+    client_name          TEXT NOT NULL DEFAULT '',
+    created              INTEGER NOT NULL DEFAULT 0,
+    updated              INTEGER NOT NULL DEFAULT 0,
+    last_direction       TEXT NOT NULL DEFAULT '',
+    last_type            TEXT NOT NULL DEFAULT '',
+    msgs_fetched_updated INTEGER NOT NULL DEFAULT 0,
+    fetched_at           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_avito_chats_item ON avito_chats(item_id);
+CREATE INDEX IF NOT EXISTS ix_avito_chats_created ON avito_chats(created);
+CREATE TABLE IF NOT EXISTS avito_messages (
+    message_id TEXT PRIMARY KEY,
+    chat_id    TEXT NOT NULL,
+    created    INTEGER NOT NULL DEFAULT 0,
+    direction  TEXT NOT NULL DEFAULT '',
+    author_id  TEXT NOT NULL DEFAULT '',
+    type       TEXT NOT NULL DEFAULT '',
+    text       TEXT NOT NULL DEFAULT '',
+    is_read    INTEGER NOT NULL DEFAULT 0,
+    fetched_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_avito_messages_chat ON avito_messages(chat_id, created);
+
+-- Вовлечённость менеджера после передачи заявки + совет эксперта по продажам
+-- (custom-30756/custom-30757 в Synergy). Отдельно от order_reports: эта
+-- оценка живёт на любой заявке с 19.10.2026, в любом статусе, а не только
+-- на тех, что видит pick_orders() в analyze_orders.py. order_updated_snapshot
+-- хранит updated-at заявки в Synergy на момент оценки — по нему решаем,
+-- менялась ли заявка с прошлого прогона без нового звонка.
+-- stage_kind_snapshot — этап заявки на момент этой оценки. Как только он
+-- становится lost/won, заявка выходит из рабочего набора «пересматривать
+-- каждый цикл» — тот же приём, что уже есть в analyze_orders.py для
+-- проваленных заявок (пересчитывать закрытую сделку бессмысленно и платно).
+CREATE TABLE IF NOT EXISTS engagement_reports (
+    order_id               TEXT PRIMARY KEY,
+    contact_id             TEXT,
+    engagement_score       INTEGER,
+    engagement_note        TEXT,
+    advice                 TEXT,
+    calls_count            INTEGER NOT NULL DEFAULT 0,
+    last_call_at           TEXT,
+    order_updated_snapshot TEXT,
+    stage_kind_snapshot    TEXT NOT NULL DEFAULT '',
+    evaluated_at           TEXT NOT NULL
+);
+
+-- Мелкое состояние между прогонами разных скриптов (например, до какого
+-- момента уже пройдена развёртка заявок по -created-at/-updated-at) —
+-- чтобы не пересматривать всю историю заново на каждом тике таймера.
+CREATE TABLE IF NOT EXISTS kv_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- ABC-анализ клиентской базы (custom-30764/30765/30766 на контакте).
+-- Считается по всем выигранным сделкам контакта за всё время — деньги
+-- (custom-14924 заявки, запасной путь custom-257) и частота. contact_id
+-- здесь — настоящий id контакта Synergy; клиентов без привязки к контакту
+-- (см. журнал/дерево про «сиротскую» треть выручки) сюда не кладём вовсе,
+-- писать им некуда. Пересчёт — раз в сутки, полный, не инкрементальный:
+-- объём (≈6 тыс. выигранных сделок) это позволяет. applied=0 означает
+-- «посчитано, но в CRM ещё не записалось» — отдельно от того, изменилась
+-- ли категория с прошлого раза (see активный набор analyze_abc.py).
+CREATE TABLE IF NOT EXISTS abc_reports (
+    contact_id    TEXT PRIMARY KEY,
+    revenue       REAL NOT NULL DEFAULT 0,
+    deals_count   INTEGER NOT NULL DEFAULT 0,
+    last_deal_at  TEXT,
+    category      TEXT NOT NULL,
+    frequency     TEXT NOT NULL,
+    risk          TEXT NOT NULL,
+    applied       INTEGER NOT NULL DEFAULT 0,
+    evaluated_at  TEXT NOT NULL
+);
+
 -- Пробный просев: тот же разговор, прогнанный другой головой или по новым
 -- правилам. Боевой ответ в `screens` при этом не трогается: по нему работает
 -- ловля заявок, и затереть его — значит остаться без точки отсчёта.
@@ -337,6 +521,26 @@ CREATE TABLE IF NOT EXISTS messenger_file_sends (
 );
 CREATE INDEX IF NOT EXISTS idx_messenger_sends_day
     ON messenger_file_sends (manager_login, platform, sent_date);
+
+-- Письма на info@ (аренда техники, нерудные материалы), разобранные
+-- автоматом. uid — IMAP UID письма в INBOX этого ящика: числа растут
+-- монотонно, поэтому MAX(uid) и есть точка, откуда продолжать при
+-- следующем проходе — без отдельного файла состояния.
+CREATE TABLE IF NOT EXISTS mail_leads (
+    uid              INTEGER PRIMARY KEY,
+    message_id       TEXT,
+    received_at      TEXT,
+    from_addr        TEXT,
+    subject          TEXT,
+    is_request       INTEGER NOT NULL DEFAULT 0,   -- решение модели: заявка или нет
+    phone            TEXT,
+    contact_id       TEXT,
+    contact_created  INTEGER NOT NULL DEFAULT 0,
+    order_id         TEXT,
+    attachments_count INTEGER NOT NULL DEFAULT 0,
+    note             TEXT,                          -- почему пропустили / что решили
+    processed_at     TEXT NOT NULL
+);
 """
 
 # Пять пунктов, которые менеджер обязан заполнить после разговора.
@@ -460,6 +664,32 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # каждый звонок, а дополняет одну старую на контакте. Без этого поля
     # здесь виден только момент создания — не тот, что решил привязку.
     ("call_tasks", "updated_at", "TEXT"),
+    # «Дата освобождения» (custom-26952) карточки транспорта -- когда
+    # поставщик рассчитывает освободиться. Решение владельца 21.10.2026:
+    # подключить эту базу к «Подбору техники» как второй источник, рядом
+    # с телеграм-группами -- у кого эта дата в пределах ±3 дней от сегодня.
+    ("transport_cards", "release_date", "TEXT"),
+    # Для ежедневного отчёта «кто сколько добавил техники» (03.11.2026,
+    # группа «Транспорт СРМ»). В Synergy `responsible` и `user` у карточки
+    # транспорта всегда совпадают (проверено на полусотне карточек) — берём
+    # responsible, это то же поле, что подписано «Ответственный» в самой CRM.
+    ("transport_cards", "created_at", "TEXT"),
+    ("transport_cards", "responsible_id", "TEXT"),
+    ("transport_cards", "responsible_name", "TEXT"),
+    # Отдельно от «считали ли балл»: сухой прогон считает и сохраняет
+    # локально, но ничего не пишет в CRM. Без этого признака повторный прогон
+    # с --apply решил бы «ничего не поменялось» и так и не записал бы в
+    # Synergy то, что уже посчитано локально — на этом поймал себя сам
+    # 27.10.2026, когда сухим прогоном после сброса водяного знака насчитал
+    # сотню заявок, а записать их забыл.
+    ("engagement_reports", "applied", "INTEGER NOT NULL DEFAULT 0"),
+    # Поиск техники менеджерами продаж (15.11.2026): цена и дата освобождения,
+    # которые назвал исполнитель, и заявка, под которую звонили. Пустое значение у
+    # старых разборов — «не считали», а не «не было».
+    ("search_checks", "prices_json", "TEXT"),
+    ("search_checks", "busy_json", "TEXT"),
+    ("search_checks", "order_id", "TEXT"),
+    ("search_checks", "order_equipment", "TEXT"),
 )
 
 
@@ -625,44 +855,169 @@ def phone10(number: str | None) -> str:
 
 def save_transport_card(conn: sqlite3.Connection, **row: Any) -> None:
     """Карточка транспорта из Synergy в местный справочник."""
+    row.setdefault("release_date", "")
+    row.setdefault("created_at", "")
+    row.setdefault("responsible_id", "")
+    row.setdefault("responsible_name", "")
     conn.execute(
         """
         INSERT INTO transport_cards (id, name, type_id, type_name, phone10,
                                      contact_id, contact_name, status,
-                                     updated_at, synced_at, call_link)
+                                     updated_at, synced_at, call_link, release_date,
+                                     created_at, responsible_id, responsible_name)
         VALUES (:id, :name, :type_id, :type_name, :phone10, :contact_id,
-                :contact_name, :status, :updated_at, :synced_at, :call_link)
+                :contact_name, :status, :updated_at, :synced_at, :call_link,
+                :release_date, :created_at, :responsible_id, :responsible_name)
         ON CONFLICT (id) DO UPDATE SET
             name = excluded.name, type_id = excluded.type_id,
             type_name = excluded.type_name, phone10 = excluded.phone10,
             contact_id = excluded.contact_id, contact_name = excluded.contact_name,
             status = excluded.status, updated_at = excluded.updated_at,
-            synced_at = excluded.synced_at, call_link = excluded.call_link
+            synced_at = excluded.synced_at, call_link = excluded.call_link,
+            release_date = COALESCE(NULLIF(excluded.release_date, ''), release_date),
+            created_at = COALESCE(NULLIF(excluded.created_at, ''), created_at),
+            responsible_id = COALESCE(NULLIF(excluded.responsible_id, ''), responsible_id),
+            responsible_name = COALESCE(NULLIF(excluded.responsible_name, ''), responsible_name)
         """,
         row,
     )
 
 
 def save_search_check(conn: sqlite3.Connection, **row: Any) -> None:
-    """Вердикт сверки разговора с карточками. Повтор разбора переписывает."""
+    """Вердикт сверки разговора с карточками. Повтор разбора переписывает.
+
+    Цена и занятость (`prices_json`, `busy_json`) приходят только из самого
+    разбора разговора; пересверка по карточкам (`--recheck`) их не передаёт и
+    затирать не должна — поэтому при пустом значении остаётся прежнее.
+    """
+    row.setdefault("prices_json", None)
+    row.setdefault("busy_json", None)
     conn.execute(
         """
         INSERT INTO search_checks (call_uid, local_date, vats_login, phone10,
                                    contact_name, asked_type, offered, known,
                                    missing, verdict, checked_at, is_demo,
-                                   more_unnamed, presented, clarified)
+                                   more_unnamed, presented, clarified,
+                                   prices_json, busy_json)
         VALUES (:call_uid, :local_date, :vats_login, :phone10, :contact_name,
                 :asked_type, :offered, :known, :missing, :verdict, :checked_at,
-                :is_demo, :more_unnamed, :presented, :clarified)
+                :is_demo, :more_unnamed, :presented, :clarified,
+                :prices_json, :busy_json)
         ON CONFLICT (call_uid) DO UPDATE SET
             phone10 = excluded.phone10, contact_name = excluded.contact_name,
             asked_type = excluded.asked_type, offered = excluded.offered,
             known = excluded.known, missing = excluded.missing,
             verdict = excluded.verdict, checked_at = excluded.checked_at,
             more_unnamed = excluded.more_unnamed,
-            presented = excluded.presented, clarified = excluded.clarified
+            presented = excluded.presented, clarified = excluded.clarified,
+            prices_json = COALESCE(excluded.prices_json, search_checks.prices_json),
+            busy_json = COALESCE(excluded.busy_json, search_checks.busy_json)
         """,
         row,
+    )
+
+
+def set_search_check_order(conn: sqlite3.Connection, call_uid: str,
+                           order_id: str | None, equipment: str) -> None:
+    """Заявка, под которую звонили. Отдельно от вердикта: считается после него."""
+    conn.execute(
+        "UPDATE search_checks SET order_id = ?, order_equipment = ? WHERE call_uid = ?",
+        (order_id, equipment, call_uid),
+    )
+
+
+def save_order_index(conn: sqlite3.Connection, **row: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO order_index (order_id, number, responsible_id, equipment,
+                                 stage_kind, created_at, updated_at, fetched_at)
+        VALUES (:order_id, :number, :responsible_id, :equipment, :stage_kind,
+                :created_at, :updated_at, :fetched_at)
+        ON CONFLICT (order_id) DO UPDATE SET
+            number = excluded.number, responsible_id = excluded.responsible_id,
+            equipment = excluded.equipment, stage_kind = excluded.stage_kind,
+            updated_at = excluded.updated_at, fetched_at = excluded.fetched_at
+        """,
+        row,
+    )
+
+
+def save_call_order_link(conn: sqlite3.Connection, call_uid: str, order_id: str,
+                         source: str, *, synergy_call_id: str | None = None,
+                         confidence: str = "", note: str = "",
+                         written_at: str | None = None, at: str) -> None:
+    """Связь звонка с заявкой. Связь помощника (helper) ИИ не перезаписывает."""
+    conn.execute(
+        """
+        INSERT INTO call_order_links (call_uid, synergy_call_id, order_id, source,
+                                      confidence, note, written_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (call_uid) DO UPDATE SET
+            synergy_call_id = COALESCE(excluded.synergy_call_id, call_order_links.synergy_call_id),
+            order_id = CASE WHEN call_order_links.source = 'helper' AND excluded.source <> 'helper'
+                            THEN call_order_links.order_id ELSE excluded.order_id END,
+            source = CASE WHEN call_order_links.source = 'helper' AND excluded.source <> 'helper'
+                          THEN call_order_links.source ELSE excluded.source END,
+            confidence = excluded.confidence, note = excluded.note,
+            written_at = COALESCE(excluded.written_at, call_order_links.written_at)
+        """,
+        (call_uid, synergy_call_id, order_id, source, confidence, note, written_at, at),
+    )
+
+
+def save_avito_call(conn: sqlite3.Connection, *, call_id: int, call_time: str, local_date: str, buyer_phone: str,
+                    seller_phone: str, virtual_phone: str, item_id: int | None, talk_sec: int,
+                    wait_sec: float, fetched_at: str) -> None:
+    """Звонок Авито. Повторная загрузка того же callId обновляет строку (идемпотентно)."""
+    conn.execute(
+        """INSERT OR REPLACE INTO avito_calls
+           (call_id, call_time, local_date, buyer_phone, seller_phone, virtual_phone, item_id, talk_sec, wait_sec, fetched_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (call_id, call_time, local_date, buyer_phone, seller_phone, virtual_phone, item_id, talk_sec, wait_sec, fetched_at))
+
+
+def save_avito_chat(conn: sqlite3.Connection, *, chat_id: str, item_id: int | None, item_title: str, item_url: str,
+                    client_id: str, client_name: str, created: int, updated: int, last_direction: str,
+                    last_type: str, fetched_at: str) -> None:
+    """Чат Авито. Поле msgs_fetched_updated не трогаем: его ставит только чтение сообщений."""
+    conn.execute(
+        """INSERT INTO avito_chats (chat_id, item_id, item_title, item_url, client_id, client_name, created, updated,
+                                    last_direction, last_type, fetched_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(chat_id) DO UPDATE SET item_id=excluded.item_id, item_title=excluded.item_title, item_url=excluded.item_url,
+               client_id=excluded.client_id, client_name=excluded.client_name, created=excluded.created, updated=excluded.updated,
+               last_direction=excluded.last_direction, last_type=excluded.last_type, fetched_at=excluded.fetched_at""",
+        (chat_id, item_id, item_title, item_url, client_id, client_name, created, updated, last_direction, last_type, fetched_at))
+
+
+def save_avito_message(conn: sqlite3.Connection, *, message_id: str, chat_id: str, created: int, direction: str,
+                       author_id: str, type_: str, text: str, is_read: bool, fetched_at: str) -> None:
+    conn.execute(
+        """INSERT OR REPLACE INTO avito_messages (message_id, chat_id, created, direction, author_id, type, text, is_read, fetched_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (message_id, chat_id, created, direction, author_id, type_, text, int(is_read), fetched_at))
+
+
+def save_ai_transport_add(conn: sqlite3.Connection, *, call_uid: str, phone10: str,
+                          type_name: str, type_id: str | None, quote: str,
+                          sure: int | None, mode: str, at: str) -> bool:
+    """Предложение/создание карточки. False — такая пара номер+тип уже есть."""
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO ai_transport_adds
+            (call_uid, phone10, type_name, type_id, quote, sure, mode, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (call_uid, phone10, type_name, type_id, quote, sure, mode, at),
+    )
+    return cur.rowcount > 0
+
+
+def mark_ai_transport_created(conn: sqlite3.Connection, add_id: int,
+                              transport_id: str | None, error: str = "") -> None:
+    conn.execute(
+        "UPDATE ai_transport_adds SET mode = ?, transport_id = ?, error = ? WHERE id = ?",
+        ("created" if transport_id else "failed", transport_id, error, add_id),
     )
 
 
@@ -706,6 +1061,55 @@ def save_ad_verdict(conn: sqlite3.Connection, call_uid: str, verdict: str,
         "UPDATE ad_calls SET verdict = ?, verdict_note = ?, verdict_at = ? WHERE call_uid = ?",
         (verdict, note, at, call_uid),
     )
+
+
+def save_training_item(conn: sqlite3.Connection, **row: Any) -> None:
+    """Звонок в эталонном наборе. Повторная загрузка черновика исправленное не трогает."""
+    conn.execute(
+        """
+        INSERT INTO training_items (call_uid, batch, position, source, direction,
+                                    duration_sec, started_at, manager, draft_json)
+        VALUES (:call_uid, :batch, :position, :source, :direction, :duration_sec,
+                :started_at, :manager, :draft_json)
+        ON CONFLICT (call_uid) DO UPDATE SET
+            draft_json = excluded.draft_json, position = excluded.position
+        """,
+        row,
+    )
+
+
+def save_training_correction(conn: sqlite3.Connection, call_uid: str, corrected: str,
+                             tags: str, status: str, at: str) -> None:
+    conn.execute(
+        "UPDATE training_items SET corrected_text = ?, tags = ?, status = ?, updated_at = ? "
+        "WHERE call_uid = ?",
+        (corrected, tags, status, at, call_uid),
+    )
+
+
+def training_rows(conn: sqlite3.Connection, batch: int | None = None) -> list[sqlite3.Row]:
+    if batch is None:
+        return conn.execute(
+            "SELECT * FROM training_items ORDER BY batch DESC, position").fetchall()
+    return conn.execute(
+        "SELECT * FROM training_items WHERE batch = ? ORDER BY position", (batch,)).fetchall()
+
+
+def save_order_comment(conn: sqlite3.Connection, order_id: str, author: str,
+                       comment: str, at: str) -> None:
+    """Заметка РОПа по заявке. Лог, поэтому INSERT, не апсерт."""
+    conn.execute(
+        "INSERT INTO order_comments (order_id, author, comment, created_at) VALUES (?, ?, ?, ?)",
+        (order_id, author, comment, at),
+    )
+
+
+def order_comments(conn: sqlite3.Connection, order_id: str) -> list[sqlite3.Row]:
+    """Заметки РОПа по заявке, от старых к новым."""
+    return conn.execute(
+        "SELECT * FROM order_comments WHERE order_id = ? ORDER BY created_at",
+        (order_id,),
+    ).fetchall()
 
 
 def save_line(conn: sqlite3.Connection, **row: Any) -> None:
@@ -909,6 +1313,86 @@ def save_order_report(conn: sqlite3.Connection, **row: Any) -> None:
     )
 
 
+def save_engagement_report(conn: sqlite3.Connection, **row: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO engagement_reports (
+            order_id, contact_id, engagement_score, engagement_note, advice,
+            calls_count, last_call_at, order_updated_snapshot, stage_kind_snapshot,
+            applied, evaluated_at
+        ) VALUES (
+            :order_id, :contact_id, :engagement_score, :engagement_note, :advice,
+            :calls_count, :last_call_at, :order_updated_snapshot, :stage_kind_snapshot,
+            :applied, :evaluated_at
+        )
+        ON CONFLICT (order_id) DO UPDATE SET
+            contact_id             = excluded.contact_id,
+            engagement_score       = excluded.engagement_score,
+            engagement_note        = excluded.engagement_note,
+            advice                 = excluded.advice,
+            calls_count             = excluded.calls_count,
+            last_call_at            = excluded.last_call_at,
+            order_updated_snapshot  = excluded.order_updated_snapshot,
+            stage_kind_snapshot     = excluded.stage_kind_snapshot,
+            applied                 = excluded.applied,
+            evaluated_at            = excluded.evaluated_at
+        """,
+        {"contact_id": None, "engagement_note": None, "last_call_at": None,
+         "order_updated_snapshot": None, "stage_kind_snapshot": "", "applied": 0, **row},
+    )
+
+
+def get_engagement_report(conn: sqlite3.Connection, order_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM engagement_reports WHERE order_id = ?", (order_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def save_abc_report(conn: sqlite3.Connection, **row: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO abc_reports (
+            contact_id, revenue, deals_count, last_deal_at,
+            category, frequency, risk, applied, evaluated_at
+        ) VALUES (
+            :contact_id, :revenue, :deals_count, :last_deal_at,
+            :category, :frequency, :risk, :applied, :evaluated_at
+        )
+        ON CONFLICT (contact_id) DO UPDATE SET
+            revenue      = excluded.revenue,
+            deals_count  = excluded.deals_count,
+            last_deal_at = excluded.last_deal_at,
+            category     = excluded.category,
+            frequency    = excluded.frequency,
+            risk         = excluded.risk,
+            applied      = excluded.applied,
+            evaluated_at = excluded.evaluated_at
+        """,
+        {"last_deal_at": None, "applied": 0, **row},
+    )
+
+
+def get_abc_report(conn: sqlite3.Connection, contact_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM abc_reports WHERE contact_id = ?", (contact_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_state(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM kv_state WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO kv_state (key, value) VALUES (?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
 def save_order_task(conn: sqlite3.Connection, order_id: str, *,
                     task_id: str | None, task_at: str, note: str = "") -> None:
     """Отметить, что по заявке поставлена задача менеджеру.
@@ -939,6 +1423,27 @@ def save_messenger_send(conn: sqlite3.Connection, **row: Any) -> None:
         INSERT INTO messenger_file_sends
             (manager_login, platform, recipient, sent_date, file_name, collected_at)
         VALUES (:manager_login, :platform, :recipient, :sent_date, :file_name, :collected_at)
+        """,
+        row,
+    )
+
+
+def last_mail_uid(conn: sqlite3.Connection) -> int:
+    """Последний разобранный UID письма info@ — 0, если ещё не начинали."""
+    row = conn.execute("SELECT MAX(uid) AS m FROM mail_leads").fetchone()
+    return int(row["m"]) if row and row["m"] is not None else 0
+
+
+def save_mail_lead(conn: sqlite3.Connection, **row: Any) -> None:
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO mail_leads
+            (uid, message_id, received_at, from_addr, subject, is_request,
+             phone, contact_id, contact_created, order_id, attachments_count,
+             note, processed_at)
+        VALUES (:uid, :message_id, :received_at, :from_addr, :subject, :is_request,
+                :phone, :contact_id, :contact_created, :order_id, :attachments_count,
+                :note, :processed_at)
         """,
         row,
     )

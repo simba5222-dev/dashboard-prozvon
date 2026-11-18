@@ -124,6 +124,35 @@ class Settings(BaseSettings):
         default="поиск",
         description="Как этот отдел помечен в таблице сотрудников.",
     )
+    search_sales_dept: str = Field(
+        default="продажи",
+        description="Отдел менеджеров, чьи исходящие исполнителям разбираются как "
+        "поиск техники под заявку (15.11.2026). Фермеры (ключевые клиенты, "
+        "прозвон, поиск) сюда не входят.",
+    )
+    transport_ai_mode: str = Field(
+        default="propose",
+        description="Что делать с техникой, которую исполнитель назвал, а в базе "
+        "«Транспорт» её нет: off — ничего; propose — только записать предложение у "
+        "себя (первая неделя, решение владельца 15.11.2026); create — создать "
+        "карточку в Synergy со статусом «Добавлено ИИ».",
+    )
+    transport_ai_min_sure: int = Field(
+        default=70,
+        description="Ниже этой уверенности разбора (0-100) предложения по "
+        "карточкам не делаем.",
+    )
+    link_ai_mode: str = Field(
+        default="propose",
+        description="Что делать со связью «звонок — заявка» (поле звонка "
+        "custom-11360 в Synergy): off — ничего; propose — только запись у себя "
+        "(неделя сверки с тем, что проставляет помощник); create — писать в "
+        "Synergy.",
+    )
+    link_max_age_days: int = Field(
+        default=14,
+        description="Заявка старше этого к моменту звонка под него не подбирается.",
+    )
     search_voice_model: str = Field(
         default="",
         description="Запасной путь для разговоров поиска техники: `whisper-1` "
@@ -274,6 +303,19 @@ class Settings(BaseSettings):
         default="claude-sonnet-5-5",
         description="Модель Claude для вовлечённости менеджера.",
     )
+    # --- Авито (интеграция с API, с 17.11.2026; описание — docs/avito-api.md) ---
+    avito_client_id: str | None = Field(
+        default=None,
+        description="client_id приложения Авито («Для профессионалов → API»). Профиль «СК Техноресурс».",
+    )
+    avito_client_secret: str | None = Field(
+        default=None,
+        description="client_secret приложения Авито. Если выпустить новый в кабинете, старый перестаёт работать.",
+    )
+    avito_user_id: str | None = Field(
+        default=None,
+        description="Номер профиля Авито (GET /core/v1/accounts/self); нужен в путях мессенджера.",
+    )
     asr_analysis_token: str | None = Field(
         default=None,
         description="Ключ к ручке /analyze сервиса распознавания. Разбор для "
@@ -289,6 +331,36 @@ class Settings(BaseSettings):
     )
     crm_lead_stage: str = Field(
         default="Новый", description="Стадия, в которую кладём пойманную заявку."
+    )
+
+    # --- Разбор почты info@ (аренда техники, нерудные материалы), 15.10.2026 ---
+    mail_intake_host: str = Field(
+        default="mail.techno-res.ru", description="Почтовый сервер (mailcow), IMAP/993."
+    )
+    mail_intake_user: str | None = Field(
+        default=None, description="Ящик, который слушаем — info@techno-res.ru."
+    )
+    mail_intake_password: str | None = Field(
+        default=None,
+        description="Отдельный app-password (только imap_access), не веб-пароль ящика.",
+    )
+    mail_intake_responsible_id: str | None = Field(
+        default=None, description="Кого ставить ответственным по заявкам с почты."
+    )
+    mail_intake_order_name: str = Field(
+        default="Заявка с почты info@",
+        description="Название заявки, которую заводит разбор письма.",
+    )
+    mail_intake_engine: str = Field(
+        default="yandex",
+        description="Чем разбирать письма: yandex или openai. По умолчанию — "
+        "yandex, как и у остальных живых потоков проекта (дешевле, и у "
+        "рабочего ключа OpenAI 15.10.2026 кончились кредиты).",
+    )
+    mail_intake_model: str = Field(
+        default="yandexgpt-lite",
+        description="Модель для разбора письма. Текст письма чище расшифровки "
+        "звонка, поэтому мини-модели должно хватать.",
     )
     screen_engine: str = Field(
         default="openai",
@@ -308,6 +380,13 @@ class Settings(BaseSettings):
         "назвал поставщик): openai или yandex. Расшифровка этого потока уже на "
         "Яндексе с 29.09.2026 через общий сервис — эта настройка касается только "
         "последнего шага, сверки услышанного со справочником.",
+    )
+    search_sales_engine: str = Field(
+        default="claude",
+        description="Чем разбирать звонки менеджеров продаж исполнителям (канал «поиск "
+        "техники по заявке»): claude или та же голова, что search_engine. Claude — потому что "
+        "слабая голова путает заказчика с исполнителем (проба 15.11.2026). Нужен "
+        "ANTHROPIC_API_KEY; без ключа канал падает обратно на search_engine.",
     )
     order_analysis_engine: str = Field(
         default="openai",
@@ -331,6 +410,14 @@ class Settings(BaseSettings):
         "вовлечённости — решение владельца от 27.10.2026, более старые "
         "заявки не трогаем.",
     )
+    manager_digest_engine: str = Field(
+        default="claude",
+        description="Чем писать текст сводного отчёта владельцу по "
+        "менеджерам (dashboard-manager-digest-daily/weekly.timer). Это "
+        "синтез уже посчитанных чисел (звонки, заявки, вовлечённость), не "
+        "разбор сырых разговоров — дёшево в любом случае, но Claude лучше "
+        "сравнивает менеджеров между собой в одном связном тексте.",
+    )
 
     crm_task_type: str = Field(
         default="5305",
@@ -349,6 +436,12 @@ class Settings(BaseSettings):
         default=None,
         description="Ключ SpeechKit. Российское распознавание: записи "
         "разговоров не покидают страну, и это главный довод за него.",
+    )
+    yandex_geocoder_key: str | None = Field(
+        default=None,
+        description="Ключ API Геокодера Яндекс Карт -- отдельный продукт, "
+        "ключ SpeechKit для него не подходит. Получен 21.10.2026 для потока "
+        "«подбор техники» (фильтр предложений по расстоянию от объекта).",
     )
     yandex_folder: str | None = Field(
         default=None, description="Каталог Yandex Cloud, в котором живёт сервисный аккаунт."
@@ -389,6 +482,11 @@ class Settings(BaseSettings):
     watchdog_chat_id: int | None = Field(
         default=None, description="Канал «Сторож звонков», куда уходят алерты."
     )
+    transport_report_chat_id: int | None = Field(
+        default=None,
+        description="Группа «Транспорт СРМ» (бот сторожа добавлен туда "
+        "03.11.2026) — сюда уходит ежедневный отчёт по добавленной технике.",
+    )
 
     demo_mode: bool = Field(
         default=True,
@@ -400,11 +498,14 @@ class Settings(BaseSettings):
     # Пустая строка в .env означает «не задано», иначе /health врёт о настройках.
     @field_validator(
         "vats_api_token", "synergy_api_token", "openai_api_key", "anthropic_api_key",
+        "avito_client_id", "avito_client_secret", "avito_user_id",
         "asr_analysis_token", "crm_lead_responsible", "watchdog_bot_token",
         "prod_lookup_url", "prod_lookup_token",
         "yandex_api_key", "yandex_folder", "yandex_sa_id", "yandex_assistant_id",
+        "yandex_geocoder_key",
         "record_ssh_host", "record_ssh_key",
         "field_need", "field_objects", "field_objects_extra", "field_inn",
+        "mail_intake_user", "mail_intake_password", "mail_intake_responsible_id",
         mode="before",
     )
     @classmethod
@@ -424,6 +525,10 @@ class Settings(BaseSettings):
     @property
     def analysis_configured(self) -> bool:
         return bool(self.openai_api_key)
+
+    @property
+    def mail_intake_configured(self) -> bool:
+        return bool(self.mail_intake_user and self.mail_intake_password)
 
     @property
     def yandex_stt_configured(self) -> bool:

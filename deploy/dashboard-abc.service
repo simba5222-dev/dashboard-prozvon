@@ -1,0 +1,19 @@
+[Unit]
+Description=Дашборд: ABC-анализ клиентской базы (категория, частота, риск оттока)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Под claude: пишет в базу, читает .env с токеном Synergy.
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+# Раз в сутки, не раз в 30 минут, как у вовлечённости — деньги и частота
+# заказов не меняются так быстро, как звонки. Пишет только изменившихся
+# клиентов (см. docstring analyze_abc.py).
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/analyze_abc.py --apply
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

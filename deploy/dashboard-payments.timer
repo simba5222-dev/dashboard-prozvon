@@ -1,0 +1,10 @@
+[Unit]
+Description=Дашборд: раз в 30 минут подгружать новые платежи из 1С в Synergy
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

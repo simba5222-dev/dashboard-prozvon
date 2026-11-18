@@ -77,6 +77,10 @@ def main() -> int:
                     help="только исходящие отдела поиска техники: их разбирает "
                          "сверка «что поставщик назвал — что занесено в карточку». "
                          "Порог длительности у них свой, короткий")
+    ap.add_argument("--search-sales", action="store_true",
+                    help="исходящие менеджеров отдела продаж исполнителям — поиск "
+                         "техники под заявку (15.11.2026). Номера, которые мы знаем "
+                         "как заказчиков, не качаем: это звонки клиентам, а не поиск")
     args = ap.parse_args()
 
     settings = settings_without_secrets()
@@ -89,7 +93,8 @@ def main() -> int:
 
     until = args.day or date.today().isoformat()
     since = (date.fromisoformat(until) - timedelta(days=max(args.days - 1, 0))).isoformat()
-    min_sec = args.min_sec or (settings.search_min_duration_sec if args.search
+    min_sec = args.min_sec or (settings.search_min_duration_sec
+                               if (args.search or args.search_sales)
                                else settings.transcribe_min_duration_sec
                                or settings.talk_threshold_sec)
 
@@ -123,6 +128,13 @@ def main() -> int:
         where.append("vats_login IN (SELECT vats_login FROM managers "
                      "WHERE dept = ? AND active = 1)")
         params.append(settings.search_dept)
+    if args.search_sales:
+        where.append("direction = 'out'")
+        where.append("vats_login IN (SELECT vats_login FROM managers "
+                     "WHERE dept = ? AND active = 1)")
+        params.append(settings.search_sales_dept)
+        where.append("substr(replace(replace(replace(client_phone,'+',''),' ',''),'-',''), -10) "
+                     "NOT IN (SELECT phone10 FROM numbers WHERE category = 'заказчик')")
     rows = conn.execute(
         f"""
         SELECT uid, record_url, duration_sec, local_date FROM calls
