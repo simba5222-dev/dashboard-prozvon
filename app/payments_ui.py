@@ -53,6 +53,34 @@ RECENT_FROM = "2026-11-01"       # платежи без документа 1С 
 STALE_SEC = 45
 _lock = threading.Lock()
 
+# Копия ответов Synergy для карточки платежа/счёта (сделки и счета клиента, компании по ИНН). Раньше каждое открытие карточки
+# ходило в Synergy заново (1–1,5 с); теперь отдаём готовое, а фоновый поток держит копию свежей (_warm).
+_RAW: dict[tuple, tuple[float, Any]] = {}
+RAW_TTL = 900     # сек: столько отдаём копию без обращения в Synergy
+WARM_AGE = 240    # сек: фон обновляет копию старше этого возраста
+_raw_lock = threading.Lock()
+
+
+def _cached(key: tuple, fn, ttl: int = RAW_TTL, force: bool = False):
+    hit = _RAW.get(key)
+    if hit and not force and time.time() - hit[0] < ttl:
+        return hit[1]
+    val = fn()
+    with _raw_lock:
+        _RAW[key] = (time.time(), val)
+    return val
+
+
+def _raw_forget() -> None:
+    """После записи в Synergy (разноска, смена сделки) копии сделок и счетов устарели — сбрасываем."""
+    with _raw_lock:
+        for k in [k for k in _RAW if k[0] in ("cdeals", "cinv")]:
+            _RAW.pop(k, None)
+
+
+def _companies_by_inn(cl: SynergyClient, inn: str, force: bool = False) -> list[dict]:
+    return _cached(("inn", inn), lambda: cl.get("companies", per_page=20, **{"filter[inn]": inn}).get("data") or [], 3600, force)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pay_cache (
     id TEXT PRIMARY KEY, number INTEGER, op_at TEXT, created_at TEXT, updated_at TEXT, amount REAL, direction TEXT, status TEXT,
@@ -66,6 +94,7 @@ CREATE TABLE IF NOT EXISTS pay_flags (payment_id TEXT PRIMARY KEY, note TEXT, us
 CREATE TABLE IF NOT EXISTS inv_cache (
     id TEXT PRIMARY KEY, number TEXT, issued TEXT, amount REAL, balance REAL, status TEXT, payer_id TEXT, payer_name TEXT, payer_inn TEXT,
     deal_id TEXT, deal_number INTEGER, deal_name TEXT, manager TEXT, purpose TEXT, reason TEXT, org TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS inv_manager (synergy_id TEXT PRIMARY KEY, doc_number TEXT, fio TEXT NOT NULL, how TEXT, comment TEXT);
 CREATE TABLE IF NOT EXISTS pay_deals (id TEXT PRIMARY KEY, data TEXT NOT NULL, fetched REAL NOT NULL);
 """
 
@@ -225,8 +254,35 @@ def _bg_loop(settings: Settings) -> None:
             deal_info(cl, conn, ids)
         except Exception:   # noqa: BLE001 — Synergy недоступна или лимит: следующий круг попробует снова
             logger.exception("фоновое обновление платежей")
+        try:
+            _warm(cl, conn)
+        except Exception:   # noqa: BLE001 — прогрев не критичен, карточка просто откроется по-старому
+            logger.exception("прогрев карточек")
         _bg["wake"].wait(BG_EVERY)
         _bg["wake"].clear()
+
+
+def _warm(cl: SynergyClient, conn, budget: int = 12) -> None:
+    """Прогрев копии для карточек: компании неразнесённых платежей и неоплаченных счетов, самые «старые» копии первыми."""
+    pairs: dict[str, str] = {}
+    for r in conn.execute("SELECT payer_id, payer_inn FROM pay_cache WHERE deal_id IS NULL AND payer_id IS NOT NULL AND op_at >= ? ORDER BY op_at DESC", (RECENT_FROM,)):
+        pairs[r[0]] = r[1] or ""
+    for r in conn.execute("SELECT payer_id, payer_inn FROM inv_cache WHERE status != 'paid' AND payer_id IS NOT NULL ORDER BY issued DESC"):
+        pairs.setdefault(r[0], r[1] or "")
+    now = time.time()
+
+    def age(cid: str) -> float:
+        h = [_RAW.get(("cdeals", cid, 1)), _RAW.get(("cinv", cid, 1))]
+        return min((now - x[0] for x in h if x), default=1e9) if all(h) else 1e9
+
+    todo = sorted((c for c in pairs if age(c) > WARM_AGE), key=age, reverse=True)[:budget]
+    for cid in todo:
+        ids = [cid]
+        if pairs[cid]:
+            ids += [x["id"] for x in _companies_by_inn(cl, pairs[cid], force=age(cid) > 3000) if x["id"] != cid and x["attributes"].get("inn") == pairs[cid]]
+        for c in ids[:6]:
+            _company_deals(cl, c, set(), frozenset(), force=True)
+            _client_invoices(cl, [c], set(), force=True)
 
 
 def ensure_background(settings: Settings) -> None:
@@ -249,10 +305,16 @@ def _inv_row(x: dict, inc: dict) -> tuple:
     pa, da, ra = inc.get(("companies", g("payer").get("id"))) or {}, inc.get(("deals", g("deal").get("id"))) or {}, inc.get(("users", g("responsible").get("id"))) or {}
     reason = a.get("reason") or ""
     m = re.match(r"Выставлен от:\s*([^·]+)", reason)
-    mgr = " ".join(filter(None, [ra.get("last-name"), ra.get("first-name")]))
     return (x["id"], str(a.get("custom-number") or a.get("number")), (a.get("issued-at") or "")[:10], _num(a.get("amount")) or 0.0, _num(a.get("balance")) or 0.0,
             a.get("status"), g("payer").get("id"), pa.get("name"), pa.get("inn"), g("deal").get("id"), da.get("number"), (da.get("name") or "").strip() or None,
-            mgr, a.get("purpose") or "", reason, m.group(1).strip() if m else None, a.get("updated-at"))
+            "", a.get("purpose") or "", reason, m.group(1).strip() if m else None, a.get("updated-at"))   # manager заполняет _apply_managers из inv_manager
+
+
+def _apply_managers(conn) -> None:
+    """ФИО менеджера счёта — из комментария счёта в 1С (таблица inv_manager, scripts/invoice_managers.py), а не «ответственный» 1С/Synergy:
+    решение владельца 18.11.2026. Нет в комментарии — пусто."""
+    conn.execute("UPDATE inv_cache SET manager = COALESCE((SELECT fio FROM inv_manager m WHERE m.synergy_id = inv_cache.id), '')")
+    conn.commit()
 
 
 def sync_invoices(cl: SynergyClient, conn, full: bool = False) -> int:
@@ -283,6 +345,7 @@ def sync_invoices(cl: SynergyClient, conn, full: bool = False) -> int:
     if newest:
         conn.execute("INSERT OR REPLACE INTO pay_meta VALUES ('inv_watermark', ?)", (newest[:16] + ":00",))
     conn.commit()
+    _apply_managers(conn)
     return n
 
 
@@ -296,6 +359,7 @@ def _refresh_invoice_rows(cl: SynergyClient, conn, ids: list[str]) -> None:
         inc = {(i["type"], i["id"]): i["attributes"] for i in d.get("included") or []}
         conn.execute(INSERT_INV, _inv_row(d["data"], inc))
     conn.commit()
+    _apply_managers(conn)
 
 
 # ───────────────────────── 1С: суммы документов для подсказок ─────────────────────────
@@ -525,10 +589,10 @@ def _deal_view(x: dict, inc: dict, sums: set[float], keys: set[str] = frozenset(
             "key_match": any(k and k in (a.get("name") or "") for k in keys)}
 
 
-def _company_deals(cl: SynergyClient, cid: str, sums: set[float], keys: set[str] = frozenset(), limit: int = 50) -> list[dict]:
+def _company_deals(cl: SynergyClient, cid: str, sums: set[float], keys: set[str] = frozenset(), limit: int = 50, force: bool = False) -> list[dict]:
     out = []
     for page in (1, 2):
-        d = cl.get(f"companies/{cid}/deals", per_page=50, sort="-created-at", include="stage,responsible,transport-type,company,contact", **{"page[number]": page})
+        d = _cached(("cdeals", cid, page), lambda: cl.get(f"companies/{cid}/deals", per_page=50, sort="-created-at", include="stage,responsible,transport-type,company,contact", **{"page[number]": page}), force=force)
         inc = {(i["type"], i["id"]): i["attributes"] for i in d.get("included") or []}
         out += [_deal_view(x, inc, sums, keys) for x in d.get("data") or []]
         if len(d.get("data") or []) < 50 or len(out) >= limit:
@@ -557,7 +621,7 @@ def api_candidates(request: Request, pid: str, company: str = ""):
         if row["payer_id"]:
             comp_ids.append(row["payer_id"])
         if row["payer_inn"]:   # у одного клиента в Synergy бывает несколько записей-компаний
-            for x in cl.get("companies", per_page=20, **{"filter[inn]": row["payer_inn"]}).get("data") or []:
+            for x in _companies_by_inn(cl, row["payer_inn"]):
                 if x["id"] not in comp_ids and x["attributes"].get("inn") == row["payer_inn"]:
                     comp_ids.append(x["id"])
     seen, deals = set(), []
@@ -571,19 +635,21 @@ def api_candidates(request: Request, pid: str, company: str = ""):
     deals.sort(key=lambda d: (not d["key_match"], not d["sum_match"]))   # сначала номер 1С в названии, потом совпавшая сумма, дальше новые
     inv = [{"inv": l.get("inv"), "inv_date": l.get("inv_date"), "inv_sum": l.get("inv_sum"), "inv_comment": l.get("inv_comment"),
             "rel": l.get("rel"), "rel_comment": l.get("rel_comment")} for l in (item.get("lines") or [])]
-    full = cl.get(f"invoice-payments/{pid}")["data"]["attributes"]
     invoices = _client_invoices(cl, comp_ids, keys, company_only=bool(company))
-    return {"payment": {k: row[k] for k in row.keys() if k != "description"}, "purpose": full.get("purpose"), "onec": inv, "deals": deals[:60],
+    mg = {r[0]: r[1] for r in conn.execute("SELECT synergy_id, fio FROM inv_manager")}
+    for i in invoices:
+        i["manager"] = mg.get(i["id"], "")
+    return {"payment": {k: row[k] for k in row.keys() if k != "description"}, "purpose": row["purpose"], "onec": inv, "deals": deals[:60],
             "companies": comp_ids, "invoices": invoices}
 
 
-def _client_invoices(cl: SynergyClient, comp_ids: list[str], keys: set[str], company_only: bool = False) -> list[dict]:
+def _client_invoices(cl: SynergyClient, comp_ids: list[str], keys: set[str], company_only: bool = False, force: bool = False) -> list[dict]:
     """Счета клиента из Synergy (загружены из 1С): номер 1С, дата, сумма, остаток, статус, сделка, менеджер. Неоплаченные и частично оплаченные — первыми."""
     out, seen = [], set()
     for cid in comp_ids[:6]:
         for page in (1, 2):
             try:
-                d = cl.get(f"companies/{cid}/invoices", per_page=50, sort="-created-at", include="deal,responsible", **{"page[number]": page})
+                d = _cached(("cinv", cid, page), lambda: cl.get(f"companies/{cid}/invoices", per_page=50, sort="-created-at", include="deal,responsible", **{"page[number]": page}), force=force)
             except httpx.HTTPStatusError:
                 break
             inc = {(i["type"], i["id"]): i["attributes"] for i in d.get("included") or []}
@@ -600,7 +666,8 @@ def _client_invoices(cl: SynergyClient, comp_ids: list[str], keys: set[str], com
                 out.append({"id": x["id"], "number": number, "date": (a.get("issued-at") or "")[:10], "amount": _num(a.get("amount")) or 0.0,
                             "balance": _num(a.get("balance")) or 0.0, "status": a.get("status"), "deal_id": dl.get("id") or "", "deal_number": da.get("number"),
                             "deal_name": (da.get("name") or "").strip(), "manager": " ".join(filter(None, [ra.get("last-name"), (ra.get("first-name") or "")[:1] + "." if ra.get("first-name") else ""])),
-                            "reason": a.get("reason") or "", "purpose": a.get("purpose") or "", "match": number in keys})
+                            "reason": a.get("reason") or "", "purpose": a.get("purpose") or "", "match": number in keys,
+                            "org": (re.match(r"Выставлен от:\s*([^·]+)", a.get("reason") or "") or [None, ""])[1].strip()})
             if len(d.get("data") or []) < 50:
                 break
     out.sort(key=lambda i: (not i["match"], i["status"] == "paid", i["date"]), reverse=False)
@@ -699,7 +766,7 @@ def api_inv_deals(request: Request, iid: str, company: str = ""):
         return JSONResponse({"error": "счёт не найден"}, status_code=404)
     comp_ids = [company] if company else ([row["payer_id"]] if row["payer_id"] else [])
     if not company and row["payer_inn"]:
-        for x in cl.get("companies", per_page=20, **{"filter[inn]": row["payer_inn"]}).get("data") or []:
+        for x in _companies_by_inn(cl, row["payer_inn"]):
             if x["id"] not in comp_ids and x["attributes"].get("inn") == row["payer_inn"]:
                 comp_ids.append(x["id"])
     sums, keys = {row["amount"]}, {row["number"]}
@@ -831,7 +898,9 @@ async def api_flag(request: Request, pid: str):
 async def _run(request: Request, fn):
     from starlette.concurrency import run_in_threadpool
     try:
-        return await run_in_threadpool(fn)
+        res = await run_in_threadpool(fn)
+        _raw_forget()
+        return res
     except _UserError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:   # noqa: BLE001

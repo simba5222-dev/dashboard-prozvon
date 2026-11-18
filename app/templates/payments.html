@@ -248,8 +248,9 @@ function invListHtml() {
     const used = Object.values(SEL).some(x => x.invoice === i.id), pend = CUR.pending === i.id, paid = i.status === "paid";
     return `<div class="inv-card ${used || pend ? "sel" : ""} ${i.match ? "match" : ""} ${paid ? "paid" : ""}" data-inv="${i.id}">
       <div><div class="t">${lnk("invoices", i.id, "Счёт " + esc(i.number))} <span class="dim">от ${fd(i.date)}</span>${i.match ? '<span class="tag g">по этому счёту платили</span>' : ""}<span class="istat ${paid ? "p" : "n"}">${paid ? "оплачен" : "не оплачен"}</span></div>
+        ${i.org ? `<div class="m"><b>Выставлен от: ${esc(i.org)}</b></div>` : ""}
         <div class="m">${i.deal_id ? "Сделка: " + lnk("deals", i.deal_id, esc(i.deal_name || "") + " №" + esc(i.deal_number)) : "Сделка не указана"}${i.manager ? " · менеджер " + esc(i.manager) : ""}</div>
-        ${i.reason ? `<div class="m">${esc(i.reason)}</div>` : ""}${pend ? '<div class="m" style="color:#1f4fc2"><b>Теперь выберите сделку для этого счёта ниже</b></div>' : ""}</div>
+        ${i.reason ? `<div class="m">${esc(i.reason.replace(/^Выставлен от:[^·]*·?\s*/, ""))}</div>` : ""}${pend ? '<div class="m" style="color:#1f4fc2"><b>Теперь выберите сделку для этого счёта ниже</b></div>' : ""}</div>
       <div class="nums"><b>${rub(i.amount)}</b><div>остаток ${rub(i.balance)}</div></div></div>`;
   }).join("");
 }

@@ -20,5 +20,10 @@ mv "$D/invoices.auto.tmp" "$D/invoices_auto.json"
 
 out=$(sudo -n -u claude .venv/bin/python scripts/load_1c_invoices.py --file "$D/invoices_auto.json" --apply 2>&1 | grep -v "HTTP Request") || { echo "$out"; exit 1; }
 echo "$out" | grep -E "создан|ВНИМАНИЕ|ОШИБКА|итого" || true
+# ФИО менеджера — из комментария счёта в 1С (решение владельца 18.11.2026): список сотрудников из 1С и разбор комментариев
+"${SSH[@]}" "cd ~/scan_registry && $PY onec_users.py" > "$D/roster.auto.tmp"
+python3 -c "import json; assert len(json.load(open('$D/roster.auto.tmp'))) > 20"
+mv "$D/roster.auto.tmp" "$D/roster_1c.json"
+sudo -n -u claude .venv/bin/python scripts/invoice_managers.py --file "$D/invoices_auto.json" --apply 2>&1 | grep -E "^счетов|записано" || true
 if echo "$out" | grep -q "ОШИБКА"; then echo "ошибка при загрузке счетов"; exit 1; fi
 echo "готово $(date -Is)"

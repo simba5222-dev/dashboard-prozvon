@@ -92,6 +92,8 @@ def main() -> int:
     conn.execute("""CREATE TABLE IF NOT EXISTS onec_invoices_loaded (
         doc_ref TEXT PRIMARY KEY, doc_number TEXT NOT NULL, synergy_id TEXT NOT NULL, loaded_at TEXT NOT NULL)""")
     items = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    # счета, выставленные от МСК ТЕХНОРЕСУРС, не загружаем (решение владельца 18.11.2026, как и платежи на МСК: «пока»)
+    items = [i for i in items if "МСК" not in (i.get("org_name") or "")]
     if args.only:
         items = [i for i in items if i["number"] == args.only]
     loaded = {r[0] for r in conn.execute("SELECT doc_ref FROM onec_invoices_loaded")}

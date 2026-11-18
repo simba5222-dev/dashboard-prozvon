@@ -144,7 +144,7 @@ function render(j) {
       <td class="money" style="color:${r.balance > 0 ? "#9a5400" : "var(--money)"}">${rub(r.balance)}</td>
       <td class="cp"><div class="nm">${lnk("companies", r.payer_id, esc(r.payer_name || "— не указан —"))}</div><div class="sub">${r.payer_inn ? "ИНН " + esc(r.payer_inn) : ""}</div></td>
       <td>${deal}</td>
-      <td class="cell-sm">${esc(r.manager || "—")}</td>
+      <td class="cell-sm">${r.manager ? "<b>" + esc(r.manager) + "</b>" : '<span class="dim" title="В комментарии счёта в 1С нет фамилии менеджера">не указан в комментарии 1С</span>'}</td>
       <td class="cell-sm">${esc(r.org || "")}</td>
       <td><div class="purpose" title="${esc(r.purpose)}">${esc(r.purpose)}</div></td>
       <td>${action}</td>`;
@@ -191,7 +191,7 @@ function renderDrawer() {
     <div class="box"><h3>Счёт из 1С</h3><div class="kv">
       <div>Клиент</div><div><b>${lnk("companies", r.payer_id, esc(r.payer_name || "не указан"))}</b>${r.payer_inn ? " · ИНН " + esc(r.payer_inn) : ""}</div>
       <div>Выставлен от</div><div>${esc(r.org || "—")}</div>
-      <div>Менеджер</div><div>${esc(r.manager || "—")}</div>
+      <div>Менеджер</div><div>${r.manager ? "<b>" + esc(r.manager) + "</b> (из комментария счёта в 1С)" : "не указан: в комментарии счёта в 1С нет фамилии менеджера"}</div>
       <div>Назначение</div><div>${esc(r.purpose || "—")}</div>
       <div>Основание</div><div>${esc(r.reason || "—")}</div>
       <div>Сделка сейчас</div><div>${r.deal_id ? lnk("deals", r.deal_id, esc(r.deal_name || "") + " №" + esc(r.deal_number)) : "не привязан"}</div></div></div>
