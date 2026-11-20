@@ -36,6 +36,7 @@ from app.db import last_mail_uid, save_mail_lead
 logger = logging.getLogger(__name__)
 
 OUR_DOMAIN = "techno-res.ru"
+MAX_MAIL_AGE_DAYS = 7
 PHONE_RE = re.compile(r"(?<!\d)(?:\+7|8)[\s\-\(]?\d{3}[\s\-\)]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}(?!\d)")
 
 PROMPT = """Ты разбираешь письмо на общую почту info@techno-res.ru. Компания
@@ -181,6 +182,17 @@ def process_one(
     if OUR_DOMAIN in (from_addr or "").lower():
         row["note"] = "письмо от своего адреса — пропущено"
         return row
+
+    # Письма перенесённого архива (imapsync) приходят с новыми UID, но старой датой:
+    # 20.11.2026 из писем 2017–2018 годов создались две ложные заявки. Старше недели не берём.
+    if received_at:
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(received_at)
+        except (TypeError, ValueError):
+            age = None
+        if age is not None and age.days > MAX_MAIL_AGE_DAYS:
+            row["note"] = f"старое письмо ({received_at[:10]}) — перенесённый архив, пропущено"
+            return row
 
     verdict = classify(settings, f"{from_name} <{from_addr}>", subject, body)
     if verdict is None:

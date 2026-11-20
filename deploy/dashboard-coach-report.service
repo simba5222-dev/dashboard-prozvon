@@ -1,0 +1,12 @@
+[Unit]
+Description=Дашборд: тренерский отчёт по Ткачевину и Никитину за вчера
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=claude
+Group=claude
+UMask=0002
+WorkingDirectory=/home/claude/dashboard
+ExecStart=/home/claude/dashboard/.venv/bin/python scripts/coach_report.py --apply
+TimeoutStartSec=30min

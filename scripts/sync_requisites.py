@@ -126,15 +126,31 @@ def remembered() -> dict:
     return json.loads(MAP.read_text(encoding="utf-8")) if MAP.exists() else {}
 
 
+def _idx_conn():
+    import sqlite3
+    from app.config import get_settings
+    return sqlite3.connect(get_settings().db_path, timeout=60)
+
+
 def find_company(cl, inn: str) -> dict | None:
+    """Компания по ИНН. Ищем в своей копии справочника (app/company_index.py): `filter[inn]` Synergy находит не все карточки,
+    и по этой причине раньше создавались дубли."""
     mem = remembered().get(inn)
     if mem:
         return {"id": mem, "attributes": {"inn": inn}}
-    rows = [x for x in cl.get("companies", per_page=20, **{"filter[inn]": inn}).get("data") or [] if x["attributes"].get("inn") == inn]
+    from app import company_index as ci
+    rows = ci.companies_by_inn(cl, _idx_conn(), inn)
     if not rows:
         return None
-    best = max(rows, key=lambda x: cl.get(f"companies/{x['id']}/deals", per_page=1)["meta"]["record-count"])
+    # больше сделок; при равенстве — самая старая карточка (новые чаще всего дубли)
+    best = max(rows, key=lambda x: (cl.get(f"companies/{x['id']}/deals", per_page=1)["meta"]["record-count"], -int(x["id"])))
     return best
+
+
+def remember_created(inn: str, comp_id: str, name: str = "", kpp: str = "") -> None:
+    from app import company_index as ci
+    m = remembered(); m[inn] = comp_id; MAP.write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+    ci.remember(_idx_conn(), comp_id, inn, name, kpp)
 
 
 def cmd_payers(cl, d, apply, limit):
@@ -163,7 +179,7 @@ def cmd_payers(cl, d, apply, limit):
             comp = create(cl, "companies", {"data": {"type": "companies", "attributes": attrs}}, cp["name"])
             if not comp:
                 return
-            m = remembered(); m[inn] = comp["id"]; MAP.write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+            remember_created(inn, comp["id"], cp["name"], cp.get("kpp") or "")
             n += 1
         # счета плательщика
         have = {x["attributes"].get("number") for x in cl.get(f"companies/{comp['id']}/bank-details", per_page=50).get("data") or []} if comp else set()

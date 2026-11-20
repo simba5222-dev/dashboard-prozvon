@@ -79,7 +79,16 @@ def _raw_forget() -> None:
 
 
 def _companies_by_inn(cl: SynergyClient, inn: str, force: bool = False) -> list[dict]:
-    return _cached(("inn", inn), lambda: cl.get("companies", per_page=20, **{"filter[inn]": inn}).get("data") or [], 3600, force)
+    def load():
+        import sqlite3
+        from app import company_index as ci
+        from app.config import get_settings
+        conn = sqlite3.connect(get_settings().db_path, timeout=30)
+        try:
+            return ci.companies_by_inn(cl, conn, inn, refresh=False)   # своя копия справочника + filter[inn]: он находит не все карточки
+        finally:
+            conn.close()
+    return _cached(("inn", inn), load, 3600, force)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pay_cache (

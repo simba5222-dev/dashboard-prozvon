@@ -147,6 +147,11 @@
 </div>
 {% endif %}
 
+<div class="card"><div class="card-body">
+  <audio controls preload="none" style="width:100%" src="{{ base }}/record/{{ call.uid }}.mp3"></audio>
+  <div class="dim" style="margin-top:6px">Если запись не играет — файл ещё не скачан или уже удалён после разбора.</div>
+</div></div>
+
 {% if call.transcript_text %}
 <div class="card">
   <div class="card-head"><h2>Расшифровка</h2>

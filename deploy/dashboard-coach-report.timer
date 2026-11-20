@@ -1,0 +1,10 @@
+[Unit]
+Description=Дашборд: тренерский отчёт каждый день в 8:15 по Москве
+
+[Timer]
+OnCalendar=*-*-* 08:15:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

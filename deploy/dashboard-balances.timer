@@ -1,0 +1,11 @@
+[Unit]
+Description=Дашборд: раз в неделю обновлять балансы покупателей из 1С в Synergy
+
+[Timer]
+# понедельник утром (системное время МСК): к началу рабочей недели долги свежие
+OnCalendar=Mon *-*-* 07:30:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

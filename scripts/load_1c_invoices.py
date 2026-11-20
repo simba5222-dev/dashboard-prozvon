@@ -129,7 +129,7 @@ def main() -> int:
             if not comp:
                 failed += 1
                 break
-            m = sr.remembered(); m[inv["cp_inn"]] = comp["id"]; sr.MAP.write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+            sr.remember_created(inv["cp_inn"], comp["id"], inv["cp_name"], inv.get("cp_kpp") or "")
         attrs = {"custom-number": inv["number"], "amount": float(inv["amount"]), "issued-at": inv["date"][:19] + "+03:00", "payment-type": "non_cash",
                  "status": "not_paid", "vat-kind": vat_kind}
         if vat_rate:

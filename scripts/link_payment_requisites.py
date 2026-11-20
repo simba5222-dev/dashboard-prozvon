@@ -37,8 +37,10 @@ def main():
     def company(inn):
         if inn in mem: return mem[inn]
         if inn not in comp_cache:
-            rows = [x for x in cl.get("companies", per_page=20, **{"filter[inn]": inn})["data"] if x["attributes"].get("inn") == inn]
-            comp_cache[inn] = max(rows, key=lambda x: cl.get(f"companies/{x['id']}/deals", per_page=1)["meta"]["record-count"])["id"] if rows else None
+            from app import company_index as ci
+            import sqlite3
+            rows = ci.companies_by_inn(cl, sqlite3.connect(s.db_path, timeout=60), inn)   # своя копия справочника: filter[inn] находит не всё
+            comp_cache[inn] = max(rows, key=lambda x: (cl.get(f"companies/{x['id']}/deals", per_page=1)["meta"]["record-count"], -int(x["id"])))["id"] if rows else None
         return comp_cache[inn]
     def company_bank(cid, number):
         if cid not in bank_cache:

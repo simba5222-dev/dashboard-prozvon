@@ -1,0 +1,8 @@
+[Unit]
+Description=Сторож: еженедельные балансы из 1С не обновились — сообщение в Telegram
+
+[Service]
+Type=oneshot
+User=claude
+WorkingDirectory=/home/claude/dashboard
+ExecStart=/home/claude/dashboard/.venv/bin/python /home/claude/dashboard/scripts/notify_telegram.py "Балансы из 1С по СК и АЛ не обновились (dashboard-balances). Смотреть: journalctl -u dashboard-balances"
